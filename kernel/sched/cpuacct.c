@@ -343,13 +343,8 @@ void cpuacct_charge(struct task_struct *tsk, u64 cputime)
 
 	if (regs && user_mode(regs))
 		index = CPUACCT_STAT_USER;
-
-	rcu_read_lock();
-
 	for (ca = task_ca(tsk); ca; ca = parent_ca(ca))
 		this_cpu_ptr(ca->cpuusage)->usages[index] += cputime;
-
-	rcu_read_unlock();
 }
 
 /*
