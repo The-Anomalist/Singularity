@@ -903,11 +903,10 @@ get_target_base(struct timer_base *base, unsigned tflags)
 	return get_timer_this_cpu_base(tflags);
 }
 
-static inline void forward_timer_base(struct timer_base *base)
+static inline void __forward_timer_base(struct timer_base *base,
+					unsigned long basej)
 {
 #ifdef CONFIG_NO_HZ_COMMON
-	unsigned long jnow;
-
 	/*
 	 * We only forward the base when we are idle or have just come out of
 	 * idle (must_forward_clk logic), and have a delta between base clock
@@ -916,17 +915,17 @@ static inline void forward_timer_base(struct timer_base *base)
 	if (likely(!base->must_forward_clk))
 		return;
 
-	jnow = READ_ONCE(jiffies);
 	base->must_forward_clk = base->is_idle;
-	if ((long)(jnow - base->clk) < 2)
+
+	if (time_before_eq(basej, base->clk))
 		return;
 
 	/*
 	 * If the next expiry value is > jiffies, then we fast forward to
 	 * jiffies otherwise we forward to the next expiry value.
 	 */
-	if (time_after(base->next_expiry, jnow)) {
-		base->clk = jnow;
+	if (time_after(base->next_expiry, basej)) {
+		base->clk = basej;
 	} else {
 		if (WARN_ON_ONCE(time_before(base->next_expiry, base->clk)))
 			return;
@@ -935,6 +934,10 @@ static inline void forward_timer_base(struct timer_base *base)
 #endif
 }
 
+static inline void forward_timer_base(struct timer_base *base)
+{
+	__forward_timer_base(base, READ_ONCE(jiffies));
+}
 
 /*
  * We are using hashed locking: Holding per_cpu(timer_bases[x]).lock means
