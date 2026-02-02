@@ -1,0 +1,1 @@
+obj-$(CONFIG_INTERCONNECT_QCOM_KONA) += kona.o

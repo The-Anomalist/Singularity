@@ -1,0 +1,17 @@
+menu "Interconnect drivers"
+
+config INTERCONNECT
+bool "Interconnect support"
+help
+  Say Y here to enable the generic interconnect framework used to
+  describe and manage bandwidth requirements between on-chip masters
+  and slaves. Individual provider drivers are required for each bus
+  topology. If unsure, say N.
+
+if INTERCONNECT
+
+source "drivers/interconnect/qcom/Kconfig"
+
+endif # INTERCONNECT
+
+endmenu

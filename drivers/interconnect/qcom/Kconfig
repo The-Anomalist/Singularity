@@ -1,0 +1,37 @@
+menu "Qualcomm interconnect drivers"
+
+config INTERCONNECT_QCOM
+bool "Qualcomm interconnect support"
+depends on INTERCONNECT
+select QCOM_RPMH
+select QCOM_COMMAND_DB
+help
+  Enable support for Qualcomm Technologies, Inc. interconnect providers.
+  Individual SoC drivers need to be enabled as well.
+
+config INTERCONNECT_QCOM_KONA
+bool "Qualcomm Kona interconnect"
+depends on INTERCONNECT_QCOM
+help
+  Enable the virtual interconnect provider used on SM8250/Kona based
+  platforms. This driver allows clients to express bandwidth requests
+  through the common interconnect framework.
+
+config INTERCONNECT_QCOM_KONA_PERF_FLOOR
+bool "Enable Kona interconnect performance floors"
+depends on INTERCONNECT_QCOM_KONA
+default y
+help
+  Apply conservative bandwidth floors for critical CPU/GPU interconnect
+  paths to prevent low DDR/LLCC performance corners from throttling the
+  system. This keeps performance closer to the pre-ICC baseline. Disable
+  only if you have an alternate mechanism for managing bandwidth votes.
+
+config INTERCONNECT_QCOM_KONA_DEBUG
+bool "Verbose Kona interconnect logging"
+depends on INTERCONNECT_QCOM_KONA
+help
+  Emit detailed bandwidth vote messages from the Kona interconnect driver
+  to aid in debugging bandwidth scaling decisions.
+
+endmenu

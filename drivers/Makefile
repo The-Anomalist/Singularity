@@ -19,6 +19,7 @@ obj-$(CONFIG_GPIOLIB)		+= gpio/
 obj-y				+= pwm/
 
 obj-y				+= pci/
+obj-$(CONFIG_INTERCONNECT)      += interconnect/
 
 obj-$(CONFIG_PARISC)		+= parisc/
 obj-$(CONFIG_RAPIDIO)		+= rapidio/
