@@ -25,8 +25,8 @@
 
 static struct kgsl_popp popp_param[POPP_MAX] = {
 	{0, 0},
-	{-5, 20},
-	{-5, 0},
+	{0, 0},
+	{0, 0},
 	{0, 0},
 };
 
