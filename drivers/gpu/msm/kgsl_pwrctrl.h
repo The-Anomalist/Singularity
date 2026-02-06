@@ -34,7 +34,7 @@
 
 #define KGSL_XO_CLK_FREQ	19200000
 #define KGSL_RBBMTIMER_CLK_FREQ	KGSL_XO_CLK_FREQ
-#define KGSL_ISENSE_CLK_FREQ	200000000
+#define KGSL_ISENSE_CLK_FREQ	400000000
 
 /* Symbolic table for the constraint type */
 #define KGSL_CONSTRAINT_TYPES \

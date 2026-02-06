@@ -219,6 +219,26 @@ static void kgsl_pwrctrl_vbif_update(void)
 }
 #endif
 
+static void kgsl_pwrctrl_set_l3_max(struct kgsl_device *device)
+{
+	unsigned int max_level;
+	int ret;
+
+	if (!device->l3_clk || !device->num_l3_pwrlevels)
+		return;
+
+	max_level = device->num_l3_pwrlevels - 1;
+	if (device->cur_l3_pwrlevel == max_level)
+		return;
+
+	ret = clk_set_rate(device->l3_clk, device->l3_freq[max_level]);
+	if (!ret)
+		device->cur_l3_pwrlevel = max_level;
+	else
+		dev_err(device->dev, "Could not set l3_vote to max: %d\n",
+			ret);
+}
+
 /**
  * kgsl_bus_scale_request() - set GPU BW vote
  * @device: Pointer to the kgsl_device struct
@@ -2628,6 +2648,7 @@ static int kgsl_pwrctrl_enable(struct kgsl_device *device)
 	}
 
 	kgsl_pwrctrl_pwrlevel_change(device, level);
+	kgsl_pwrctrl_set_l3_max(device);
 
 	if (gmu_core_gpmu_isenabled(device)) {
 		int ret = gmu_core_start(device);
