@@ -39,6 +39,10 @@ static struct devfreq_msm_adreno_tz_data adreno_tz_data = {
 		.floating = true,
 	},
 	.device_id = KGSL_DEVICE_3D0,
+	.singularity_aggressiveness = 120,
+	.singularity_boost_level = 1,
+	.singularity_boost_ms = 40,
+	.singularity_boost_enable = false,
 };
 
 static const struct kgsl_functable adreno_functable;

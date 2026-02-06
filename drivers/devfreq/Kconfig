@@ -140,6 +140,15 @@ config DEVFREQ_GOV_QCOM_ADRENO_TZ
 	   governor is unlikely to be useful for other
 	   devices.
 
+config DEVFREQ_GOV_QCOM_ADRENO_SINGULARITY
+	tristate "Singularity Adreno Trustzone governor"
+	depends on QCOM_KGSL
+	help
+	  Enhanced Trustzone based governor for the Adreno GPU.
+	  Provides a more responsive heuristic, optional smart
+	  boost controls, and retains compatibility with the
+	  standard Trustzone interface.
+
 config DEVFREQ_GOV_QCOM_GPUBW_MON
 	tristate "GPU BW voting governor"
 	depends on DEVFREQ_GOV_QCOM_ADRENO_TZ

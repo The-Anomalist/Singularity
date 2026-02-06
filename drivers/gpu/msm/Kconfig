@@ -10,6 +10,7 @@ config QCOM_KGSL
 	select DEVFREQ_GOV_SIMPLE_ONDEMAND
 	select DEVFREQ_GOV_PERFORMANCE
 	select DEVFREQ_GOV_QCOM_ADRENO_TZ
+	select DEVFREQ_GOV_QCOM_ADRENO_SINGULARITY
 	select DEVFREQ_GOV_QCOM_GPUBW_MON
 	help
 	  3D graphics driver for the Adreno family of GPUs from QTI.
@@ -19,6 +20,7 @@ config QCOM_KGSL
 
 config QCOM_ADRENO_DEFAULT_GOVERNOR
 	string "devfreq governor for the adreno core"
+	default "singularity" if DEVFREQ_GOV_QCOM_ADRENO_SINGULARITY
 	default "msm-adreno-tz" if DEVFREQ_GOV_QCOM_ADRENO_TZ
 	default "simple_ondemand"
 	depends on QCOM_KGSL
