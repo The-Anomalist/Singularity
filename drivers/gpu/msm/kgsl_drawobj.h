@@ -64,6 +64,7 @@ struct kgsl_drawobj {
  * @refcount: kref structure to maintain the reference count
  * @cmdlist: List of IBs to issue
  * @memlist: List of all memory used in this command batch
+ * @numibs: Number of IBs in @cmdlist
  * @marker_timestamp: For markers, the timestamp of the last "real" command that
  * was queued
  * @profiling_buf_entry: Mem entry containing the profiling buffer
@@ -83,6 +84,7 @@ struct kgsl_drawobj_cmd {
 	unsigned long fault_recovery;
 	struct list_head cmdlist;
 	struct list_head memlist;
+	unsigned int numibs;
 	unsigned int marker_timestamp;
 	struct kgsl_mem_entry *profiling_buf_entry;
 	uint64_t profiling_buffer_gpuaddr;

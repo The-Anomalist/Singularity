@@ -816,6 +816,7 @@ int kgsl_drawobj_cmd_add_ibdesc(struct kgsl_device *device,
 
 		/* add to the cmd list */
 		list_add_tail(&mem->node, &cmdobj->cmdlist);
+		cmdobj->numibs++;
 	}
 
 	return 0;
@@ -1033,6 +1034,7 @@ struct kgsl_drawobj_cmd *kgsl_drawobj_cmd_create(struct kgsl_device *device,
 
 	INIT_LIST_HEAD(&cmdobj->cmdlist);
 	INIT_LIST_HEAD(&cmdobj->memlist);
+	cmdobj->numibs = 0;
 
 	if (type & CMDOBJ_TYPE)
 		atomic_inc(&context->proc_priv->cmd_count);
@@ -1316,6 +1318,7 @@ int kgsl_drawobj_cmd_add_cmdlist(struct kgsl_device *device,
 		ret = kgsl_drawobj_add_memobject(&cmdobj->cmdlist, &obj);
 		if (ret)
 			return ret;
+		cmdobj->numibs++;
 
 		ptr += sizeof(obj);
 	}

@@ -964,9 +964,7 @@ int adreno_ringbuffer_submitcmd(struct adreno_device *adreno_dev,
 	context = drawobj->context;
 	drawctxt = ADRENO_CONTEXT(context);
 
-	/* Get the total IBs in the list */
-	list_for_each_entry(ib, &cmdobj->cmdlist, node)
-		numibs++;
+	numibs = cmdobj->numibs;
 
 	rb = drawctxt->rb;
 
