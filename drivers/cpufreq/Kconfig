@@ -220,6 +220,19 @@ config CPU_FREQ_GOV_SCHEDUTIL
 
 	  If in doubt, say N.
 
+config CPU_FREQ_GOV_SCHEDPRO
+	bool "'schedpro' cpufreq policy governor"
+	depends on CPU_FREQ && SMP
+	select CPU_FREQ_GOV_ATTR_SET
+	select IRQ_WORK
+	help
+	  'schedpro' is a schedutil-derived governor with more aggressive
+	  upscaling behavior. It mirrors schedutil's utilization-based
+	  frequency selection, but bypasses the up-rate limit for rising
+	  utilization to improve responsiveness on bursty workloads.
+
+	  If in doubt, say N.
+
 comment "CPU frequency scaling drivers"
 
 config CPUFREQ_DT
