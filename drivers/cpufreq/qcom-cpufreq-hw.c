@@ -489,10 +489,16 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 				c->skip_data.cc = core_count;
 				c->skip_data.final_index = i + 1;
 				c->skip_data.low_temp_index = i + 1;
-				c->skip_data.prev_freq =
-						c->table[i-1].frequency;
-				c->skip_data.prev_index = i - 1;
-				c->skip_data.prev_cc = prev_cc;
+				if (i > 0) {
+					c->skip_data.prev_freq =
+						c->table[i - 1].frequency;
+					c->skip_data.prev_index = i - 1;
+					c->skip_data.prev_cc = prev_cc;
+				} else {
+					c->skip_data.prev_freq = cur_freq;
+					c->skip_data.prev_index = i;
+					c->skip_data.prev_cc = core_count;
+				}
 			} else {
 				cur_freq = CPUFREQ_ENTRY_INVALID;
 				c->table[i].flags = CPUFREQ_BOOST_FREQ;
@@ -687,12 +693,15 @@ static int qcom_resources_init(struct platform_device *pdev)
 
 		ret = of_parse_phandle_with_args(cpu_np, "qcom,freq-domain",
 				"#freq-domain-cells", 0, &args);
-		if (ret < 0)
+		if (ret < 0) {
+			of_node_put(cpu_np);
 			return ret;
+		}
 
 		ret = qcom_cpu_resources_init(pdev, cpu, args.args[0],
 					      args.args[1], xo_rate,
 					      cpu_hw_rate);
+		of_node_put(cpu_np);
 		if (ret)
 			return ret;
 	}
