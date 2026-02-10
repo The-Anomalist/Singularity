@@ -25,6 +25,7 @@
 #include <trace/events/sched.h>
 
 #include "walt.h"
+#include "uclass/uclass.h"
 
 #ifdef CONFIG_SMP
 static inline bool task_fits_max(struct task_struct *p, int cpu);
@@ -86,6 +87,17 @@ unsigned int sysctl_sched_sync_hint_enable = 1;
  * Enable/disable using cstate knowledge in idle sibling selection
  */
 unsigned int sysctl_sched_cstate_aware = 1;
+
+#ifdef CONFIG_SCHED_UCLASS
+/*
+ * UCLASS tunables:
+ * - wakeup boost applies only to latency-sensitive tasks.
+ * - idle bias prefers shallower idle states during wake placement.
+ */
+unsigned int sysctl_sched_uclass_wakeup_boost = 0;
+unsigned int sysctl_sched_uclass_idle_bias = 0;
+unsigned int sysctl_sched_uclass_gran_boost_pct = 20;
+#endif
 
 /*
  * The initial- and re-scaling of tunables is configurable
@@ -7669,8 +7681,8 @@ static void select_cpu_candidates(struct sched_domain *sd, cpumask_t *cpus,
 				if (!boosted && cpu_cap > target_cap)
 					continue;
 				idle = idle_get_state(cpu_rq(cpu));
-				if (idle && idle->exit_latency > min_exit_lat &&
-						cpu_cap == target_cap)
+				if (!uclass_idle_candidate_is_better(cpu_cap, target_cap,
+						idle, min_exit_lat))
 					continue;
 
 				if (idle)
@@ -8101,6 +8113,7 @@ static void task_dead_fair(struct task_struct *p)
 }
 #endif /* CONFIG_SMP */
 
+
 static unsigned long wakeup_gran(struct sched_entity *se)
 {
 	unsigned long gran = sysctl_sched_wakeup_granularity;
@@ -8244,6 +8257,30 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 		if (!next_buddy_marked)
 			set_next_buddy(pse);
 		goto preempt;
+
+	{
+		int preempt = wakeup_preempt_entity(se, pse);
+
+		if (preempt == 0) {
+			unsigned long gran;
+			s64 vdiff;
+
+			gran = uclass_adjust_wakeup_gran(curr, p, wakeup_gran(pse));
+			vdiff = se->vruntime - pse->vruntime;
+			if (vdiff <= (s64)gran)
+				return;
+			preempt = 1;
+		}
+
+		if (preempt == 1) {
+			/*
+			 * Bias pick_next to pick the sched entity that is
+			 * triggering this preemption.
+			 */
+			if (!next_buddy_marked)
+				set_next_buddy(pse);
+			goto preempt;
+		}
 	}
 
 	return;

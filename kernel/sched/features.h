@@ -107,6 +107,20 @@ SCHED_FEAT(FIND_BEST_TARGET, true)
 SCHED_FEAT(EAS_PREFER_IDLE, true)
 
 /*
+ * UCLASS: Unified Capacity and Latency Aware Scheduling System.
+ *
+ * Keep this enabled to apply conservative latency/capacity aware
+ * adjustments on top of the stock fair wakeup/placement paths.
+ */
+SCHED_FEAT(UCLASS, true)
+
+/*
+ * Allow UCLASS to reduce wakeup preemption granularity for
+ * latency-sensitive wakeups without bypassing fairness checks.
+ */
+SCHED_FEAT(UCLASS_WAKEUP_PREEMPT, true)
+
+/*
  * Request max frequency from schedutil whenever a RT task is running.
  */
 SCHED_FEAT(SUGOV_RT_MAX_FREQ, false)

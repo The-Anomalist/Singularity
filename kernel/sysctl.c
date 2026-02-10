@@ -708,6 +708,36 @@ static struct ctl_table kern_table[] = {
 		.extra1		= &min_wakeup_granularity_ns,
 		.extra2		= &max_wakeup_granularity_ns,
 	},
+#ifdef CONFIG_SCHED_UCLASS
+	{
+		.procname	= "sched_uclass_wakeup_boost",
+		.data		= &sysctl_sched_uclass_wakeup_boost,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+	{
+		.procname	= "sched_uclass_idle_bias",
+		.data		= &sysctl_sched_uclass_idle_bias,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+	{
+		.procname	= "sched_uclass_gran_boost_pct",
+		.data		= &sysctl_sched_uclass_gran_boost_pct,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one_hundred,
+	},
+#endif
+
 #ifdef CONFIG_SMP
 	{
 		.procname	= "sched_tunable_scaling",

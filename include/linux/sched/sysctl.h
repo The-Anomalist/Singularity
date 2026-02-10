@@ -30,6 +30,11 @@ extern unsigned int sysctl_sched_min_granularity;
 extern unsigned int sysctl_sched_sync_hint_enable;
 extern unsigned int sysctl_sched_cstate_aware;
 extern unsigned int sysctl_sched_wakeup_granularity;
+#ifdef CONFIG_SCHED_UCLASS
+extern unsigned int sysctl_sched_uclass_wakeup_boost;
+extern unsigned int sysctl_sched_uclass_idle_bias;
+extern unsigned int sysctl_sched_uclass_gran_boost_pct;
+#endif
 extern unsigned int sysctl_sched_child_runs_first;
 extern unsigned int sysctl_sched_force_lb_enable;
 #ifdef CONFIG_SCHED_WALT
