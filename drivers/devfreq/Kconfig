@@ -224,6 +224,7 @@ config DEVFREQ_SIMPLE_DEV
 config QCOM_DEVFREQ_DEVBW
 	bool "Qualcomm Technologies Inc. DEVFREQ device for device master <-> slave IB/AB BW voting"
 	depends on ARCH_QCOM
+	select INTERCONNECT
 	select DEVFREQ_GOV_PERFORMANCE
 	select DEVFREQ_GOV_POWERSAVE
 	select DEVFREQ_GOV_USERSPACE
