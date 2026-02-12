@@ -7629,7 +7629,7 @@ compute_energy(struct task_struct *p, int dst_cpu, struct perf_domain *pd)
 static void select_cpu_candidates(struct sched_domain *sd, cpumask_t *cpus,
 		struct perf_domain *pd, struct task_struct *p, int prev_cpu)
 {
-	int highest_spare_cap_cpu = prev_cpu, best_idle_cpu = -1;
+	int highest_spare_cap_cpu = -1, best_idle_cpu = -1;
 	unsigned long spare_cap, max_spare_cap, util, cpu_cap;
 	bool prefer_idle = uclass_pick_idle_cpu_first(p);
 	bool boosted = uclamp_boosted(p);
@@ -7668,7 +7668,7 @@ static void select_cpu_candidates(struct sched_domain *sd, cpumask_t *cpus,
 			 * Find the CPU with the maximum spare capacity in
 			 * the performance domain
 			 */
-			if (spare_cap > max_spare_cap) {
+			if (spare_cap > max_spare_cap || max_spare_cap_cpu < 0) {
 				max_spare_cap = spare_cap;
 				max_spare_cap_cpu = cpu;
 			}
@@ -7691,7 +7691,8 @@ static void select_cpu_candidates(struct sched_domain *sd, cpumask_t *cpus,
 					min_exit_lat = idle->exit_latency;
 				target_cap = cpu_cap;
 				best_idle_cpu = cpu;
-			} else if (spare_cap > highest_spare_cap) {
+			} else if (spare_cap > highest_spare_cap ||
+				   highest_spare_cap_cpu < 0) {
 				highest_spare_cap = spare_cap;
 				highest_spare_cap_cpu = cpu;
 			}
@@ -7706,7 +7707,7 @@ static void select_cpu_candidates(struct sched_domain *sd, cpumask_t *cpus,
 
 	if (best_idle_cpu >= 0)
 		cpumask_set_cpu(best_idle_cpu, cpus);
-	else
+	else if (highest_spare_cap_cpu >= 0)
 		cpumask_set_cpu(highest_spare_cap_cpu, cpus);
 }
 
