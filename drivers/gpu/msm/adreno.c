@@ -39,11 +39,19 @@ static struct devfreq_msm_adreno_tz_data adreno_tz_data = {
 		.floating = true,
 	},
 	.device_id = KGSL_DEVICE_3D0,
-	.singularity_aggressiveness = 120,
-	.singularity_boost_level = 1,
-	.singularity_boost_ms = 40,
-	.singularity_boost_enable = false,
+	.singularity_aggressiveness = 180,
+	.singularity_boost_level = 0,
+	.singularity_boost_ms = 65,
+	.singularity_boost_enable = true,
 };
+
+/*
+ * Enable a stronger default performance profile aimed at frametime stability
+ * during gaming sessions. Can be disabled at boot with
+ * adreno_performance_mode=0.
+ */
+static bool adreno_performance_mode = true;
+module_param_named(performance_mode, adreno_performance_mode, bool, 0644);
 
 static const struct kgsl_functable adreno_functable;
 
@@ -1079,6 +1087,9 @@ static void adreno_of_get_initial_pwrlevel(struct adreno_device *adreno_dev,
 
 	if (init_level < 0 || init_level > pwr->num_pwrlevels)
 		init_level = 1;
+
+	if (adreno_performance_mode)
+		init_level = 0;
 
 	pwr->active_pwrlevel = init_level;
 	pwr->default_pwrlevel = init_level;
