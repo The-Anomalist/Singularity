@@ -293,6 +293,7 @@ static const struct freq_tbl ftbl_npu_cc_cal_hm0_clk_src[] = {
 	F(729000000, P_NPU_CC_CRC_DIV, 1, 0, 0),
 	F(844000000, P_NPU_CC_CRC_DIV, 1, 0, 0),
 	F(1000000000, P_NPU_CC_CRC_DIV, 1, 0, 0),
+	F(1066000000, P_NPU_CC_CRC_DIV, 1, 0, 0),
 	{ }
 };
 
@@ -304,6 +305,7 @@ static const struct freq_tbl ftbl_npu_cc_cal_hm0_clk_src_no_crc[] = {
 	F(729000000, P_NPU_CC_CRC_DIV, 2, 0, 0),
 	F(844000000, P_NPU_CC_CRC_DIV, 2, 0, 0),
 	F(1000000000, P_NPU_CC_CRC_DIV, 2, 0, 0),
+	F(1066000000, P_NPU_CC_CRC_DIV, 2, 0, 0),
 	{ }
 };
 
@@ -329,7 +331,7 @@ static struct clk_rcg2 npu_cc_cal_hm0_clk_src = {
 			[VDD_LOW_L1] = 557000000,
 			[VDD_NOMINAL] = 729000000,
 			[VDD_HIGH] = 844000000,
-			[VDD_HIGH_L1] = 1000000000},
+			[VDD_HIGH_L1] = 1066000000},
 	},
 };
 

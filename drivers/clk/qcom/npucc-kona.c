@@ -287,6 +287,7 @@ static const struct freq_tbl ftbl_npu_cc_cal_hm0_clk_src[] = {
 	F(533000000, P_NPU_CC_CRC_DIV, 1, 0, 0),
 	F(850000000, P_NPU_CC_CRC_DIV, 1, 0, 0),
 	F(1000000000, P_NPU_CC_CRC_DIV, 1, 0, 0),
+	F(1066000000, P_NPU_CC_CRC_DIV, 1, 0, 0),
 	{ }
 };
 
@@ -297,6 +298,7 @@ static const struct freq_tbl ftbl_npu_cc_cal_hm0_clk_src_kona_v2[] = {
 	F(730000000, P_NPU_CC_CRC_DIV, 1, 0, 0),
 	F(920000000, P_NPU_CC_CRC_DIV, 1, 0, 0),
 	F(1000000000, P_NPU_CC_CRC_DIV, 1, 0, 0),
+	F(1066000000, P_NPU_CC_CRC_DIV, 1, 0, 0),
 	{ }
 };
 
@@ -321,7 +323,8 @@ static struct clk_rcg2 npu_cc_cal_hm1_clk_src = {
 			[VDD_LOW] = 466000000,
 			[VDD_LOW_L1] = 533000000,
 			[VDD_NOMINAL] = 850000000,
-			[VDD_HIGH] = 1000000000},
+			[VDD_HIGH] = 1000000000,
+			[VDD_HIGH_L1] = 1066000000},
 	},
 };
 
@@ -347,7 +350,8 @@ static struct clk_rcg2 npu_cc_cal_hm0_clk_src = {
 				[VDD_LOW] = 466000000,
 				[VDD_LOW_L1] = 533000000,
 				[VDD_NOMINAL] = 850000000,
-				[VDD_HIGH] = 1000000000},
+				[VDD_HIGH] = 1000000000,
+				[VDD_HIGH_L1] = 1066000000},
 		},
 		/*
 		 * npu_cc_cal_hm0_clk_src and npu_cc_cal_hm1_clk_src must be
@@ -1182,14 +1186,14 @@ static void npu_cc_kona_fixup_konav2(struct regmap *regmap)
 	npu_cc_cal_hm0_clk_src.clkr.hw.init->rate_max[VDD_NOMINAL_L1] =
 		850000000;
 	npu_cc_cal_hm0_clk_src.clkr.hw.init->rate_max[VDD_HIGH] = 920000000;
-	npu_cc_cal_hm0_clk_src.clkr.hw.init->rate_max[VDD_HIGH_L1] = 1000000000;
+	npu_cc_cal_hm0_clk_src.clkr.hw.init->rate_max[VDD_HIGH_L1] = 1066000000;
 	npu_cc_cal_hm1_clk_src.freq_tbl = ftbl_npu_cc_cal_hm0_clk_src_kona_v2;
 	npu_cc_cal_hm1_clk_src.clkr.hw.init->rate_max[VDD_LOW] = 406000000;
 	npu_cc_cal_hm1_clk_src.clkr.hw.init->rate_max[VDD_NOMINAL] = 730000000;
 	npu_cc_cal_hm1_clk_src.clkr.hw.init->rate_max[VDD_NOMINAL_L1] =
 		850000000;
 	npu_cc_cal_hm1_clk_src.clkr.hw.init->rate_max[VDD_HIGH] = 920000000;
-	npu_cc_cal_hm1_clk_src.clkr.hw.init->rate_max[VDD_HIGH_L1] = 1000000000;
+	npu_cc_cal_hm1_clk_src.clkr.hw.init->rate_max[VDD_HIGH_L1] = 1066000000;
 }
 
 static int npu_cc_kona_fixup(struct platform_device *pdev,
