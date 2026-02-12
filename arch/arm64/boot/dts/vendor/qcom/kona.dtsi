@@ -7,6 +7,7 @@
 #include <dt-bindings/clock/qcom,npucc-kona.h>
 #include <dt-bindings/clock/qcom,rpmh.h>
 #include <dt-bindings/clock/qcom,videocc-kona.h>
+#include <dt-bindings/interconnect/qcom,kona.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/msm/msm-bus-ids.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator-levels.h>
@@ -313,6 +314,11 @@
 	};
 
 	soc: soc {
+		kona_icc: interconnect {
+			compatible = "qcom,kona-interconnect";
+			#interconnect-cells = <1>;
+		};
+
 		cpufreq_hw: qcom,cpufreq-hw {
 			compatible = "qcom,cpufreq-hw-epss";
 			reg = <0x18591000 0x1000>, <0x18592000 0x1000>,
@@ -322,6 +328,10 @@
 
 			clocks = <&clock_rpmh RPMH_CXO_CLK>, <&clock_gcc GPLL0>;
 			clock-names = "xo", "alternate";
+
+			interconnects = <&kona_icc KONA_ICC_CPU_TO_LLCC>,
+					<&kona_icc KONA_ICC_CPU_TO_MEM>;
+			interconnect-names = "cpu-llcc", "cpu-ddr";
 
 			qcom,lut-row-size = <4>;
 			qcom,skip-enable-check;
@@ -967,6 +977,8 @@
 	cpu_cpu_llcc_bw: qcom,cpu-cpu-llcc-bw {
 		compatible = "qcom,devbw";
 		governor = "performance";
+		interconnects = <&kona_icc KONA_ICC_CPU_TO_LLCC>;
+		interconnect-names = "cpu-llcc";
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_LLCC>;
 		qcom,active-only;
@@ -987,6 +999,8 @@
 	cpu_llcc_ddr_bw: qcom,cpu-llcc-ddr-bw {
 		compatible = "qcom,devbw-ddr";
 		governor = "performance";
+		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+		interconnect-names = "cpu-ddr";
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
@@ -1006,6 +1020,8 @@
 	npu_npu_llcc_bw: qcom,npu-npu-llcc-bw {
 		compatible = "qcom,devbw";
 		governor = "performance";
+		interconnects = <&kona_icc KONA_ICC_NPU_TO_LLCC>;
+		interconnect-names = "npu-llcc";
 		qcom,src-dst-ports = <MSM_BUS_MASTER_NPU MSM_BUS_SLAVE_LLCC>;
 		operating-points-v2 = <&suspendable_llcc_bw_opp_table>;
 	};
@@ -1030,6 +1046,8 @@
 	npu_llcc_ddr_bw: qcom,npu-llcc-ddr-bw {
 		compatible = "qcom,devbw-ddr";
 		governor = "performance";
+		interconnects = <&kona_icc KONA_ICC_NPU_TO_MEM>;
+		interconnect-names = "npu-ddr";
 		qcom,src-dst-ports = <MSM_BUS_SLAVE_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		operating-points-v2 = <&suspendable_ddr_bw_opp_table>;
 	};
@@ -1047,6 +1065,8 @@
 	npudsp_npu_ddr_bw: qcom,npudsp-npu-ddr-bw {
 		compatible = "qcom,devbw-ddr";
 		governor = "performance";
+		interconnects = <&kona_icc KONA_ICC_NPU_TO_MEM>;
+		interconnect-names = "npu-ddr";
 		qcom,src-dst-ports = <MSM_BUS_MASTER_NPU MSM_BUS_SLAVE_EBI_CH0>;
 		operating-points-v2 = <&suspendable_ddr_bw_opp_table>;
 	};

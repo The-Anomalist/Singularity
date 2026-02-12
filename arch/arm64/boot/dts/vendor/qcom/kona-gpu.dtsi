@@ -17,6 +17,8 @@
 	gpubw: qcom,gpubw {
 		compatible = "qcom,devbw-ddr";
 		governor = "bw_vbif";
+		interconnects = <&kona_icc KONA_ICC_GPU_TO_MEM>;
+		interconnect-names = "gpu-ddr";
 		qcom,src-dst-ports = <26 512>;
 		operating-points-v2 = <&suspendable_ddr_bw_opp_table>;
 	};
@@ -75,6 +77,10 @@
 		qcom,tzone-names = "gpuss-0-usr", "gpuss-1-usr";
 
 		qcom,pm-qos-active-latency = <44>;
+
+		interconnects = <&kona_icc KONA_ICC_GPU_TO_LLCC>,
+				<&kona_icc KONA_ICC_GPU_TO_MEM>;
+		interconnect-names = "gpu-llcc", "gpu-ddr";
 
 		clocks = <&clock_gpucc GPU_CC_CXO_CLK>,
 			<&clock_gcc GCC_DDRSS_GPU_AXI_CLK>,
