@@ -121,6 +121,12 @@ SCHED_FEAT(UCLASS, true)
 SCHED_FEAT(UCLASS_WAKEUP_PREEMPT, true)
 
 /*
+ * Allow UCLASS placement policy hooks (idle-first and previous-CPU bias)
+ * to influence target CPU selection while keeping EAS/CFS flow intact.
+ */
+SCHED_FEAT(UCLASS_PLACEMENT, true)
+
+/*
  * Request max frequency from schedutil whenever a RT task is running.
  */
 SCHED_FEAT(SUGOV_RT_MAX_FREQ, false)

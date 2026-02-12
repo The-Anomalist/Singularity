@@ -96,7 +96,9 @@ unsigned int sysctl_sched_cstate_aware = 1;
  */
 unsigned int sysctl_sched_uclass_wakeup_boost = 0;
 unsigned int sysctl_sched_uclass_idle_bias = 0;
+unsigned int sysctl_sched_uclass_prefer_prev_cpu = 1;
 unsigned int sysctl_sched_uclass_gran_boost_pct = 20;
+unsigned int sysctl_sched_uclass_prev_cpu_energy_margin_pct = 6;
 #endif
 
 /*
@@ -7014,7 +7016,7 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 	 * performance CPU, thus requiring to maximise target_capacity. In this
 	 * case we initialise target_capacity to 0.
 	 */
-	prefer_idle = uclamp_latency_sensitive(p);
+	prefer_idle = uclass_pick_idle_cpu_first(p);
 	boosted = fbt_env->boosted || uclamp_boosted(p);
 	if (prefer_idle && boosted)
 		target_capacity = 0;
@@ -7629,7 +7631,7 @@ static void select_cpu_candidates(struct sched_domain *sd, cpumask_t *cpus,
 {
 	int highest_spare_cap_cpu = prev_cpu, best_idle_cpu = -1;
 	unsigned long spare_cap, max_spare_cap, util, cpu_cap;
-	bool prefer_idle = uclamp_latency_sensitive(p);
+	bool prefer_idle = uclass_pick_idle_cpu_first(p);
 	bool boosted = uclamp_boosted(p);
 	unsigned long target_cap = boosted ? 0 : ULONG_MAX;
 	unsigned long highest_spare_cap = 0;
@@ -7933,11 +7935,24 @@ unlock:
 	 * Pick the prev CPU, if best energy CPU can't saves at least 6% of
 	 * the energy used by prev_cpu.
 	 */
+	if ((best_energy_cpu != prev_cpu) &&
+	    cpumask_test_cpu(prev_cpu, candidates) &&
+	    uclass_prefer_prev_cpu(p) &&
+	    !cpu_isolated(prev_cpu) &&
+	    !__cpu_overutilized(prev_cpu, delta)) {
+		best_energy_cpu = prev_cpu;
+		goto done;
+	}
+
 	if (!(idle_cpu(best_energy_cpu) &&
 	    idle_get_state_idx(cpu_rq(best_energy_cpu)) <= 0) &&
-	    (prev_energy != ULONG_MAX) && (best_energy_cpu != prev_cpu) &&
-	    ((prev_energy - best_energy) <= prev_energy >> 4))
-		best_energy_cpu = prev_cpu;
+	    (prev_energy != ULONG_MAX) && (best_energy_cpu != prev_cpu)) {
+		unsigned int margin_pct = uclass_prev_cpu_energy_margin_pct();
+		unsigned long min_delta = mult_frac(prev_energy, margin_pct, 100);
+
+		if ((prev_energy - best_energy) <= min_delta)
+			best_energy_cpu = prev_cpu;
+	}
 
 done:
 

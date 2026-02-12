@@ -136,6 +136,7 @@ static int int_max = INT_MAX;
 static unsigned long zero_ul;
 static unsigned long one_ul = 1;
 static unsigned long long_max = LONG_MAX;
+static int fifty = 50;
 static int one_hundred = 100;
 static int one_thousand = 1000;
 #ifdef CONFIG_PRINTK
@@ -728,6 +729,15 @@ static struct ctl_table kern_table[] = {
 		.extra2		= &one,
 	},
 	{
+		.procname	= "sched_uclass_prefer_prev_cpu",
+		.data		= &sysctl_sched_uclass_prefer_prev_cpu,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+	{
 		.procname	= "sched_uclass_gran_boost_pct",
 		.data		= &sysctl_sched_uclass_gran_boost_pct,
 		.maxlen		= sizeof(unsigned int),
@@ -735,6 +745,15 @@ static struct ctl_table kern_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &zero,
 		.extra2		= &one_hundred,
+	},
+	{
+		.procname	= "sched_uclass_prev_cpu_energy_margin_pct",
+		.data		= &sysctl_sched_uclass_prev_cpu_energy_margin_pct,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &fifty,
 	},
 #endif
 

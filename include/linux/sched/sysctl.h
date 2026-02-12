@@ -33,7 +33,9 @@ extern unsigned int sysctl_sched_wakeup_granularity;
 #ifdef CONFIG_SCHED_UCLASS
 extern unsigned int sysctl_sched_uclass_wakeup_boost;
 extern unsigned int sysctl_sched_uclass_idle_bias;
+extern unsigned int sysctl_sched_uclass_prefer_prev_cpu;
 extern unsigned int sysctl_sched_uclass_gran_boost_pct;
+extern unsigned int sysctl_sched_uclass_prev_cpu_energy_margin_pct;
 #endif
 extern unsigned int sysctl_sched_child_runs_first;
 extern unsigned int sysctl_sched_force_lb_enable;
