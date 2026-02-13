@@ -79,39 +79,27 @@ static void _add_context(struct adreno_device *adreno_dev,
 	list_add(&drawctxt->active_node, &adreno_dev->active_list);
 }
 
-static int __count_context(struct adreno_context *drawctxt, void *data)
-{
-	unsigned long expires = drawctxt->active_time + msecs_to_jiffies(100);
-
-	return time_after(jiffies, expires) ? 0 : 1;
-}
-
-static int __count_drawqueue_context(struct adreno_context *drawctxt,
-				void *data)
-{
-	unsigned long expires = drawctxt->active_time + msecs_to_jiffies(100);
-
-	if (time_after(jiffies, expires))
-		return 0;
-
-	return (&drawctxt->rb->dispatch_q ==
-			(struct adreno_dispatcher_drawqueue *) data) ? 1 : 0;
-}
-
-static int _adreno_count_active_contexts(struct adreno_device *adreno_dev,
-		int (*func)(struct adreno_context *, void *), void *data)
+static void _adreno_count_active_contexts(struct adreno_device *adreno_dev,
+		struct adreno_dispatcher_drawqueue *drawqueue,
+		int *total, int *per_drawqueue)
 {
 	struct adreno_context *ctxt;
-	int count = 0;
+	unsigned long expires = jiffies - msecs_to_jiffies(100);
+	int active = 0;
+	int active_for_drawqueue = 0;
 
 	list_for_each_entry(ctxt, &adreno_dev->active_list, active_node) {
-		if (func(ctxt, data) == 0)
-			return count;
+		if (time_before(ctxt->active_time, expires))
+			break;
 
-		count++;
+		active++;
+
+		if (&ctxt->rb->dispatch_q == drawqueue)
+			active_for_drawqueue++;
 	}
 
-	return count;
+	*total = active;
+	*per_drawqueue = active_for_drawqueue;
 }
 
 static void _track_context(struct adreno_device *adreno_dev,
@@ -123,13 +111,9 @@ static void _track_context(struct adreno_device *adreno_dev,
 	spin_lock(&adreno_dev->active_list_lock);
 
 	_add_context(adreno_dev, drawctxt);
-
-	device->active_context_count =
-			_adreno_count_active_contexts(adreno_dev,
-					__count_context, NULL);
-	drawqueue->active_context_count =
-			_adreno_count_active_contexts(adreno_dev,
-					__count_drawqueue_context, drawqueue);
+	_adreno_count_active_contexts(adreno_dev, drawqueue,
+				      &device->active_context_count,
+				      &drawqueue->active_context_count);
 
 	spin_unlock(&adreno_dev->active_list_lock);
 }

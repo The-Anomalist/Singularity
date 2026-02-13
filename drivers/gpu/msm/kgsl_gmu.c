@@ -772,11 +772,16 @@ static void build_rpmh_bw_votes(struct gmu_bw_votes *rpmh_vote,
 		unsigned int num_usecases, struct msm_bus_tcs_handle handle)
 {
 	struct msm_bus_tcs_usecase *tmp;
-	int i, j;
+	unsigned int i, j, cmds;
+
+	rpmh_vote->cmds_wait_bitmask = 0;
+	rpmh_vote->cmds_per_bw_vote = 0;
 
 	for (i = 0; i < num_usecases; i++) {
 		tmp = &handle.usecases[i];
-		for (j = 0; j < tmp->num_cmds; j++) {
+		cmds = min_t(unsigned int, tmp->num_cmds, MAX_BW_CMDS);
+
+		for (j = 0; j < cmds; j++) {
 			if (!i) {
 			/*
 			 * Wait bitmask and TCS command addresses are
@@ -785,15 +790,14 @@ static void build_rpmh_bw_votes(struct gmu_bw_votes *rpmh_vote,
 			 * transfer bitmasks and TCS command addresses
 			 * of first set of bw use case
 			 */
-				rpmh_vote->cmds_per_bw_vote = tmp->num_cmds;
-				rpmh_vote->cmds_wait_bitmask =
-						tmp->cmds[j].wait ?
-						rpmh_vote->cmds_wait_bitmask
-						| BIT(i)
-						: rpmh_vote->cmds_wait_bitmask
-						& (~BIT(i));
+				rpmh_vote->cmds_per_bw_vote = cmds;
+				if (tmp->cmds[j].wait)
+					rpmh_vote->cmds_wait_bitmask |= BIT(j);
+				else
+					rpmh_vote->cmds_wait_bitmask &= ~BIT(j);
 				rpmh_vote->cmd_addrs[j] = tmp->cmds[j].addr;
 			}
+
 			rpmh_vote->cmd_data[i][j] = tmp->cmds[j].data;
 		}
 	}
@@ -803,31 +807,28 @@ static void build_bwtable_cmd_cache(struct gmu_device *gmu)
 {
 	struct hfi_bwtable_cmd *cmd = &gmu->hfi.bwtbl_cmd;
 	struct rpmh_votes_t *votes = &gmu->rpmh_votes;
-	unsigned int i, j;
+	unsigned int i;
 
 	cmd->hdr = 0xFFFFFFFF;
-	cmd->bw_level_num = gmu->num_bwlevels;
-	cmd->cnoc_cmds_num = votes->cnoc_votes.cmds_per_bw_vote;
+	cmd->bw_level_num = min_t(unsigned int, gmu->num_bwlevels, MAX_GX_LEVELS);
+	cmd->cnoc_cmds_num = min_t(unsigned int, votes->cnoc_votes.cmds_per_bw_vote, MAX_CNOC_CMDS);
 	cmd->cnoc_wait_bitmask = votes->cnoc_votes.cmds_wait_bitmask;
-	cmd->ddr_cmds_num = votes->ddr_votes.cmds_per_bw_vote;
+	cmd->ddr_cmds_num = min_t(unsigned int, votes->ddr_votes.cmds_per_bw_vote, MAX_BW_CMDS);
 	cmd->ddr_wait_bitmask = votes->ddr_votes.cmds_wait_bitmask;
 
-	for (i = 0; i < cmd->ddr_cmds_num; i++)
-		cmd->ddr_cmd_addrs[i] = votes->ddr_votes.cmd_addrs[i];
+	memcpy(cmd->ddr_cmd_addrs, votes->ddr_votes.cmd_addrs,
+			cmd->ddr_cmds_num * sizeof(cmd->ddr_cmd_addrs[0]));
 
 	for (i = 0; i < cmd->bw_level_num; i++)
-		for (j = 0; j < cmd->ddr_cmds_num; j++)
-			cmd->ddr_cmd_data[i][j] =
-				votes->ddr_votes.cmd_data[i][j];
+		memcpy(cmd->ddr_cmd_data[i], votes->ddr_votes.cmd_data[i],
+				cmd->ddr_cmds_num * sizeof(cmd->ddr_cmd_data[0][0]));
 
-	for (i = 0; i < cmd->cnoc_cmds_num; i++)
-		cmd->cnoc_cmd_addrs[i] =
-			votes->cnoc_votes.cmd_addrs[i];
+	memcpy(cmd->cnoc_cmd_addrs, votes->cnoc_votes.cmd_addrs,
+			cmd->cnoc_cmds_num * sizeof(cmd->cnoc_cmd_addrs[0]));
 
 	for (i = 0; i < MAX_CNOC_LEVELS; i++)
-		for (j = 0; j < cmd->cnoc_cmds_num; j++)
-			cmd->cnoc_cmd_data[i][j] =
-				votes->cnoc_votes.cmd_data[i][j];
+		memcpy(cmd->cnoc_cmd_data[i], votes->cnoc_votes.cmd_data[i],
+				cmd->cnoc_cmds_num * sizeof(cmd->cnoc_cmd_data[0][0]));
 }
 
 /*
@@ -840,18 +841,20 @@ static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
 	struct msm_bus_tcs_usecase *usecases;
 	struct msm_bus_tcs_handle hdl;
 	struct rpmh_votes_t *votes = &gmu->rpmh_votes;
+	unsigned int max_usecases;
 	int ret;
 
-	usecases  = kcalloc(gmu->num_bwlevels, sizeof(*usecases), GFP_KERNEL);
+	max_usecases = max(gmu->num_bwlevels, gmu->num_cnocbwlevels);
+	usecases  = kcalloc(max_usecases, sizeof(*usecases), GFP_KERNEL);
 	if (!usecases)
 		return -ENOMEM;
 
-	hdl.num_usecases = gmu->num_bwlevels;
 	hdl.usecases = usecases;
 
 	/*
 	 * Query TCS command set for each use case defined in GPU b/w table
 	 */
+	hdl.num_usecases = gmu->num_bwlevels;
 	ret = msm_bus_scale_query_tcs_cmd_all(&hdl, gmu->pcl);
 	if (ret)
 		goto out;
@@ -861,6 +864,7 @@ static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
 	/*
 	 *Query CNOC TCS command set for each use case defined in cnoc bw table
 	 */
+	hdl.num_usecases = gmu->num_cnocbwlevels;
 	ret = msm_bus_scale_query_tcs_cmd_all(&hdl, gmu->ccl);
 	if (ret)
 		goto out;
