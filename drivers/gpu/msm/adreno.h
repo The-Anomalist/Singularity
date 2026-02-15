@@ -560,6 +560,17 @@ struct adreno_device {
 	bool gpu_llc_slice_enable;
 	void *gpuhtw_llc_slice;
 	bool gpuhtw_llc_slice_enable;
+	/*
+	 * Kernel level anti-aliasing quality mode knobs.
+	 *
+	 * NOTE: These are best-effort policies that can keep the GPU in a
+	 * higher performance envelope while userspace requests MSAA. The kernel
+	 * cannot unconditionally rewrite every graphics API pipeline into 4x MSAA.
+	 */
+	bool force_msaa_enable;
+	bool force_msaa_boost;
+	bool force_msaa_l3_boost;
+	u32 force_msaa_samples;
 	unsigned int zap_loaded;
 	unsigned int soc_hw_rev;
 	/*

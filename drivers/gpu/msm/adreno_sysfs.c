@@ -349,6 +349,62 @@ static int _perfcounter_store(struct adreno_device *adreno_dev,
 	return 0;
 }
 
+static int _force_msaa_enable_store(struct adreno_device *adreno_dev,
+		unsigned int val)
+{
+	adreno_dev->force_msaa_enable = val ? true : false;
+	return 0;
+}
+
+static unsigned int _force_msaa_enable_show(struct adreno_device *adreno_dev)
+{
+	return adreno_dev->force_msaa_enable;
+}
+
+static int _force_msaa_samples_store(struct adreno_device *adreno_dev,
+		unsigned int val)
+{
+	if (!val)
+		adreno_dev->force_msaa_samples = 0;
+	else if (val <= 2)
+		adreno_dev->force_msaa_samples = 2;
+	else if (val <= 4)
+		adreno_dev->force_msaa_samples = 4;
+	else
+		adreno_dev->force_msaa_samples = 8;
+
+	return 0;
+}
+
+static unsigned int _force_msaa_samples_show(struct adreno_device *adreno_dev)
+{
+	return adreno_dev->force_msaa_samples;
+}
+
+static int _force_msaa_boost_store(struct adreno_device *adreno_dev,
+		unsigned int val)
+{
+	adreno_dev->force_msaa_boost = val ? true : false;
+	return 0;
+}
+
+static unsigned int _force_msaa_boost_show(struct adreno_device *adreno_dev)
+{
+	return adreno_dev->force_msaa_boost;
+}
+
+static int _force_msaa_l3_boost_store(struct adreno_device *adreno_dev,
+		unsigned int val)
+{
+	adreno_dev->force_msaa_l3_boost = val ? true : false;
+	return 0;
+}
+
+static unsigned int _force_msaa_l3_boost_show(struct adreno_device *adreno_dev)
+{
+	return adreno_dev->force_msaa_l3_boost;
+}
+
 static ssize_t _sysfs_store_u32(struct device *dev,
 		struct device_attribute *attr,
 		const char *buf, size_t count)
@@ -443,6 +499,10 @@ static ADRENO_SYSFS_BOOL(ifpc);
 static ADRENO_SYSFS_RO_U32(ifpc_count);
 static ADRENO_SYSFS_BOOL(acd);
 static ADRENO_SYSFS_BOOL(perfcounter);
+static ADRENO_SYSFS_BOOL(force_msaa_enable);
+static ADRENO_SYSFS_U32(force_msaa_samples);
+static ADRENO_SYSFS_BOOL(force_msaa_boost);
+static ADRENO_SYSFS_BOOL(force_msaa_l3_boost);
 
 
 static const struct attribute *_attr_list[] = {
@@ -467,6 +527,10 @@ static const struct attribute *_attr_list[] = {
 	&adreno_attr_preempt_count.attr.attr,
 	&adreno_attr_acd.attr.attr,
 	&adreno_attr_perfcounter.attr.attr,
+	&adreno_attr_force_msaa_enable.attr.attr,
+	&adreno_attr_force_msaa_samples.attr.attr,
+	&adreno_attr_force_msaa_boost.attr.attr,
+	&adreno_attr_force_msaa_l3_boost.attr.attr,
 	NULL,
 };
 
@@ -503,4 +567,3 @@ int adreno_sysfs_init(struct adreno_device *adreno_dev)
 
 	return ret;
 }
-

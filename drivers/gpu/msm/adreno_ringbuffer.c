@@ -821,8 +821,19 @@ adreno_ringbuffer_issue_internal_cmds(struct adreno_ringbuffer *rb,
 static void adreno_ringbuffer_set_constraint(struct kgsl_device *device,
 			struct kgsl_drawobj *drawobj)
 {
+	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
 	struct kgsl_context *context = drawobj->context;
 	unsigned long flags = drawobj->flags;
+
+	if (adreno_dev->force_msaa_enable && adreno_dev->force_msaa_samples >= 4 &&
+		adreno_dev->force_msaa_boost) {
+		struct kgsl_pwr_constraint boost = {
+			.type = KGSL_CONSTRAINT_PWRLEVEL,
+			.sub_type = KGSL_CONSTRAINT_PWR_MAX,
+		};
+
+		kgsl_pwrctrl_set_constraint(device, &boost, context->id);
+	}
 
 	/*
 	 * Check if the context has a constraint and constraint flags are
@@ -833,6 +844,16 @@ static void adreno_ringbuffer_set_constraint(struct kgsl_device *device,
 			(drawobj->flags & KGSL_CONTEXT_PWR_CONSTRAINT)))
 		kgsl_pwrctrl_set_constraint(device, &context->pwr_constraint,
 						context->id);
+
+	if (adreno_dev->force_msaa_enable && adreno_dev->force_msaa_samples >= 4 &&
+		adreno_dev->force_msaa_l3_boost && device->l3_clk &&
+		device->num_l3_pwrlevels > 1) {
+		unsigned int max_l3 = device->num_l3_pwrlevels - 1;
+		int ret = clk_set_rate(device->l3_clk, device->l3_freq[max_l3]);
+
+		if (!ret)
+			device->cur_l3_pwrlevel = max_l3;
+	}
 
 	if (context->l3_pwr_constraint.type &&
 		((context->flags & KGSL_CONTEXT_PWR_CONSTRAINT) ||
