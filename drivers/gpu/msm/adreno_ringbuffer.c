@@ -245,13 +245,17 @@ unsigned int *adreno_ringbuffer_allocspace(struct adreno_ringbuffer *rb,
 	struct adreno_device *adreno_dev = ADRENO_RB_DEVICE(rb);
 	unsigned int rptr = adreno_get_rptr(rb);
 	unsigned int ret;
+	unsigned int next;
+
+	BUILD_BUG_ON(!is_power_of_2(KGSL_RB_DWORDS));
 
 	if (rptr <= rb->_wptr) {
 		unsigned int *cmds;
 
 		if (rb->_wptr + dwords <= (KGSL_RB_DWORDS - 2)) {
 			ret = rb->_wptr;
-			rb->_wptr = (rb->_wptr + dwords) % KGSL_RB_DWORDS;
+			next = rb->_wptr + dwords;
+			rb->_wptr = (next == KGSL_RB_DWORDS) ? 0 : next;
 			return RB_HOSTPTR(rb, ret);
 		}
 
@@ -271,7 +275,8 @@ unsigned int *adreno_ringbuffer_allocspace(struct adreno_ringbuffer *rb,
 
 	if (rb->_wptr + dwords < rptr) {
 		ret = rb->_wptr;
-		rb->_wptr = (rb->_wptr + dwords) % KGSL_RB_DWORDS;
+		next = rb->_wptr + dwords;
+		rb->_wptr = (next == KGSL_RB_DWORDS) ? 0 : next;
 		return RB_HOSTPTR(rb, ret);
 	}
 

@@ -11,8 +11,6 @@
 #include "kgsl_gmu_core.h"
 #include "kgsl_timeline.h"
 
-#define DRAWQUEUE_NEXT(_i, _s) (((_i) + 1) % (_s))
-
 /* Number of commands that can be queued in a context before it sleeps */
 static unsigned int _context_drawqueue_size = 50;
 
@@ -43,6 +41,10 @@ static unsigned int _dispatcher_q_inflight_hi = 15;
  */
 static unsigned int _dispatcher_q_inflight_lo = 4;
 
+#define A650_DISPATCH_Q_INFLIGHT_HI	24
+#define A650_DISPATCH_Q_INFLIGHT_LO	6
+#define A650_CONTEXT_DRAWOBJ_BURST	8
+
 /* Command batch timeout (in milliseconds) */
 unsigned int adreno_drawobj_timeout = 2000;
 
@@ -71,12 +73,31 @@ static inline bool drawqueue_is_current(
 static void _add_context(struct adreno_device *adreno_dev,
 		struct adreno_context *drawctxt)
 {
+	drawctxt->active_time = jiffies;
+
+	/* Keep the fast path tight for the currently active context. */
+	if (likely(list_is_first(&drawctxt->active_node,
+			&adreno_dev->active_list)))
+		return;
+
 	/* Remove it from the list */
 	list_del_init(&drawctxt->active_node);
 
 	/* And push it to the front */
-	drawctxt->active_time = jiffies;
 	list_add(&drawctxt->active_node, &adreno_dev->active_list);
+}
+
+static void adreno_dispatcher_tune(struct adreno_device *adreno_dev)
+{
+	if (!adreno_is_a650_family(adreno_dev))
+		return;
+
+	_dispatcher_q_inflight_hi = max_t(unsigned int,
+		_dispatcher_q_inflight_hi, A650_DISPATCH_Q_INFLIGHT_HI);
+	_dispatcher_q_inflight_lo = max_t(unsigned int,
+		_dispatcher_q_inflight_lo, A650_DISPATCH_Q_INFLIGHT_LO);
+	_context_drawobj_burst = max_t(unsigned int,
+		_context_drawobj_burst, A650_CONTEXT_DRAWOBJ_BURST);
 }
 
 static void _adreno_count_active_contexts(struct adreno_device *adreno_dev,
@@ -2882,6 +2903,8 @@ int adreno_dispatcher_init(struct adreno_device *adreno_dev)
 	int ret;
 
 	memset(dispatcher, 0, sizeof(*dispatcher));
+
+	adreno_dispatcher_tune(adreno_dev);
 
 	mutex_init(&dispatcher->mutex);
 

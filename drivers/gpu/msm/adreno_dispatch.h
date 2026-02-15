@@ -19,7 +19,10 @@ extern unsigned int adreno_drawobj_timeout;
 
 #define ADRENO_DISPATCH_DRAWQUEUE_SIZE 128
 
-#define DRAWQUEUE_NEXT(_i, _s) (((_i) + 1) % (_s))
+#define DRAWQUEUE_NEXT(_i, _s) ({           \
+	u32 __n = (_i) + 1;                 \
+	(__n == (_s)) ? 0 : __n;            \
+})
 
 /**
  * struct adreno_dispatcher_drawqueue - List of commands for a RB level
