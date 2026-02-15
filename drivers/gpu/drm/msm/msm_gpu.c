@@ -36,13 +36,16 @@ static int msm_devfreq_target(struct device *dev, unsigned long *freq,
 {
 	struct msm_gpu *gpu = platform_get_drvdata(to_platform_device(dev));
 	struct dev_pm_opp *opp;
+	unsigned long cur_freq;
 
 	opp = devfreq_recommended_opp(dev, freq, flags);
 
 	if (IS_ERR(opp))
 		return PTR_ERR(opp);
 
-	clk_set_rate(gpu->core_clk, *freq);
+	cur_freq = clk_get_rate(gpu->core_clk);
+	if (cur_freq != *freq)
+		clk_set_rate(gpu->core_clk, *freq);
 	dev_pm_opp_put(opp);
 
 	return 0;
@@ -53,13 +56,19 @@ static int msm_devfreq_get_dev_status(struct device *dev,
 {
 	struct msm_gpu *gpu = platform_get_drvdata(to_platform_device(dev));
 	u64 cycles;
-	u32 freq = ((u32) status->current_frequency) / 1000000;
+	u64 busy_cycles;
+	u64 freq;
 	ktime_t time;
 
 	status->current_frequency = (unsigned long) clk_get_rate(gpu->core_clk);
-	gpu->funcs->gpu_busy(gpu, &cycles);
+	freq = div_u64(status->current_frequency, USEC_PER_SEC);
+	if (!freq)
+		freq = 1;
 
-	status->busy_time = ((u32) (cycles - gpu->devfreq.busy_cycles)) / freq;
+	gpu->funcs->gpu_busy(gpu, &cycles);
+	busy_cycles = cycles - gpu->devfreq.busy_cycles;
+
+	status->busy_time = div_u64(busy_cycles, freq);
 
 	gpu->devfreq.busy_cycles = cycles;
 
