@@ -174,8 +174,16 @@ config UFSTW_BOOT_ENABLED
 	default y
 	depends on SCSI_UFSHCD && UFSFEATURE && UFSTW
 	help
-	  fTurboWriteEn and fTurboWriteBufferFlushDuringHibnerEnter flags
-	  are enabled at boot time.
+	  fTurboWriteEn flag is enabled at boot time.
+
+config UFSTW_BOOT_FLUSH_DURING_HIBERN8
+	bool "Enable Turbo Write flush-during-hibern8 at boot"
+	default n
+	depends on SCSI_UFSHCD && UFSFEATURE && UFSTW && UFSTW_BOOT_ENABLED
+	help
+	  fTurboWriteBufferFlushDuringHibernEnter is enabled at boot time.
+	  Keeping this disabled improves launch/render latency under bursty
+	  foreground workloads by avoiding forced flushes on every hibern8 entry.
 
 config UFSHID
 	bool "UFS Host Initiated Defrag support"

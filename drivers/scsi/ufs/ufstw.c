@@ -672,8 +672,11 @@ static int ufstw_lu_init(struct ufsf_feature *ufsf, int lun)
 #if defined(CONFIG_UFSTW_BOOT_ENABLED)
 	pm_runtime_get_sync(ufsf->hba->dev);
 	ufstw_set_lu_flag(tw, QUERY_FLAG_IDN_WB_EN, &tw->tw_enable);
+
+#if defined(CONFIG_UFSTW_BOOT_FLUSH_DURING_HIBERN8)
 	ufstw_set_lu_flag(tw, QUERY_FLAG_IDN_WB_BUFF_FLUSH_DURING_HIBERN8,
 			  &tw->flush_during_hibern_enter);
+#endif
 	pm_runtime_put_sync(ufsf->hba->dev);
 #endif
 	ret = ufstw_create_sysfs(ufsf, tw);
