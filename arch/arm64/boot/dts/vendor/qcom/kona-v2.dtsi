@@ -34,6 +34,10 @@
 	compatible = "qcom,npucc-kona-v2", "syscon";
 };
 
+&kona_icc {
+	compatible = "qcom,kona-v2-interconnect", "qcom,kona-interconnect";
+};
+
 &spss_utils {
 	qcom,spss-dev-firmware-name  = "spss2d";	/* 8 chars max */
 	qcom,spss-test-firmware-name = "spss2t";	/* 8 chars max */

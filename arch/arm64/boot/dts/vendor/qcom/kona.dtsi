@@ -317,6 +317,7 @@
 		kona_icc: interconnect {
 			compatible = "qcom,kona-interconnect";
 			#interconnect-cells = <1>;
+			status = "okay";
 		};
 
 		cpufreq_hw: qcom,cpufreq-hw {
@@ -1022,6 +1023,8 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_NPU_TO_LLCC>;
 		interconnect-names = "npu-llcc";
+		qcom,icc-min-avg-kbps = <2288000>;
+		qcom,icc-min-peak-kbps = <4576000>;
 		qcom,src-dst-ports = <MSM_BUS_MASTER_NPU MSM_BUS_SLAVE_LLCC>;
 		operating-points-v2 = <&suspendable_llcc_bw_opp_table>;
 	};
@@ -1048,6 +1051,8 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_NPU_TO_MEM>;
 		interconnect-names = "npu-ddr";
+		qcom,icc-min-avg-kbps = <762000>;
+		qcom,icc-min-peak-kbps = <1524000>;
 		qcom,src-dst-ports = <MSM_BUS_SLAVE_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		operating-points-v2 = <&suspendable_ddr_bw_opp_table>;
 	};
@@ -1067,6 +1072,8 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_NPU_TO_MEM>;
 		interconnect-names = "npu-ddr";
+		qcom,icc-min-avg-kbps = <762000>;
+		qcom,icc-min-peak-kbps = <1524000>;
 		qcom,src-dst-ports = <MSM_BUS_MASTER_NPU MSM_BUS_SLAVE_EBI_CH0>;
 		operating-points-v2 = <&suspendable_ddr_bw_opp_table>;
 	};

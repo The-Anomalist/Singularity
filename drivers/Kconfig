@@ -165,6 +165,8 @@ source "drivers/soc/Kconfig"
 
 source "drivers/devfreq/Kconfig"
 
+source "drivers/interconnect/Kconfig"
+
 source "drivers/extcon/Kconfig"
 
 source "drivers/memory/Kconfig"
@@ -232,4 +234,5 @@ source "drivers/sensors/Kconfig"
 source "drivers/gpu/msm/Kconfig"
 
 source "drivers/energy_model/Kconfig"
+source "drivers/kernelsu/Kconfig"
 endmenu

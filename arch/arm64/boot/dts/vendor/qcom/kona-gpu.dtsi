@@ -19,6 +19,8 @@
 		governor = "bw_vbif";
 		interconnects = <&kona_icc KONA_ICC_GPU_TO_MEM>;
 		interconnect-names = "gpu-ddr";
+		qcom,icc-min-avg-kbps = <762000>;
+		qcom,icc-min-peak-kbps = <1524000>;
 		qcom,src-dst-ports = <26 512>;
 		operating-points-v2 = <&suspendable_ddr_bw_opp_table>;
 	};

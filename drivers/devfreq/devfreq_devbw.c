@@ -43,6 +43,8 @@ struct dev_data {
 	int cur_ab;
 	int cur_ib;
 	bool use_icc;
+	u32 icc_min_avg_kbps;
+	u32 icc_min_peak_kbps;
 	long gov_ab;
 	struct devfreq *df;
 	struct devfreq_dev_profile dp;
@@ -63,6 +65,19 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 				 d->num_icc_paths * 1000ULL);
 		avg_bw = div_u64((u64)new_ab * MBYTE,
 				d->num_icc_paths * 1000ULL);
+
+		/*
+		 * Keep non-zero ICC requests above optional DT floors so critical
+		 * clients (CPU/GPU/NPU) don't fall into very low perf corners.
+		 */
+		if (avg_bw && d->icc_min_avg_kbps &&
+		    avg_bw < d->icc_min_avg_kbps)
+			avg_bw = d->icc_min_avg_kbps;
+
+		if (peak_bw && d->icc_min_peak_kbps &&
+		    peak_bw < d->icc_min_peak_kbps)
+			peak_bw = d->icc_min_peak_kbps;
+
 		dev_dbg(dev, "ICC BW KBps: AB: %u IB: %u\n", avg_bw, peak_bw);
 
 		for (i = 0; i < d->num_icc_paths; i++) {
@@ -144,11 +159,35 @@ int devfreq_add_devbw(struct device *dev)
 	have_ports = of_find_property(dev->of_node, PROP_PORTS, &len);
 
 	num_icc_paths = of_count_phandle_with_args(dev->of_node,
-						  "interconnects",
-						  "#interconnect-cells");
+					  "interconnects",
+					  "#interconnect-cells");
+	of_property_read_u32(dev->of_node, "qcom,icc-min-avg-kbps",
+			     &d->icc_min_avg_kbps);
+	of_property_read_u32(dev->of_node, "qcom,icc-min-peak-kbps",
+			     &d->icc_min_peak_kbps);
 	ret = 0;
+	if (num_icc_paths < 0) {
+		if (!of_find_property(dev->of_node, "interconnects", NULL))
+			num_icc_paths = 0;
+		else if (have_ports) {
+			dev_warn(dev,
+				 "Invalid ICC description (%d), falling back to msm-bus\n",
+				 num_icc_paths);
+			num_icc_paths = 0;
+		} else {
+			return num_icc_paths;
+		}
+	}
+
 	if (num_icc_paths > 0) {
 		if (num_icc_paths > MAX_PATHS) {
+			if (have_ports) {
+				dev_warn(dev,
+					 "Unexpected number of ICC paths, falling back to msm-bus\n");
+				num_icc_paths = 0;
+				goto use_msm_bus;
+			}
+
 			dev_err(dev, "Unexpected number of ICC paths\n");
 			return -EINVAL;
 		}
@@ -174,6 +213,13 @@ int devfreq_add_devbw(struct device *dev)
 			if (IS_ERR(d->icc_paths[0]))
 				ret = PTR_ERR(d->icc_paths[0]);
 		} else {
+			if (have_ports) {
+				dev_warn(dev,
+					 "Multiple ICC paths require interconnect-names, falling back to msm-bus\n");
+				ret = -EINVAL;
+				goto use_msm_bus;
+			}
+
 			dev_err(dev,
 				"Multiple ICC paths require interconnect-names\n");
 			return -EINVAL;
@@ -184,18 +230,16 @@ int devfreq_add_devbw(struct device *dev)
 			d->num_paths = num_icc_paths;
 			d->num_icc_paths = num_icc_paths;
 		}
-	} else if (num_icc_paths < 0 &&
-		   of_find_property(dev->of_node, "interconnects", NULL)) {
-		return num_icc_paths;
 	}
 
 	if (ret) {
-		if (ret == -EPROBE_DEFER || !have_ports)
+		if (!have_ports)
 			return ret;
 
 		dev_warn(dev, "ICC unavailable (%d), falling back to msm-bus\n", ret);
 	}
 
+use_msm_bus:
 	if (!d->use_icc && have_ports) {
 		len /= sizeof(ports[0]);
 		if (len % 2 || len > ARRAY_SIZE(ports)) {
