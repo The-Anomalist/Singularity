@@ -73,26 +73,26 @@ struct kona_icc_node_sysfs {
  * workloads (Antutu/gaming) fed. These are intentionally biased a bit high to
  * avoid under-voting critical CPU/GPU/NPU traffic.
  */
-#define KONA_CPU_DDR_AB_FLOOR_KB	(10000000ULL) /* ~10 GB/s */
-#define KONA_CPU_DDR_IB_FLOOR_KB	(15000000ULL) /* ~15 GB/s */
-#define KONA_CPU_LLCC_AB_FLOOR_KB	(5000000ULL)  /* ~5 GB/s */
-#define KONA_CPU_LLCC_IB_FLOOR_KB	(9000000ULL)  /* ~9 GB/s */
-#define KONA_GPU_DDR_AB_FLOOR_KB	(6500000ULL)  /* ~6.5 GB/s */
-#define KONA_GPU_DDR_IB_FLOOR_KB	(11000000ULL) /* ~11 GB/s */
-#define KONA_GPU_LLCC_AB_FLOOR_KB	(3500000ULL)  /* ~3.5 GB/s */
-#define KONA_GPU_LLCC_IB_FLOOR_KB	(6500000ULL)  /* ~6.5 GB/s */
-#define KONA_NPU_DDR_AB_FLOOR_KB	(6000000ULL)  /* ~6 GB/s */
-#define KONA_NPU_DDR_IB_FLOOR_KB	(10000000ULL) /* ~10 GB/s */
-#define KONA_NPU_LLCC_AB_FLOOR_KB	(3500000ULL)  /* ~3.5 GB/s */
-#define KONA_NPU_LLCC_IB_FLOOR_KB	(6500000ULL)  /* ~6.5 GB/s */
+#define KONA_CPU_DDR_AB_FLOOR_KB	(16000000ULL) /* ~16 GB/s */
+#define KONA_CPU_DDR_IB_FLOOR_KB	(26000000ULL) /* ~26 GB/s */
+#define KONA_CPU_LLCC_AB_FLOOR_KB	(10000000ULL) /* ~10 GB/s */
+#define KONA_CPU_LLCC_IB_FLOOR_KB	(17000000ULL) /* ~17 GB/s */
+#define KONA_GPU_DDR_AB_FLOOR_KB	(12000000ULL) /* ~12 GB/s */
+#define KONA_GPU_DDR_IB_FLOOR_KB	(22000000ULL) /* ~22 GB/s */
+#define KONA_GPU_LLCC_AB_FLOOR_KB	(8000000ULL)  /* ~8 GB/s */
+#define KONA_GPU_LLCC_IB_FLOOR_KB	(15000000ULL) /* ~15 GB/s */
+#define KONA_NPU_DDR_AB_FLOOR_KB	(10000000ULL) /* ~10 GB/s */
+#define KONA_NPU_DDR_IB_FLOOR_KB	(18000000ULL) /* ~18 GB/s */
+#define KONA_NPU_LLCC_AB_FLOOR_KB	(7000000ULL)  /* ~7 GB/s */
+#define KONA_NPU_LLCC_IB_FLOOR_KB	(13000000ULL) /* ~13 GB/s */
 
 /*
  * Global minimum floors for any non-zero bandwidth vote. This protects
  * against bw_hwmon / memlat (or other clients) voting extremely small
  * values that cause QoS collapse and starve CPU/GPU.
  */
-#define KONA_ICC_MIN_AB_FLOOR_KB	(250000ULL)   /* 250 MB/s */
-#define KONA_ICC_MIN_IB_FLOOR_KB	(500000ULL)   /* 500 MB/s */
+#define KONA_ICC_MIN_AB_FLOOR_KB	(1000000ULL)  /* 1 GB/s */
+#define KONA_ICC_MIN_IB_FLOOR_KB	(2000000ULL)  /* 2 GB/s */
 
 /*
  * Downscale hysteresis: ignore tiny AB/IB drops that only create RPMh churn.
@@ -133,6 +133,34 @@ MODULE_PARM_DESC(kona_perf_light_kb,
 module_param(kona_perf_turbo_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_perf_turbo_kb,
         "Threshold KB/s for turbo bias selection (default: 12000000)");
+
+/*
+ * GPU keep-alive floor and IB prioritization for gpu-ddr path.
+ *
+ * keepalive_*: keep a minimum vote between short frame gaps so BCMs stay in
+ * a responsive corner instead of repeatedly collapsing to idle.
+ * ib_*:        bias and floor IB over AB so command bursts hit DDR quickly.
+ */
+static bool kona_gpu_keepalive_enable = true;
+static unsigned long kona_gpu_keepalive_ab_kb = 800000;   /* 800 MB/s */
+static unsigned long kona_gpu_keepalive_ib_kb = 1800000;  /* 1.8 GB/s */
+static unsigned int kona_gpu_ib_boost_percent = 145;
+static unsigned int kona_gpu_ib_min_ratio_percent = 180;
+module_param(kona_gpu_keepalive_enable, bool, 0644);
+MODULE_PARM_DESC(kona_gpu_keepalive_enable,
+        "Keep non-zero floor for gpu-ddr AB/IB between short idle gaps");
+module_param(kona_gpu_keepalive_ab_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_gpu_keepalive_ab_kb,
+        "gpu-ddr keepalive AB floor in KB/s (default: 800000)");
+module_param(kona_gpu_keepalive_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_gpu_keepalive_ib_kb,
+        "gpu-ddr keepalive IB floor in KB/s (default: 1800000)");
+module_param(kona_gpu_ib_boost_percent, uint, 0644);
+MODULE_PARM_DESC(kona_gpu_ib_boost_percent,
+        "Percent boost applied to gpu-ddr IB after floors (default: 145)");
+module_param(kona_gpu_ib_min_ratio_percent, uint, 0644);
+MODULE_PARM_DESC(kona_gpu_ib_min_ratio_percent,
+        "Minimum gpu-ddr IB as percent of AB (default: 180)");
 
 static u64 kona_icc_add_headroom(u64 value, unsigned int bias)
 {
@@ -229,6 +257,14 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 			*ab = KONA_GPU_DDR_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_GPU_DDR_IB_FLOOR_KB)
 			*ib = KONA_GPU_DDR_IB_FLOOR_KB;
+
+		/* Prioritize burst bandwidth for GPU->DDR traffic. */
+		if (*ib)
+			*ib = kona_icc_add_headroom(*ib, kona_gpu_ib_boost_percent);
+		if (*ab && *ib < mul_u64_u32_div(*ab,
+						kona_gpu_ib_min_ratio_percent, 100))
+			*ib = mul_u64_u32_div(*ab,
+				     kona_gpu_ib_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_GPU_TO_LLCC:
 		if (*ab && *ab < KONA_GPU_LLCC_AB_FLOOR_KB)
@@ -451,6 +487,17 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 		kona_icc_apply_floor(desc, &ab, &ib);
 		kona_icc_apply_hysteresis(qp, desc, index, &ab, &ib);
 	}
+
+	/*
+	 * Keep-alive vote for GPU->DDR when clients briefly request 0/0 between
+	 * frames; this avoids repeated collapses into deep bus idle states.
+	 */
+	if (kona_gpu_keepalive_enable && qp->nodes[index].id == KONA_ICC_GPU_TO_MEM &&
+	    !ab && !ib && qp->last_ab && qp->last_ib &&
+	    (qp->last_ab[index] || qp->last_ib[index])) {
+		ab = max_t(u64, kona_gpu_keepalive_ab_kb, qp->last_ab[index]);
+		ib = max_t(u64, kona_gpu_keepalive_ib_kb, qp->last_ib[index]);
+	}
 #endif
 
 #ifdef DEBUG
@@ -471,17 +518,43 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	 * kona_icc_send_bw() returns -EAGAIN. Treat that as a soft success
 	 * but DO NOT cache the vote so a later caller can retry and apply it.
 	 */
-	ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ab, ab);
-	if (ret == -EAGAIN)
-		return 0;
-	if (ret)
-		return ret;
+	/*
+	 * Reduce BCM dirty-bit churn: only send changed values. For gpu-ddr path,
+	 * send IB first so latency-sensitive bursts are serviced earlier.
+	 */
+	if (qp->nodes[index].id == KONA_ICC_GPU_TO_MEM) {
+		if (!qp->last_ib || qp->last_ib[index] != ib) {
+			ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ib, ib);
+			if (ret == -EAGAIN)
+				return 0;
+			if (ret)
+				return ret;
+		}
 
-	ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ib, ib);
-	if (ret == -EAGAIN)
-		return 0;
-	if (ret)
-		return ret;
+		if (!qp->last_ab || qp->last_ab[index] != ab) {
+			ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ab, ab);
+			if (ret == -EAGAIN)
+				return 0;
+			if (ret)
+				return ret;
+		}
+	} else {
+		if (!qp->last_ab || qp->last_ab[index] != ab) {
+			ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ab, ab);
+			if (ret == -EAGAIN)
+				return 0;
+			if (ret)
+				return ret;
+		}
+
+		if (!qp->last_ib || qp->last_ib[index] != ib) {
+			ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ib, ib);
+			if (ret == -EAGAIN)
+				return 0;
+			if (ret)
+				return ret;
+		}
+	}
 
 	if (qp->last_ab)
 		qp->last_ab[index] = ab;
