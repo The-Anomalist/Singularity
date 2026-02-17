@@ -212,6 +212,7 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 			*ib = KONA_CPU_LLCC_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_NPU_TO_MEM:
+	case KONA_ICC_NPUDSP_TO_MEM:
 		if (*ab && *ab < KONA_NPU_DDR_AB_FLOOR_KB)
 			*ab = KONA_NPU_DDR_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_NPU_DDR_IB_FLOOR_KB)
@@ -324,6 +325,13 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.ab = "DISP1_MEM_AB",
 		.ib = "DISP1_MEM_IB",
 		.role = KONA_ROLE_DISPLAY,
+	},
+	{
+		.id = KONA_ICC_NPUDSP_TO_MEM,
+		.name = "npudsp-ddr",
+		.ab = "NPU_MEM_AB",
+		.ib = "NPU_MEM_IB",
+		.role = KONA_ROLE_NPU,
 	},
 };
 

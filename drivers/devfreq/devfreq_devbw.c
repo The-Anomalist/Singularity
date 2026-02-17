@@ -140,6 +140,29 @@ static int devbw_get_dev_status(struct device *dev,
 #define PROP_PORTS "qcom,src-dst-ports"
 #define PROP_ACTIVE "qcom,active-only"
 
+static void devbw_log_icc_dt(struct device *dev, int num_icc_paths)
+{
+	struct property *prop;
+
+	dev_info_ratelimited(dev, "DT node: %s\n",
+			     dev->of_node ? dev->of_node->full_name : "<none>");
+
+	prop = of_find_property(dev->of_node, "interconnects", NULL);
+	if (prop)
+		dev_info_ratelimited(dev,
+			"interconnects present (len=%d bytes, parsed_paths=%d)\n",
+			prop->length, num_icc_paths);
+	else
+		dev_info_ratelimited(dev, "interconnects property missing\n");
+
+	prop = of_find_property(dev->of_node, "interconnect-names", NULL);
+	if (prop)
+		dev_info_ratelimited(dev, "interconnect-names present (len=%d bytes)\n",
+				     prop->length);
+	else
+		dev_info_ratelimited(dev, "interconnect-names property missing\n");
+}
+
 int devfreq_add_devbw(struct device *dev)
 {
 	struct dev_data *d;
@@ -167,6 +190,8 @@ int devfreq_add_devbw(struct device *dev)
 			     &d->icc_min_peak_kbps);
 	ret = 0;
 	if (num_icc_paths < 0) {
+		devbw_log_icc_dt(dev, num_icc_paths);
+
 		if (!of_find_property(dev->of_node, "interconnects", NULL))
 			num_icc_paths = 0;
 		else if (have_ports) {
@@ -180,6 +205,8 @@ int devfreq_add_devbw(struct device *dev)
 	}
 
 	if (num_icc_paths > 0) {
+		devbw_log_icc_dt(dev, num_icc_paths);
+
 		if (num_icc_paths > MAX_PATHS) {
 			if (have_ports) {
 				dev_warn(dev,
@@ -197,21 +224,39 @@ int devfreq_add_devbw(struct device *dev)
 				ret = of_property_read_string_index(dev->of_node,
 								    "interconnect-names",
 								    i, &icc_name);
-				if (ret)
+				if (ret) {
+					dev_warn_ratelimited(dev,
+						"interconnect-names[%d] read failed (%d)\n",
+						i, ret);
 					break;
+				}
+
+				dev_dbg(dev, "Requesting ICC path[%d] by name '%s'\n",
+					i, icc_name);
 
 				d->icc_paths[i] = devm_of_icc_get(dev, icc_name);
-				if (IS_ERR(d->icc_paths[i]))
+				if (IS_ERR(d->icc_paths[i])) {
+					ret = PTR_ERR(d->icc_paths[i]);
+					dev_warn_ratelimited(dev,
+						"ICC attach failed at index %d (name '%s', err=%d)\n",
+						i, icc_name, ret);
 					break;
-			}
+				}
 
-			if (i < num_icc_paths)
-				ret = IS_ERR(d->icc_paths[i]) ?
-					PTR_ERR(d->icc_paths[i]) : ret;
+				dev_dbg(dev,
+					"Attached ICC path[%d] using name '%s'\n",
+					i, icc_name);
+			}
 		} else if (num_icc_paths == 1) {
 			d->icc_paths[0] = devm_of_icc_get(dev, NULL);
-			if (IS_ERR(d->icc_paths[0]))
+			if (IS_ERR(d->icc_paths[0])) {
 				ret = PTR_ERR(d->icc_paths[0]);
+				dev_warn_ratelimited(dev,
+					"ICC attach failed for unnamed single path (err=%d)\n",
+					ret);
+			} else {
+				dev_dbg(dev, "Attached ICC unnamed single path\n");
+			}
 		} else {
 			if (have_ports) {
 				dev_warn(dev,
@@ -236,7 +281,8 @@ int devfreq_add_devbw(struct device *dev)
 		if (!have_ports)
 			return ret;
 
-		dev_warn(dev, "ICC unavailable (%d), falling back to msm-bus\n", ret);
+		dev_warn_ratelimited(dev,
+			"ICC unavailable (%d), falling back to msm-bus\n", ret);
 	}
 
 use_msm_bus:

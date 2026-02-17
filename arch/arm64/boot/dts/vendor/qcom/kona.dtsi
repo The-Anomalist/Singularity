@@ -1070,8 +1070,8 @@
 	npudsp_npu_ddr_bw: qcom,npudsp-npu-ddr-bw {
 		compatible = "qcom,devbw-ddr";
 		governor = "performance";
-		interconnects = <&kona_icc KONA_ICC_NPU_TO_MEM>;
-		interconnect-names = "npu-ddr";
+		interconnects = <&kona_icc KONA_ICC_NPUDSP_TO_MEM>;
+		interconnect-names = "npudsp-ddr";
 		qcom,icc-min-avg-kbps = <762000>;
 		qcom,icc-min-peak-kbps = <1524000>;
 		qcom,src-dst-ports = <MSM_BUS_MASTER_NPU MSM_BUS_SLAVE_EBI_CH0>;

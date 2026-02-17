@@ -14,5 +14,6 @@
 #define KONA_ICC_CPU_TO_MEM	5
 #define KONA_ICC_DISP0_TO_MEM	6
 #define KONA_ICC_DISP1_TO_MEM	7
+#define KONA_ICC_NPUDSP_TO_MEM	8
 
 #endif
