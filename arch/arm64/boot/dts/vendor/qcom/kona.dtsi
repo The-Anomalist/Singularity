@@ -982,6 +982,8 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU_TO_LLCC>;
 		interconnect-names = "cpu-llcc";
+		qcom,icc-min-avg-kbps = <4576000>;
+		qcom,icc-min-peak-kbps = <9155000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_LLCC>;
 		qcom,active-only;
@@ -1004,6 +1006,8 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 		interconnect-names = "cpu-ddr";
+		qcom,icc-min-avg-kbps = <2597000>;
+		qcom,icc-min-peak-kbps = <5161000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
