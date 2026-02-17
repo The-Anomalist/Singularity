@@ -53,6 +53,9 @@ struct kona_icc_provider {
         u64 *last_ib;
         struct device **sysfs_nodes;
         struct class *icc_class;
+#ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
+        bool gpu_llcc_turbo;
+#endif
 };
 
 struct kona_icc_data {
@@ -146,6 +149,11 @@ static unsigned long kona_gpu_keepalive_ab_kb = 800000;   /* 800 MB/s */
 static unsigned long kona_gpu_keepalive_ib_kb = 1800000;  /* 1.8 GB/s */
 static unsigned int kona_gpu_ib_boost_percent = 145;
 static unsigned int kona_gpu_ib_min_ratio_percent = 180;
+static bool kona_gpu_llcc_turbo_enable = true;
+static unsigned long kona_gpu_llcc_turbo_enter_ib_kb = 12000000; /* 12 GB/s */
+static unsigned long kona_gpu_llcc_turbo_exit_ib_kb = 9000000;   /* 9 GB/s */
+static unsigned long kona_gpu_llcc_turbo_ab_kb = KONA_GPU_LLCC_IB_FLOOR_KB;
+static unsigned long kona_gpu_llcc_turbo_ib_kb = KONA_GPU_LLCC_IB_FLOOR_KB;
 module_param(kona_gpu_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_gpu_keepalive_enable,
         "Keep non-zero floor for gpu-ddr AB/IB between short idle gaps");
@@ -161,6 +169,51 @@ MODULE_PARM_DESC(kona_gpu_ib_boost_percent,
 module_param(kona_gpu_ib_min_ratio_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_ib_min_ratio_percent,
         "Minimum gpu-ddr IB as percent of AB (default: 180)");
+module_param(kona_gpu_llcc_turbo_enable, bool, 0644);
+MODULE_PARM_DESC(kona_gpu_llcc_turbo_enable,
+        "Force high gpu-llcc vote while gpu-ddr IB remains above threshold");
+module_param(kona_gpu_llcc_turbo_enter_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_gpu_llcc_turbo_enter_ib_kb,
+        "gpu-ddr IB KB/s threshold to enter LLCC turbo pinning");
+module_param(kona_gpu_llcc_turbo_exit_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_gpu_llcc_turbo_exit_ib_kb,
+        "gpu-ddr IB KB/s threshold to exit LLCC turbo pinning");
+module_param(kona_gpu_llcc_turbo_ab_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_gpu_llcc_turbo_ab_kb,
+        "Forced gpu-llcc AB vote in KB/s while turbo pinning is active");
+module_param(kona_gpu_llcc_turbo_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_gpu_llcc_turbo_ib_kb,
+        "Forced gpu-llcc IB vote in KB/s while turbo pinning is active");
+
+static void kona_icc_update_gpu_llcc_turbo(struct kona_icc_provider *qp, u64 ib)
+{
+        if (!kona_gpu_llcc_turbo_enable)
+                return;
+
+        if (!qp->gpu_llcc_turbo && ib >= kona_gpu_llcc_turbo_enter_ib_kb)
+                qp->gpu_llcc_turbo = true;
+        else if (qp->gpu_llcc_turbo && ib <= kona_gpu_llcc_turbo_exit_ib_kb)
+                qp->gpu_llcc_turbo = false;
+}
+
+static void kona_icc_apply_gpu_llcc_turbo(struct kona_icc_provider *qp,
+                                          const struct kona_icc_node_desc *desc,
+                                          u64 *ab, u64 *ib)
+{
+        if (!kona_gpu_llcc_turbo_enable)
+                return;
+
+        if (desc->id != KONA_ICC_GPU_TO_LLCC)
+                return;
+
+        if (!qp->gpu_llcc_turbo)
+                return;
+
+        if (*ab < kona_gpu_llcc_turbo_ab_kb)
+                *ab = kona_gpu_llcc_turbo_ab_kb;
+        if (*ib < kona_gpu_llcc_turbo_ib_kb)
+                *ib = kona_gpu_llcc_turbo_ib_kb;
+}
 
 static u64 kona_icc_add_headroom(u64 value, unsigned int bias)
 {
@@ -498,6 +551,17 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 		ab = max_t(u64, kona_gpu_keepalive_ab_kb, qp->last_ab[index]);
 		ib = max_t(u64, kona_gpu_keepalive_ib_kb, qp->last_ib[index]);
 	}
+
+	if (qp->nodes[index].id == KONA_ICC_GPU_TO_MEM) {
+		kona_icc_update_gpu_llcc_turbo(qp, ib);
+	} else if (qp->last_ib) {
+		unsigned int gpu_mem_index = 0;
+
+		if (kona_find_desc(qp, KONA_ICC_GPU_TO_MEM, &gpu_mem_index))
+			kona_icc_update_gpu_llcc_turbo(qp, qp->last_ib[gpu_mem_index]);
+	}
+
+	kona_icc_apply_gpu_llcc_turbo(qp, &qp->nodes[index], &ab, &ib);
 #endif
 
 #ifdef DEBUG
