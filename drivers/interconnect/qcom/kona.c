@@ -829,6 +829,44 @@ static void kona_icc_release(struct icc_path *path)
 	kfree(path);
 }
 
+static void kona_icc_invalidate_cache(struct kona_icc_provider *qp)
+{
+	int i;
+
+	if (!qp)
+		return;
+
+	for (i = 0; i < qp->num_nodes; i++) {
+		if (qp->last_ab)
+			qp->last_ab[i] = U64_MAX;
+		if (qp->last_ib)
+			qp->last_ib[i] = U64_MAX;
+	}
+
+#ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
+	qp->gpu_llcc_turbo = false;
+#endif
+}
+
+static int kona_icc_resume(struct device *dev)
+{
+	struct kona_icc_provider *qp = dev_get_drvdata(dev);
+
+	/*
+	 * RPMh ACTIVE_ONLY votes are not retained across suspend. Invalidate the
+	 * software cache so the first post-resume icc_set_bw() always re-sends.
+	 */
+	kona_icc_invalidate_cache(qp);
+
+	return 0;
+}
+
+static const struct dev_pm_ops kona_icc_pm_ops = {
+	.resume = kona_icc_resume,
+	.restore = kona_icc_resume,
+	.thaw = kona_icc_resume,
+};
+
 static int kona_icc_probe(struct platform_device *pdev)
 {
 	const struct kona_icc_data *data =
@@ -937,6 +975,7 @@ static struct platform_driver kona_icc_driver = {
 	.driver = {
 		.name = "kona-icc",
 		.of_match_table = kona_icc_of_match,
+		.pm = &kona_icc_pm_ops,
 	},
 };
 module_platform_driver(kona_icc_driver);
