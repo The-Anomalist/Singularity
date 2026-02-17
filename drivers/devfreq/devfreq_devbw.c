@@ -42,6 +42,7 @@ struct dev_data {
 	int cur_idx;
 	int cur_ab;
 	int cur_ib;
+	bool icc_supported;
 	bool use_icc;
 	u32 icc_min_avg_kbps;
 	u32 icc_min_peak_kbps;
@@ -49,6 +50,19 @@ struct dev_data {
 	struct devfreq *df;
 	struct devfreq_dev_profile dp;
 };
+
+static void devbw_log_icc_state(struct device *dev, struct dev_data *d)
+{
+	int i;
+
+	dev_info_ratelimited(dev,
+		"ICC state: supported=%d use_icc=%d requested_paths=%d attached_paths=%d\n",
+		d->icc_supported, d->use_icc, d->num_paths, d->num_icc_paths);
+
+	for (i = 0; i < d->num_paths; i++)
+		dev_info_ratelimited(dev, "ICC path[%d]=%p\n", i,
+				     d->icc_paths[i]);
+}
 
 static int set_bw(struct device *dev, int new_ib, int new_ab)
 {
@@ -78,7 +92,9 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 		    peak_bw < d->icc_min_peak_kbps)
 			peak_bw = d->icc_min_peak_kbps;
 
-		dev_dbg(dev, "ICC BW KBps: AB: %u IB: %u\n", avg_bw, peak_bw);
+		dev_info_ratelimited(dev,
+			"ICC vote: dev=%s freq=%d avg=%u peak=%u paths=%d\n",
+			dev_name(dev), new_ib, avg_bw, peak_bw, d->num_icc_paths);
 
 		for (i = 0; i < d->num_icc_paths; i++) {
 			ret = icc_set_bw(d->icc_paths[i], avg_bw, peak_bw);
@@ -120,12 +136,23 @@ static int devbw_target(struct device *dev, unsigned long *freq, u32 flags)
 {
 	struct dev_data *d = dev_get_drvdata(dev);
 	struct dev_pm_opp *opp;
+	long gov_ab;
 
 	opp = devfreq_recommended_opp(dev, freq, flags);
 	if (!IS_ERR(opp))
 		dev_pm_opp_put(opp);
 
-	return set_bw(dev, *freq, d->gov_ab);
+	/*
+	 * Performance-style governors generally drive only IB (freq) while AB
+	 * stays at zero. For ICC this leads to weak/zero aggregate visibility and
+	 * can starve paths where AB is treated as the sustaining vote. When no
+	 * governor-provided AB is available, mirror IB as AB.
+	 */
+	gov_ab = d->gov_ab;
+	if (!gov_ab)
+		gov_ab = *freq;
+
+	return set_bw(dev, *freq, gov_ab);
 }
 
 static int devbw_get_dev_status(struct device *dev,
@@ -184,6 +211,7 @@ int devfreq_add_devbw(struct device *dev)
 	num_icc_paths = of_count_phandle_with_args(dev->of_node,
 					  "interconnects",
 					  "#interconnect-cells");
+	d->icc_supported = of_find_property(dev->of_node, "interconnects", NULL);
 	of_property_read_u32(dev->of_node, "qcom,icc-min-avg-kbps",
 			     &d->icc_min_avg_kbps);
 	of_property_read_u32(dev->of_node, "qcom,icc-min-peak-kbps",
@@ -237,6 +265,7 @@ int devfreq_add_devbw(struct device *dev)
 				d->icc_paths[i] = devm_of_icc_get(dev, icc_name);
 				if (IS_ERR(d->icc_paths[i])) {
 					ret = PTR_ERR(d->icc_paths[i]);
+					d->icc_paths[i] = NULL;
 					dev_warn_ratelimited(dev,
 						"ICC attach failed at index %d (name '%s', err=%d)\n",
 						i, icc_name, ret);
@@ -251,6 +280,7 @@ int devfreq_add_devbw(struct device *dev)
 			d->icc_paths[0] = devm_of_icc_get(dev, NULL);
 			if (IS_ERR(d->icc_paths[0])) {
 				ret = PTR_ERR(d->icc_paths[0]);
+				d->icc_paths[0] = NULL;
 				dev_warn_ratelimited(dev,
 					"ICC attach failed for unnamed single path (err=%d)\n",
 					ret);
@@ -259,15 +289,29 @@ int devfreq_add_devbw(struct device *dev)
 			}
 		} else {
 			if (have_ports) {
-				dev_warn(dev,
-					 "Multiple ICC paths require interconnect-names, falling back to msm-bus\n");
+				dev_err_ratelimited(dev,
+					"ICC attach failed: missing interconnect-names for %d paths, falling back to msm-bus\n",
+					num_icc_paths);
 				ret = -EINVAL;
 				goto use_msm_bus;
 			}
 
 			dev_err(dev,
-				"Multiple ICC paths require interconnect-names\n");
+				"ICC attach failed: missing interconnect-names for %d paths\n",
+				num_icc_paths);
 			return -EINVAL;
+		}
+
+		if (!ret) {
+			for (i = 0; i < num_icc_paths; i++) {
+				if (!d->icc_paths[i]) {
+					ret = -ENODEV;
+					dev_err_ratelimited(dev,
+						"ICC attach failed: NULL path at index %d\n",
+						i);
+					break;
+				}
+			}
 		}
 
 		if (!ret) {
@@ -281,8 +325,9 @@ int devfreq_add_devbw(struct device *dev)
 		if (!have_ports)
 			return ret;
 
-		dev_warn_ratelimited(dev,
-			"ICC unavailable (%d), falling back to msm-bus\n", ret);
+		dev_err_ratelimited(dev,
+			"ICC unavailable (err=%d), falling back to msm-bus via %s\n",
+			ret, PROP_PORTS);
 	}
 
 use_msm_bus:
@@ -323,6 +368,8 @@ use_msm_bus:
 		d->bw_levels[1].num_paths = num_paths;
 		d->num_paths = num_paths;
 	}
+
+	devbw_log_icc_state(dev, d);
 
 	p = &d->dp;
 	p->polling_ms = 50;
