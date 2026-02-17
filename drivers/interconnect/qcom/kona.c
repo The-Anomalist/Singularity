@@ -147,6 +147,12 @@ MODULE_PARM_DESC(kona_perf_turbo_kb,
 static bool kona_gpu_keepalive_enable = true;
 static unsigned long kona_gpu_keepalive_ab_kb = 800000;   /* 800 MB/s */
 static unsigned long kona_gpu_keepalive_ib_kb = 1800000;  /* 1.8 GB/s */
+static bool kona_cpu_keepalive_enable = true;
+static unsigned long kona_cpu_keepalive_ab_kb = 1400000;  /* 1.4 GB/s */
+static unsigned long kona_cpu_keepalive_ib_kb = 2600000;  /* 2.6 GB/s */
+static bool kona_npu_keepalive_enable = true;
+static unsigned long kona_npu_keepalive_ab_kb = 1000000;  /* 1.0 GB/s */
+static unsigned long kona_npu_keepalive_ib_kb = 2000000;  /* 2.0 GB/s */
 static unsigned int kona_gpu_ib_boost_percent = 145;
 static unsigned int kona_gpu_ib_min_ratio_percent = 180;
 static bool kona_gpu_llcc_turbo_enable = true;
@@ -163,6 +169,24 @@ MODULE_PARM_DESC(kona_gpu_keepalive_ab_kb,
 module_param(kona_gpu_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_gpu_keepalive_ib_kb,
         "gpu-ddr keepalive IB floor in KB/s (default: 1800000)");
+module_param(kona_cpu_keepalive_enable, bool, 0644);
+MODULE_PARM_DESC(kona_cpu_keepalive_enable,
+        "Keep non-zero floor for cpu-ddr/cpu-llcc AB/IB between short idle gaps");
+module_param(kona_cpu_keepalive_ab_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_cpu_keepalive_ab_kb,
+        "cpu keepalive AB floor in KB/s (default: 1400000)");
+module_param(kona_cpu_keepalive_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_cpu_keepalive_ib_kb,
+        "cpu keepalive IB floor in KB/s (default: 2600000)");
+module_param(kona_npu_keepalive_enable, bool, 0644);
+MODULE_PARM_DESC(kona_npu_keepalive_enable,
+        "Keep non-zero floor for npu-ddr/npu-llcc AB/IB between short idle gaps");
+module_param(kona_npu_keepalive_ab_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_npu_keepalive_ab_kb,
+        "npu keepalive AB floor in KB/s (default: 1000000)");
+module_param(kona_npu_keepalive_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_npu_keepalive_ib_kb,
+        "npu keepalive IB floor in KB/s (default: 2000000)");
 module_param(kona_gpu_ib_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_ib_boost_percent,
         "Percent boost applied to gpu-ddr IB after floors (default: 145)");
@@ -219,6 +243,58 @@ static u64 kona_icc_add_headroom(u64 value, unsigned int bias)
 {
         /* Avoid overflow when adding headroom; values are already in KBps. */
         return mul_u64_u32_div(value, bias, 100);
+}
+
+static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
+					 unsigned int index, u64 *ab, u64 *ib)
+{
+	bool keepalive = false;
+	const struct kona_icc_node_desc *desc;
+	u64 keepalive_ab = 0, keepalive_ib = 0;
+
+	if (!qp->last_ab || !qp->last_ib || *ab || *ib)
+		return false;
+
+	if (!qp->last_ab[index] && !qp->last_ib[index])
+		return false;
+
+	desc = &qp->nodes[index];
+
+	switch (desc->role) {
+	case KONA_ROLE_CPU:
+		if (!kona_cpu_keepalive_enable)
+			break;
+		keepalive = true;
+		keepalive_ab = kona_cpu_keepalive_ab_kb;
+		keepalive_ib = kona_cpu_keepalive_ib_kb;
+		break;
+	case KONA_ROLE_GPU:
+		if (!kona_gpu_keepalive_enable)
+			break;
+		keepalive = true;
+		keepalive_ab = kona_gpu_keepalive_ab_kb;
+		keepalive_ib = kona_gpu_keepalive_ib_kb;
+		break;
+	case KONA_ROLE_NPU:
+		if (!kona_npu_keepalive_enable)
+			break;
+		keepalive = true;
+		keepalive_ab = kona_npu_keepalive_ab_kb;
+		keepalive_ib = kona_npu_keepalive_ib_kb;
+		break;
+	case KONA_ROLE_DISPLAY:
+	case KONA_ROLE_GENERIC:
+	default:
+		break;
+	}
+
+	if (!keepalive)
+		return false;
+
+	*ab = max_t(u64, keepalive_ab, qp->last_ab[index]);
+	*ib = max_t(u64, keepalive_ib, qp->last_ib[index]);
+
+	return true;
 }
 
 static unsigned int kona_icc_pick_bias(const struct kona_icc_node_desc *desc,
@@ -542,15 +618,10 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	}
 
 	/*
-	 * Keep-alive vote for GPU->DDR when clients briefly request 0/0 between
-	 * frames; this avoids repeated collapses into deep bus idle states.
+	 * Keep-alive vote for CPU/GPU/NPU paths when clients briefly request 0/0
+	 * between bursts; this avoids repeated collapses into deep bus idle states.
 	 */
-	if (kona_gpu_keepalive_enable && qp->nodes[index].id == KONA_ICC_GPU_TO_MEM &&
-	    !ab && !ib && qp->last_ab && qp->last_ib &&
-	    (qp->last_ab[index] || qp->last_ib[index])) {
-		ab = max_t(u64, kona_gpu_keepalive_ab_kb, qp->last_ab[index]);
-		ib = max_t(u64, kona_gpu_keepalive_ib_kb, qp->last_ib[index]);
-	}
+	kona_icc_apply_keepalive_vote(qp, index, &ab, &ib);
 
 	if (qp->nodes[index].id == KONA_ICC_GPU_TO_MEM) {
 		kona_icc_update_gpu_llcc_turbo(qp, ib);
