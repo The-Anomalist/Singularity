@@ -406,11 +406,11 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 	}
 
 	/* Final safety net: clamp any very small non-zero votes. */
-        if (*ab && *ab < KONA_ICC_MIN_AB_FLOOR_KB)
-                *ab = KONA_ICC_MIN_AB_FLOOR_KB;
+	if (*ab && *ab < KONA_ICC_MIN_AB_FLOOR_KB)
+		*ab = KONA_ICC_MIN_AB_FLOOR_KB;
 
-        if (*ib && *ib < KONA_ICC_MIN_IB_FLOOR_KB)
-                *ib = KONA_ICC_MIN_IB_FLOOR_KB;
+	if (*ib && *ib < KONA_ICC_MIN_IB_FLOOR_KB)
+		*ib = KONA_ICC_MIN_IB_FLOOR_KB;
 
         /*
          * Add configurable headroom to CPU/GPU/NPU/DDR/LLCC paths to avoid collapsing
@@ -848,6 +848,20 @@ static void kona_icc_invalidate_cache(struct kona_icc_provider *qp)
 #endif
 }
 
+static int kona_icc_suspend(struct device *dev)
+{
+	struct kona_icc_provider *qp = dev_get_drvdata(dev);
+
+	/*
+	 * Consumers can still issue ICC requests during late suspend/resume
+	 * transitions. Drop our software cache pre-suspend so the next request is
+	 * always pushed to RPMh instead of being elided as a duplicate.
+	 */
+	kona_icc_invalidate_cache(qp);
+
+	return 0;
+}
+
 static int kona_icc_resume(struct device *dev)
 {
 	struct kona_icc_provider *qp = dev_get_drvdata(dev);
@@ -862,6 +876,9 @@ static int kona_icc_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops kona_icc_pm_ops = {
+	.suspend = kona_icc_suspend,
+	.freeze = kona_icc_suspend,
+	.poweroff = kona_icc_suspend,
 	.resume = kona_icc_resume,
 	.restore = kona_icc_resume,
 	.thaw = kona_icc_resume,
@@ -922,6 +939,9 @@ static int kona_icc_probe(struct platform_device *pdev)
 	if (qp->boot_floor_vote) {
 		for (i = 0; i < qp->num_nodes; i++) {
 			int r_ab, r_ib;
+
+			if (qp->nodes[i].role == KONA_ROLE_DISPLAY)
+				continue;
 
 			ab = KONA_ICC_MIN_AB_FLOOR_KB;
 			ib = KONA_ICC_MIN_IB_FLOOR_KB;
