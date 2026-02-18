@@ -46,14 +46,15 @@ struct kona_icc_node_desc {
 };
 
 struct kona_icc_provider {
-        struct icc_provider provider;
-        const struct kona_icc_node_desc *nodes;
-        size_t num_nodes;
-        bool boot_floor_vote;
-        u64 *last_ab;
-        u64 *last_ib;
-        struct device **sysfs_nodes;
-        struct class *icc_class;
+	struct icc_provider provider;
+	const struct kona_icc_node_desc *nodes;
+	size_t num_nodes;
+	bool boot_floor_vote;
+	bool system_suspended;
+	u64 *last_ab;
+	u64 *last_ib;
+	struct device **sysfs_nodes;
+	struct class *icc_class;
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
         bool gpu_llcc_turbo;
 #endif
@@ -298,8 +299,13 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 	if (!keepalive)
 		return false;
 
-	*ab = max_t(u64, keepalive_ab, qp->last_ab[index]);
-	*ib = max_t(u64, keepalive_ib, qp->last_ib[index]);
+	/*
+	 * Keepalive should be a bounded floor, not sticky reuse of the previous
+	 * peak vote. Reusing last_ab/last_ib can pin large AB/IB indefinitely and
+	 * prevent the interconnect from collapsing when clients request 0/0.
+	 */
+	*ab = keepalive_ab;
+	*ib = keepalive_ib;
 
 	return true;
 }
@@ -761,6 +767,14 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
 	/*
+	 * Do not keep or boost votes while the system is entering/leaving sleep.
+	 * During suspend we want consumers to be able to collapse to 0/0 so RPMh
+	 * can park the fabric in a low-power corner for a clean wakeup path.
+	 */
+	if (READ_ONCE(qp->system_suspended))
+		goto skip_perf_floor;
+
+	/*
 	 * Apply per-path and global floors for non-zero votes. 0/0 votes
 	 * are treated as truly idle and are allowed to collapse.
 	 */
@@ -787,6 +801,8 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	}
 
 	kona_icc_apply_gpu_llcc_turbo(qp, &qp->nodes[index], &ab, &ib);
+
+skip_perf_floor:
 #endif
 
 #ifdef DEBUG
@@ -1007,6 +1023,9 @@ static int kona_icc_suspend(struct device *dev)
 {
 	struct kona_icc_provider *qp = dev_get_drvdata(dev);
 
+	if (qp)
+		WRITE_ONCE(qp->system_suspended, true);
+
 	/*
 	 * Consumers can still issue ICC requests during late suspend/resume
 	 * transitions. Drop our software cache pre-suspend so the next request is
@@ -1020,6 +1039,9 @@ static int kona_icc_suspend(struct device *dev)
 static int kona_icc_resume(struct device *dev)
 {
 	struct kona_icc_provider *qp = dev_get_drvdata(dev);
+
+	if (qp)
+		WRITE_ONCE(qp->system_suspended, false);
 
 	/*
 	 * RPMh ACTIVE_ONLY votes are not retained across suspend. Invalidate the
