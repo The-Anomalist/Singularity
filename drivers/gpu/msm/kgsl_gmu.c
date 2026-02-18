@@ -844,18 +844,7 @@ static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
 	unsigned int max_usecases;
 	int ret;
 
-	if (!gmu->pcl)
-		gmu->num_bwlevels = 0;
-
-	if (!gmu->ccl)
-		gmu->num_cnocbwlevels = 0;
-
 	max_usecases = max(gmu->num_bwlevels, gmu->num_cnocbwlevels);
-	if (!max_usecases) {
-		build_bwtable_cmd_cache(gmu);
-		return 0;
-	}
-
 	usecases  = kcalloc(max_usecases, sizeof(*usecases), GFP_KERNEL);
 	if (!usecases)
 		return -ENOMEM;
@@ -865,27 +854,22 @@ static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
 	/*
 	 * Query TCS command set for each use case defined in GPU b/w table
 	 */
-	if (gmu->num_bwlevels) {
-		hdl.num_usecases = gmu->num_bwlevels;
-		ret = msm_bus_scale_query_tcs_cmd_all(&hdl, gmu->pcl);
-		if (ret)
-			goto out;
+	hdl.num_usecases = gmu->num_bwlevels;
+	ret = msm_bus_scale_query_tcs_cmd_all(&hdl, gmu->pcl);
+	if (ret)
+		goto out;
 
-		build_rpmh_bw_votes(&votes->ddr_votes, gmu->num_bwlevels, hdl);
-	}
+	build_rpmh_bw_votes(&votes->ddr_votes, gmu->num_bwlevels, hdl);
 
 	/*
 	 *Query CNOC TCS command set for each use case defined in cnoc bw table
 	 */
-	if (gmu->num_cnocbwlevels) {
-		hdl.num_usecases = gmu->num_cnocbwlevels;
-		ret = msm_bus_scale_query_tcs_cmd_all(&hdl, gmu->ccl);
-		if (ret)
-			goto out;
+	hdl.num_usecases = gmu->num_cnocbwlevels;
+	ret = msm_bus_scale_query_tcs_cmd_all(&hdl, gmu->ccl);
+	if (ret)
+		goto out;
 
-		build_rpmh_bw_votes(&votes->cnoc_votes, gmu->num_cnocbwlevels,
-			hdl);
-	}
+	build_rpmh_bw_votes(&votes->cnoc_votes, gmu->num_cnocbwlevels, hdl);
 
 	build_bwtable_cmd_cache(gmu);
 
@@ -1043,15 +1027,8 @@ static int gmu_gpu_bw_probe(struct kgsl_device *device, struct gmu_device *gmu)
 		kgsl_get_bus_scale_table(device);
 
 	if (bus_scale_table == NULL) {
-		/*
-		 * ICC-only GPU configurations can intentionally omit the legacy
-		 * msm-bus table.
-		 */
-		gmu->num_bwlevels = 0;
-		gmu->pcl = 0;
-		dev_info(&gmu->pdev->dev,
-			"dt: gpu msm-bus table missing, continuing in ICC-only mode\n");
-		return 0;
+		dev_err(&gmu->pdev->dev, "dt: cannot get bus table\n");
+		return -ENODEV;
 	}
 
 	gmu->num_bwlevels = bus_scale_table->num_usecases;
@@ -1645,13 +1622,11 @@ static int gmu_start(struct kgsl_device *device)
 		gmu_dev_ops->irq_enable(device);
 
 		/* Vote for minimal DDR BW for GMU to init */
-		if (gmu->pcl) {
-			ret = msm_bus_scale_client_update_request(gmu->pcl,
+		ret = msm_bus_scale_client_update_request(gmu->pcl,
 				pwr->pwrlevels[pwr->default_pwrlevel].bus_min);
-			if (ret)
-				dev_err(&gmu->pdev->dev,
-					"Failed to allocate gmu b/w: %d\n", ret);
-		}
+		if (ret)
+			dev_err(&gmu->pdev->dev,
+				"Failed to allocate gmu b/w: %d\n", ret);
 
 		ret = gmu_dev_ops->rpmh_gpu_pwrctrl(device, GMU_FW_START,
 				GMU_COLD_BOOT, 0);
@@ -1667,8 +1642,7 @@ static int gmu_start(struct kgsl_device *device)
 		if (ret)
 			goto error_gmu;
 
-		if (gmu->pcl)
-			msm_bus_scale_client_update_request(gmu->pcl, 0);
+		msm_bus_scale_client_update_request(gmu->pcl, 0);
 		break;
 
 	case KGSL_STATE_SLUMBER:
@@ -1763,8 +1737,7 @@ static void gmu_stop(struct kgsl_device *device)
 	gmu_disable_clks(device);
 	gmu_disable_gdsc(device);
 
-	if (gmu->pcl)
-		msm_bus_scale_client_update_request(gmu->pcl, 0);
+	msm_bus_scale_client_update_request(gmu->pcl, 0);
 	return;
 
 error:
