@@ -30,6 +30,7 @@
  */
 enum kona_icc_role {
         KONA_ROLE_CPU,
+        KONA_ROLE_CPU_PRIME,
         KONA_ROLE_GPU,
         KONA_ROLE_NPU,
         KONA_ROLE_DISPLAY,
@@ -80,6 +81,10 @@ struct kona_icc_node_sysfs {
 #define KONA_CPU_DDR_IB_FLOOR_KB	(26000000ULL) /* ~26 GB/s */
 #define KONA_CPU_LLCC_AB_FLOOR_KB	(10000000ULL) /* ~10 GB/s */
 #define KONA_CPU_LLCC_IB_FLOOR_KB	(17000000ULL) /* ~17 GB/s */
+#define KONA_CPU_PRIME_DDR_AB_FLOOR_KB	(18000000ULL) /* ~18 GB/s */
+#define KONA_CPU_PRIME_DDR_IB_FLOOR_KB	(29000000ULL) /* ~29 GB/s */
+#define KONA_CPU_PRIME_LLCC_AB_FLOOR_KB	(11000000ULL) /* ~11 GB/s */
+#define KONA_CPU_PRIME_LLCC_IB_FLOOR_KB	(19000000ULL) /* ~19 GB/s */
 #define KONA_GPU_DDR_AB_FLOOR_KB	(12000000ULL) /* ~12 GB/s */
 #define KONA_GPU_DDR_IB_FLOOR_KB	(22000000ULL) /* ~22 GB/s */
 #define KONA_GPU_LLCC_AB_FLOOR_KB	(8000000ULL)  /* ~8 GB/s */
@@ -119,6 +124,7 @@ struct kona_icc_node_sysfs {
 static unsigned int kona_perf_bias = 130;
 static unsigned int kona_perf_bias_light = 112;
 static unsigned int kona_perf_bias_turbo = 150;
+#define KONA_PRIME_EXTRA_BIAS_PERCENT	10
 static unsigned long kona_perf_light_kb = 1500000;   /* 1.5 GB/s */
 static unsigned long kona_perf_turbo_kb = 12000000;  /* 12 GB/s */
 module_param(kona_perf_bias, uint, 0644);
@@ -262,6 +268,7 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 
 	switch (desc->role) {
 	case KONA_ROLE_CPU:
+	case KONA_ROLE_CPU_PRIME:
 		if (!kona_cpu_keepalive_enable)
 			break;
 		keepalive = true;
@@ -301,6 +308,7 @@ static unsigned int kona_icc_pick_bias(const struct kona_icc_node_desc *desc,
                                       u64 ab, u64 ib)
 {
         unsigned long vote = max(ab, ib);
+        unsigned int bias;
 
         switch (desc->role) {
         case KONA_ROLE_CPU:
@@ -312,6 +320,14 @@ static unsigned int kona_icc_pick_bias(const struct kona_icc_node_desc *desc,
                 if (vote <= kona_perf_light_kb)
                         return kona_perf_bias_light;
                 return kona_perf_bias;
+        case KONA_ROLE_CPU_PRIME:
+                if (vote >= kona_perf_turbo_kb)
+                        bias = kona_perf_bias_turbo;
+                else if (vote <= kona_perf_light_kb)
+                        bias = kona_perf_bias_light;
+                else
+                        bias = kona_perf_bias;
+                return min_t(unsigned int, bias + KONA_PRIME_EXTRA_BIAS_PERCENT, 200);
         case KONA_ROLE_DISPLAY:
         default:
                 return 100;
@@ -357,16 +373,42 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 {
 	switch (desc->id) {
 	case KONA_ICC_CPU_TO_MEM:
+	case KONA_ICC_CPU0_TO_MEM:
+	case KONA_ICC_CPU1_TO_MEM:
+	case KONA_ICC_CPU2_TO_MEM:
+	case KONA_ICC_CPU3_TO_MEM:
+	case KONA_ICC_CPU4_TO_MEM:
+	case KONA_ICC_CPU5_TO_MEM:
+	case KONA_ICC_CPU6_TO_MEM:
 		if (*ab && *ab < KONA_CPU_DDR_AB_FLOOR_KB)
 			*ab = KONA_CPU_DDR_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_CPU_DDR_IB_FLOOR_KB)
 			*ib = KONA_CPU_DDR_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_CPU_TO_LLCC:
+	case KONA_ICC_CPU0_TO_LLCC:
+	case KONA_ICC_CPU1_TO_LLCC:
+	case KONA_ICC_CPU2_TO_LLCC:
+	case KONA_ICC_CPU3_TO_LLCC:
+	case KONA_ICC_CPU4_TO_LLCC:
+	case KONA_ICC_CPU5_TO_LLCC:
+	case KONA_ICC_CPU6_TO_LLCC:
 		if (*ab && *ab < KONA_CPU_LLCC_AB_FLOOR_KB)
 			*ab = KONA_CPU_LLCC_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_CPU_LLCC_IB_FLOOR_KB)
 			*ib = KONA_CPU_LLCC_IB_FLOOR_KB;
+		break;
+	case KONA_ICC_CPU7_TO_MEM:
+		if (*ab && *ab < KONA_CPU_PRIME_DDR_AB_FLOOR_KB)
+			*ab = KONA_CPU_PRIME_DDR_AB_FLOOR_KB;
+		if (*ib && *ib < KONA_CPU_PRIME_DDR_IB_FLOOR_KB)
+			*ib = KONA_CPU_PRIME_DDR_IB_FLOOR_KB;
+		break;
+	case KONA_ICC_CPU7_TO_LLCC:
+		if (*ab && *ab < KONA_CPU_PRIME_LLCC_AB_FLOOR_KB)
+			*ab = KONA_CPU_PRIME_LLCC_AB_FLOOR_KB;
+		if (*ib && *ib < KONA_CPU_PRIME_LLCC_IB_FLOOR_KB)
+			*ib = KONA_CPU_PRIME_LLCC_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_NPU_TO_MEM:
 	case KONA_ICC_NPUDSP_TO_MEM:
@@ -476,6 +518,118 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
 		.role = KONA_ROLE_CPU,
+	},
+	{
+		.id = KONA_ICC_CPU0_TO_LLCC,
+		.name = "cpu0-llcc",
+		.ab = "CPU_LLCC_AB",
+		.ib = "CPU_LLCC_IB",
+		.role = KONA_ROLE_CPU,
+	},
+	{
+		.id = KONA_ICC_CPU0_TO_MEM,
+		.name = "cpu0-ddr",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_CPU,
+	},
+	{
+		.id = KONA_ICC_CPU1_TO_LLCC,
+		.name = "cpu1-llcc",
+		.ab = "CPU_LLCC_AB",
+		.ib = "CPU_LLCC_IB",
+		.role = KONA_ROLE_CPU,
+	},
+	{
+		.id = KONA_ICC_CPU1_TO_MEM,
+		.name = "cpu1-ddr",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_CPU,
+	},
+	{
+		.id = KONA_ICC_CPU2_TO_LLCC,
+		.name = "cpu2-llcc",
+		.ab = "CPU_LLCC_AB",
+		.ib = "CPU_LLCC_IB",
+		.role = KONA_ROLE_CPU,
+	},
+	{
+		.id = KONA_ICC_CPU2_TO_MEM,
+		.name = "cpu2-ddr",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_CPU,
+	},
+	{
+		.id = KONA_ICC_CPU3_TO_LLCC,
+		.name = "cpu3-llcc",
+		.ab = "CPU_LLCC_AB",
+		.ib = "CPU_LLCC_IB",
+		.role = KONA_ROLE_CPU,
+	},
+	{
+		.id = KONA_ICC_CPU3_TO_MEM,
+		.name = "cpu3-ddr",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_CPU,
+	},
+	{
+		.id = KONA_ICC_CPU4_TO_LLCC,
+		.name = "cpu4-llcc",
+		.ab = "CPU_LLCC_AB",
+		.ib = "CPU_LLCC_IB",
+		.role = KONA_ROLE_CPU,
+	},
+	{
+		.id = KONA_ICC_CPU4_TO_MEM,
+		.name = "cpu4-ddr",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_CPU,
+	},
+	{
+		.id = KONA_ICC_CPU5_TO_LLCC,
+		.name = "cpu5-llcc",
+		.ab = "CPU_LLCC_AB",
+		.ib = "CPU_LLCC_IB",
+		.role = KONA_ROLE_CPU,
+	},
+	{
+		.id = KONA_ICC_CPU5_TO_MEM,
+		.name = "cpu5-ddr",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_CPU,
+	},
+	{
+		.id = KONA_ICC_CPU6_TO_LLCC,
+		.name = "cpu6-llcc",
+		.ab = "CPU_LLCC_AB",
+		.ib = "CPU_LLCC_IB",
+		.role = KONA_ROLE_CPU,
+	},
+	{
+		.id = KONA_ICC_CPU6_TO_MEM,
+		.name = "cpu6-ddr",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_CPU,
+	},
+	{
+		.id = KONA_ICC_CPU7_TO_LLCC,
+		.name = "cpu7-llcc",
+		.ab = "CPU_LLCC_AB",
+		.ib = "CPU_LLCC_IB",
+		.role = KONA_ROLE_CPU_PRIME,
+	},
+	{
+		.id = KONA_ICC_CPU7_TO_MEM,
+		.name = "cpu7-ddr",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_CPU_PRIME,
 	},
 	{
 		.id = KONA_ICC_DISP0_TO_MEM,
@@ -636,7 +790,8 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 #endif
 
 #ifdef DEBUG
-	if (qp->nodes[index].role == KONA_ROLE_CPU)
+	if (qp->nodes[index].role == KONA_ROLE_CPU ||
+	    qp->nodes[index].role == KONA_ROLE_CPU_PRIME)
 		pr_info("kona-icc: %s avg=%uKB/s peak=%uKB/s -> ab=%lluKB/s ib=%lluKB/s prev ab/ib=%llu/%llu\n",
 			qp->nodes[index].name, avg_bw, peak_bw,
 			ab, ib,
