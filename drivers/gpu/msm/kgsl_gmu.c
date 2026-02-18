@@ -851,8 +851,10 @@ static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
 		gmu->num_cnocbwlevels = 0;
 
 	max_usecases = max(gmu->num_bwlevels, gmu->num_cnocbwlevels);
-	if (!max_usecases)
+	if (!max_usecases) {
+		build_bwtable_cmd_cache(gmu);
 		return 0;
+	}
 
 	usecases  = kcalloc(max_usecases, sizeof(*usecases), GFP_KERNEL);
 	if (!usecases)
@@ -1068,8 +1070,15 @@ static int gmu_cnoc_bw_probe(struct gmu_device *gmu)
 
 	cnoc_table = msm_bus_cl_get_pdata(gmu->pdev);
 	if (cnoc_table == NULL) {
-		dev_err(&gmu->pdev->dev, "dt: cannot get cnoc table\n");
-		return -ENODEV;
+		/*
+		 * ICC-only GPU configurations can intentionally omit the legacy
+		 * CNOC msm-bus table.
+		 */
+		gmu->num_cnocbwlevels = 0;
+		gmu->ccl = 0;
+		dev_info(&gmu->pdev->dev,
+			"dt: cnoc msm-bus table missing, continuing in ICC-only mode\n");
+		return 0;
 	}
 
 	gmu->num_cnocbwlevels = cnoc_table->num_usecases;
