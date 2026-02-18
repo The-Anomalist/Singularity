@@ -1224,6 +1224,7 @@
 
 		cpu0_cpu_llcc_latmon: qcom,cpu0-cpu-llcc-latmon {
 			compatible = "qcom,arm-memlat-mon";
+			qcom,cpulist = <&CPU0 &CPU1 &CPU2 &CPU3>;
 			qcom,target-dev = <&cpu0_cpu_llcc_lat>;
 			qcom,cachemiss-ev = <0x2A>;
 			qcom,core-dev-table =
@@ -1297,6 +1298,7 @@
 
 		cpu4_cpu_llcc_latmon: qcom,cpu4-cpu-llcc-latmon {
 			compatible = "qcom,arm-memlat-mon";
+			qcom,cpulist = <&CPU4 &CPU5 &CPU6 &CPU7>;
 			qcom,target-dev = <&cpu4_cpu_llcc_lat>;
 			qcom,cachemiss-ev = <0x2A>;
 			qcom,core-dev-table =

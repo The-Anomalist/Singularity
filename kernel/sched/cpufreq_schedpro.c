@@ -216,6 +216,28 @@ static bool sugov_up_down_rate_limit(struct sugov_policy *sg_policy, u64 time,
 	return false;
 }
 
+static inline bool sugov_is_transition_event(unsigned int flags)
+{
+	return flags & (SCHED_CPUFREQ_EARLY_DET |
+			SCHED_CPUFREQ_MIGRATION |
+			SCHED_CPUFREQ_INTERCLUSTER_MIG);
+}
+
+static inline void sugov_note_transition_boost(struct sugov_policy *sg_policy,
+					      u64 time, unsigned int flags)
+{
+	if (!sugov_is_transition_event(flags))
+		return;
+
+	/*
+	 * Scene changes tend to generate short migration bursts. Keep the
+	 * frequency high for at least one down hysteresis window to avoid
+	 * up/down ping-pong that can surface as frame hitching.
+	 */
+	sg_policy->freq_hold_until_ns = max_t(u64, sg_policy->freq_hold_until_ns,
+					    time + sg_policy->down_hyst_ns);
+}
+
 static bool sugov_update_next_freq(struct sugov_policy *sg_policy, u64 time,
 				   unsigned int next_freq)
 {
@@ -858,6 +880,7 @@ static void sugov_update_single(struct update_util_data *hook, u64 time,
 	util = sugov_iowait_apply(sg_cpu, time, util, max);
 	sugov_calc_avg_cap(sg_policy, sg_cpu->walt_load.ws,
 			   sg_policy->policy->cur);
+	sugov_note_transition_boost(sg_policy, time, flags);
 
 	trace_sugov_util_update(sg_cpu->cpu, sg_cpu->util,
 				sg_policy->avg_cap, max, sg_cpu->walt_load.nl,
@@ -975,6 +998,7 @@ sugov_update_shared(struct update_util_data *hook, u64 time, unsigned int flags)
 	sugov_calc_avg_cap(sg_policy, sg_cpu->walt_load.ws,
 			   sg_policy->policy->cur);
 	ignore_dl_rate_limit(sg_cpu, sg_policy);
+	sugov_note_transition_boost(sg_policy, time, flags);
 
 	trace_sugov_util_update(sg_cpu->cpu, sg_cpu->util, sg_policy->avg_cap,
 				sg_cpu->max, sg_cpu->walt_load.nl,
@@ -1679,9 +1703,13 @@ static int sugov_init(struct cpufreq_policy *policy)
 		goto stop_kthread;
 	}
 
-	tunables->up_rate_limit_us = cpufreq_policy_transition_delay_us(policy);
-	tunables->down_rate_limit_us = cpufreq_policy_transition_delay_us(policy);
-	tunables->down_hysteresis_us = 2000;
+	/*
+	 * Keep default response snappy for bursty foreground benchmarks/tasks.
+	 * Policies can still override these tunables at runtime via sysfs.
+	 */
+	tunables->up_rate_limit_us = 0;
+	tunables->down_rate_limit_us = 0;
+	tunables->down_hysteresis_us = 0;
 	tunables->hispeed_load = DEFAULT_HISPEED_LOAD;
 	tunables->hispeed_freq = 0;
 	tunables->mem_boost_util = 0;
