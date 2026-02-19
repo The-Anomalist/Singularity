@@ -22,6 +22,8 @@
 #include <linux/of_fdt.h>
 #include <linux/interconnect.h>
 #include <linux/math64.h>
+#include <linux/freezer.h>
+#include <linux/pm.h>
 #include <trace/events/power.h>
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
@@ -47,9 +49,15 @@ struct dev_data {
 	u32 icc_min_avg_kbps;
 	u32 icc_min_peak_kbps;
 	long gov_ab;
+	bool freeze_bw_blocked;
 	struct devfreq *df;
 	struct devfreq_dev_profile dp;
 };
+
+static bool devbw_suspend_in_progress(void)
+{
+	return atomic_read(&system_freezing_cnt) > 0;
+}
 
 static void devbw_log_icc_state(struct device *dev, struct dev_data *d)
 {
@@ -71,6 +79,20 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 
 	if (d->cur_ib == new_ib && d->cur_ab == new_ab)
 		return 0;
+
+	/*
+	 * During suspend prepare/freezer, keep the last programmed vote and block
+	 * vote churn from active governors/workqueues until PM has quiesced.
+	 */
+	if (unlikely(devbw_suspend_in_progress())) {
+		if (!d->freeze_bw_blocked)
+			dev_info_ratelimited(dev,
+				"suspend-prep active, deferring devbw vote updates\n");
+		d->freeze_bw_blocked = true;
+		return 0;
+	}
+
+	d->freeze_bw_blocked = false;
 
 	if (d->use_icc) {
 		u32 avg_bw, peak_bw;
@@ -450,6 +472,19 @@ static int devfreq_devbw_remove(struct platform_device *pdev)
 	return devfreq_remove_devbw(&pdev->dev);
 }
 
+static int __maybe_unused devfreq_devbw_suspend(struct device *dev)
+{
+	return devfreq_suspend_devbw(dev);
+}
+
+static int __maybe_unused devfreq_devbw_resume(struct device *dev)
+{
+	return devfreq_resume_devbw(dev);
+}
+
+static SIMPLE_DEV_PM_OPS(devfreq_devbw_pm_ops,
+			 devfreq_devbw_suspend, devfreq_devbw_resume);
+
 static const struct of_device_id devbw_match_table[] = {
 	{ .compatible = "qcom,devbw-llcc" },
 	{ .compatible = "qcom,devbw-ddr" },
@@ -463,6 +498,7 @@ static struct platform_driver devbw_driver = {
 	.driver = {
 		.name = "devbw",
 		.of_match_table = devbw_match_table,
+		.pm = &devfreq_devbw_pm_ops,
 		.suppress_bind_attrs = true,
 	},
 };
