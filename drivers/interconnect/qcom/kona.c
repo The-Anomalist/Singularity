@@ -18,6 +18,7 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/sysfs.h>
+#include <linux/workqueue.h>
 
 #include <dt-bindings/interconnect/qcom,kona.h>
 #include <soc/qcom/cmd-db.h>
@@ -53,6 +54,9 @@ struct kona_icc_provider {
 	bool system_suspended;
 	u64 *last_ab;
 	u64 *last_ib;
+	u64 *req_ab;
+	u64 *req_ib;
+	struct delayed_work retry_work;
 	struct device **sysfs_nodes;
 	struct class *icc_class;
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
@@ -70,6 +74,8 @@ struct kona_icc_node_sysfs {
         struct kona_icc_provider *qp;
         unsigned int index;
 };
+
+#define KONA_RETRY_DELAY_MS	20
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
 /*
@@ -160,6 +166,10 @@ static unsigned long kona_cpu_keepalive_ib_kb = 2600000;  /* 2.6 GB/s */
 static bool kona_npu_keepalive_enable = true;
 static unsigned long kona_npu_keepalive_ab_kb = 1000000;  /* 1.0 GB/s */
 static unsigned long kona_npu_keepalive_ib_kb = 2000000;  /* 2.0 GB/s */
+static bool kona_disp_keepalive_enable = true;
+static unsigned long kona_disp_keepalive_ab_kb = 64000;   /* 64 MB/s */
+static unsigned long kona_disp_keepalive_ib_kb = 128000;  /* 128 MB/s */
+static bool kona_disp_vote_debug = true;
 static unsigned int kona_gpu_ib_boost_percent = 145;
 static unsigned int kona_gpu_ib_min_ratio_percent = 180;
 static bool kona_gpu_llcc_turbo_enable = true;
@@ -194,6 +204,18 @@ MODULE_PARM_DESC(kona_npu_keepalive_ab_kb,
 module_param(kona_npu_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_npu_keepalive_ib_kb,
         "npu keepalive IB floor in KB/s (default: 2000000)");
+module_param(kona_disp_keepalive_enable, bool, 0644);
+MODULE_PARM_DESC(kona_disp_keepalive_enable,
+        "Keep a tiny non-zero floor for display AB/IB between short mode transitions");
+module_param(kona_disp_keepalive_ab_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_disp_keepalive_ab_kb,
+        "display keepalive AB floor in KB/s (default: 64000)");
+module_param(kona_disp_keepalive_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_disp_keepalive_ib_kb,
+        "display keepalive IB floor in KB/s (default: 128000)");
+module_param(kona_disp_vote_debug, bool, 0644);
+MODULE_PARM_DESC(kona_disp_vote_debug,
+        "Enable ratelimited debug for display ICC vote transitions");
 module_param(kona_gpu_ib_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_ib_boost_percent,
         "Percent boost applied to gpu-ddr IB after floors (default: 145)");
@@ -291,6 +313,12 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 		keepalive_ib = kona_npu_keepalive_ib_kb;
 		break;
 	case KONA_ROLE_DISPLAY:
+		if (!kona_disp_keepalive_enable)
+			break;
+		keepalive = true;
+		keepalive_ab = kona_disp_keepalive_ab_kb;
+		keepalive_ib = kona_disp_keepalive_ib_kb;
+		break;
 	case KONA_ROLE_GENERIC:
 	default:
 		break;
@@ -739,6 +767,88 @@ static int kona_icc_send_bw(struct device *dev, const char *res, u32 kbps)
 	return ret;
 }
 
+static int kona_icc_send_node_votes(struct kona_icc_provider *qp,
+				    unsigned int index, u64 ab, u64 ib,
+				    bool *retry)
+{
+	int ret;
+
+	if (retry)
+		*retry = false;
+
+	if (qp->nodes[index].id == KONA_ICC_GPU_TO_MEM) {
+		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ib, ib);
+		if (ret == -EAGAIN)
+			goto out_retry;
+		if (ret)
+			return ret;
+
+		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ab, ab);
+		if (ret == -EAGAIN)
+			goto out_retry;
+		if (ret)
+			return ret;
+	} else {
+		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ab, ab);
+		if (ret == -EAGAIN)
+			goto out_retry;
+		if (ret)
+			return ret;
+
+		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ib, ib);
+		if (ret == -EAGAIN)
+			goto out_retry;
+		if (ret)
+			return ret;
+	}
+
+	if (qp->last_ab)
+		qp->last_ab[index] = ab;
+	if (qp->last_ib)
+		qp->last_ib[index] = ib;
+
+	return 0;
+
+out_retry:
+	if (retry)
+		*retry = true;
+
+	return -EAGAIN;
+}
+
+static void kona_icc_retry_workfn(struct work_struct *work)
+{
+	struct kona_icc_provider *qp = container_of(to_delayed_work(work),
+						    struct kona_icc_provider,
+						    retry_work);
+	bool need_retry = false;
+	unsigned int i;
+
+	if (!qp->req_ab || !qp->req_ib)
+		return;
+
+	for (i = 0; i < qp->num_nodes; i++) {
+		u64 ab = qp->req_ab[i];
+		u64 ib = qp->req_ib[i];
+		bool retry = false;
+
+		if (ab == U64_MAX || ib == U64_MAX)
+			continue;
+
+		if (qp->last_ab && qp->last_ib &&
+		    qp->last_ab[i] == ab && qp->last_ib[i] == ib)
+			continue;
+
+		kona_icc_send_node_votes(qp, i, ab, ib, &retry);
+		if (retry)
+			need_retry = true;
+	}
+
+	if (need_retry)
+		schedule_delayed_work(&qp->retry_work,
+				     msecs_to_jiffies(KONA_RETRY_DELAY_MS));
+}
+
 static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 {
 	struct kona_icc_provider *qp;
@@ -805,6 +915,14 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 skip_perf_floor:
 #endif
 
+	if (kona_disp_vote_debug && qp->nodes[index].role == KONA_ROLE_DISPLAY &&
+	    qp->last_ab && qp->last_ib &&
+	    (qp->last_ab[index] != ab || qp->last_ib[index] != ib))
+		pr_info_ratelimited("kona-icc: disp vote %s avg=%u peak=%u -> ab=%llu ib=%llu (prev=%llu/%llu suspend=%u)\n",
+				    qp->nodes[index].name, avg_bw, peak_bw, ab, ib,
+				    qp->last_ab[index], qp->last_ib[index],
+				    READ_ONCE(qp->system_suspended));
+
 #ifdef DEBUG
 	if (qp->nodes[index].role == KONA_ROLE_CPU ||
 	    qp->nodes[index].role == KONA_ROLE_CPU_PRIME)
@@ -815,59 +933,23 @@ skip_perf_floor:
 			qp->last_ib ? qp->last_ib[index] : 0);
 #endif
 
+	if (qp->req_ab)
+		qp->req_ab[index] = ab;
+	if (qp->req_ib)
+		qp->req_ib[index] = ib;
+
 	if (qp->last_ab && qp->last_ib &&
 	    qp->last_ab[index] == ab && qp->last_ib[index] == ib)
 		return 0;
 
-	/*
-	 * Apply AB/IB votes. If cmd-db/RPMh translation isn't ready yet,
-	 * kona_icc_send_bw() returns -EAGAIN. Treat that as a soft success
-	 * but DO NOT cache the vote so a later caller can retry and apply it.
-	 */
-	/*
-	 * Reduce BCM dirty-bit churn: only send changed values. For gpu-ddr path,
-	 * send IB first so latency-sensitive bursts are serviced earlier.
-	 */
-	if (qp->nodes[index].id == KONA_ICC_GPU_TO_MEM) {
-		if (!qp->last_ib || qp->last_ib[index] != ib) {
-			ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ib, ib);
-			if (ret == -EAGAIN)
-				return 0;
-			if (ret)
-				return ret;
-		}
-
-		if (!qp->last_ab || qp->last_ab[index] != ab) {
-			ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ab, ab);
-			if (ret == -EAGAIN)
-				return 0;
-			if (ret)
-				return ret;
-		}
-	} else {
-		if (!qp->last_ab || qp->last_ab[index] != ab) {
-			ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ab, ab);
-			if (ret == -EAGAIN)
-				return 0;
-			if (ret)
-				return ret;
-		}
-
-		if (!qp->last_ib || qp->last_ib[index] != ib) {
-			ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ib, ib);
-			if (ret == -EAGAIN)
-				return 0;
-			if (ret)
-				return ret;
-		}
+	ret = kona_icc_send_node_votes(qp, index, ab, ib, NULL);
+	if (ret == -EAGAIN) {
+		schedule_delayed_work(&qp->retry_work,
+				     msecs_to_jiffies(KONA_RETRY_DELAY_MS));
+		return 0;
 	}
 
-	if (qp->last_ab)
-		qp->last_ab[index] = ab;
-	if (qp->last_ib)
-		qp->last_ib[index] = ib;
-
-	return 0;
+	return ret;
 }
 
 static ssize_t ab_show(struct device *dev,
@@ -1026,6 +1108,9 @@ static int kona_icc_suspend(struct device *dev)
 	if (qp)
 		WRITE_ONCE(qp->system_suspended, true);
 
+	if (qp)
+		cancel_delayed_work_sync(&qp->retry_work);
+
 	/*
 	 * Consumers can still issue ICC requests during late suspend/resume
 	 * transitions. Drop our software cache pre-suspend so the next request is
@@ -1048,6 +1133,9 @@ static int kona_icc_resume(struct device *dev)
 	 * software cache so the first post-resume icc_set_bw() always re-sends.
 	 */
 	kona_icc_invalidate_cache(qp);
+
+	if (qp)
+		schedule_delayed_work(&qp->retry_work, 0);
 
 	return 0;
 }
@@ -1084,14 +1172,33 @@ static int kona_icc_probe(struct platform_device *pdev)
 	}
 
 	qp->last_ab = devm_kcalloc(&pdev->dev, qp->num_nodes, sizeof(u64),
-					   GFP_KERNEL);
+				   GFP_KERNEL);
 	if (!qp->last_ab)
 		return -ENOMEM;
 
 	qp->last_ib = devm_kcalloc(&pdev->dev, qp->num_nodes, sizeof(u64),
-					   GFP_KERNEL);
+				   GFP_KERNEL);
 	if (!qp->last_ib)
 		return -ENOMEM;
+
+	qp->req_ab = devm_kcalloc(&pdev->dev, qp->num_nodes, sizeof(u64),
+				  GFP_KERNEL);
+	if (!qp->req_ab)
+		return -ENOMEM;
+
+	qp->req_ib = devm_kcalloc(&pdev->dev, qp->num_nodes, sizeof(u64),
+				  GFP_KERNEL);
+	if (!qp->req_ib)
+		return -ENOMEM;
+
+	INIT_DELAYED_WORK(&qp->retry_work, kona_icc_retry_workfn);
+
+	for (i = 0; i < qp->num_nodes; i++) {
+		qp->last_ab[i] = U64_MAX;
+		qp->last_ib[i] = U64_MAX;
+		qp->req_ab[i] = U64_MAX;
+		qp->req_ib[i] = U64_MAX;
+	}
 
         qp->provider.dev = &pdev->dev;
         qp->provider.of_node = pdev->dev.of_node;
@@ -1152,6 +1259,8 @@ static int kona_icc_probe(struct platform_device *pdev)
 static int kona_icc_remove(struct platform_device *pdev)
 {
 	struct kona_icc_provider *qp = platform_get_drvdata(pdev);
+
+	cancel_delayed_work_sync(&qp->retry_work);
 
         kona_icc_unregister_sysfs(qp);
         icc_provider_unregister(&qp->provider);
