@@ -19,6 +19,8 @@
 #include <linux/slab.h>
 #include <linux/sysfs.h>
 #include <linux/workqueue.h>
+#include <linux/suspend.h>
+#include <linux/atomic.h>
 
 #include <dt-bindings/interconnect/qcom,kona.h>
 #include <soc/qcom/cmd-db.h>
@@ -52,6 +54,7 @@ struct kona_icc_provider {
 	size_t num_nodes;
 	bool boot_floor_vote;
 	bool system_suspended;
+	atomic_t votes_paused;
 	u64 *last_ab;
 	u64 *last_ib;
 	u64 *req_ab;
@@ -76,6 +79,11 @@ struct kona_icc_node_sysfs {
 };
 
 #define KONA_RETRY_DELAY_MS	20
+
+static bool kona_resume_debug;
+module_param_named(kona_resume_debug, kona_resume_debug, bool, 0644);
+MODULE_PARM_DESC(kona_resume_debug, "Enable Kona ICC suspend/resume deferral debug");
+
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
 /*
@@ -166,10 +174,6 @@ static unsigned long kona_cpu_keepalive_ib_kb = 2600000;  /* 2.6 GB/s */
 static bool kona_npu_keepalive_enable = true;
 static unsigned long kona_npu_keepalive_ab_kb = 1000000;  /* 1.0 GB/s */
 static unsigned long kona_npu_keepalive_ib_kb = 2000000;  /* 2.0 GB/s */
-static bool kona_disp_keepalive_enable = true;
-static unsigned long kona_disp_keepalive_ab_kb = 64000;   /* 64 MB/s */
-static unsigned long kona_disp_keepalive_ib_kb = 128000;  /* 128 MB/s */
-static bool kona_disp_vote_debug = true;
 static unsigned int kona_gpu_ib_boost_percent = 145;
 static unsigned int kona_gpu_ib_min_ratio_percent = 180;
 static bool kona_gpu_llcc_turbo_enable = true;
@@ -204,18 +208,6 @@ MODULE_PARM_DESC(kona_npu_keepalive_ab_kb,
 module_param(kona_npu_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_npu_keepalive_ib_kb,
         "npu keepalive IB floor in KB/s (default: 2000000)");
-module_param(kona_disp_keepalive_enable, bool, 0644);
-MODULE_PARM_DESC(kona_disp_keepalive_enable,
-        "Keep a tiny non-zero floor for display AB/IB between short mode transitions");
-module_param(kona_disp_keepalive_ab_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_disp_keepalive_ab_kb,
-        "display keepalive AB floor in KB/s (default: 64000)");
-module_param(kona_disp_keepalive_ib_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_disp_keepalive_ib_kb,
-        "display keepalive IB floor in KB/s (default: 128000)");
-module_param(kona_disp_vote_debug, bool, 0644);
-MODULE_PARM_DESC(kona_disp_vote_debug,
-        "Enable ratelimited debug for display ICC vote transitions");
 module_param(kona_gpu_ib_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_ib_boost_percent,
         "Percent boost applied to gpu-ddr IB after floors (default: 145)");
@@ -313,12 +305,6 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 		keepalive_ib = kona_npu_keepalive_ib_kb;
 		break;
 	case KONA_ROLE_DISPLAY:
-		if (!kona_disp_keepalive_enable)
-			break;
-		keepalive = true;
-		keepalive_ab = kona_disp_keepalive_ab_kb;
-		keepalive_ib = kona_disp_keepalive_ib_kb;
-		break;
 	case KONA_ROLE_GENERIC:
 	default:
 		break;
@@ -761,6 +747,8 @@ static int kona_icc_send_bw(struct device *dev, const char *res, u32 kbps)
 	cmd.wait = false;
 
 	ret = rpmh_write(dev, RPMH_ACTIVE_ONLY_STATE, &cmd, 1);
+	if (ret == -EBUSY || ret == -ETIMEDOUT)
+		return -EAGAIN;
 	if (ret == -EPROBE_DEFER)
 		return -EAGAIN;
 
@@ -915,14 +903,6 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 skip_perf_floor:
 #endif
 
-	if (kona_disp_vote_debug && qp->nodes[index].role == KONA_ROLE_DISPLAY &&
-	    qp->last_ab && qp->last_ib &&
-	    (qp->last_ab[index] != ab || qp->last_ib[index] != ib))
-		pr_info_ratelimited("kona-icc: disp vote %s avg=%u peak=%u -> ab=%llu ib=%llu (prev=%llu/%llu suspend=%u)\n",
-				    qp->nodes[index].name, avg_bw, peak_bw, ab, ib,
-				    qp->last_ab[index], qp->last_ib[index],
-				    READ_ONCE(qp->system_suspended));
-
 #ifdef DEBUG
 	if (qp->nodes[index].role == KONA_ROLE_CPU ||
 	    qp->nodes[index].role == KONA_ROLE_CPU_PRIME)
@@ -932,12 +912,31 @@ skip_perf_floor:
 			qp->last_ab ? qp->last_ab[index] : 0,
 			qp->last_ib ? qp->last_ib[index] : 0);
 #endif
-
-	if (qp->req_ab)
+	/* Cache requested AB/IB first. */
+	if (qp->req_ab) {
 		qp->req_ab[index] = ab;
-	if (qp->req_ib)
+	}
+	if (qp->req_ib) {
 		qp->req_ib[index] = ib;
+	}
 
+	/*
+	 * During suspend/resume noirq windows, cache votes but do not issue RPMh
+	 * ACTIVE_ONLY writes. apps_rsc/TCS readiness races here can permanently
+	 * stall deep resume.
+	 */
+	if (unlikely(atomic_read(&qp->votes_paused))) {
+		if (kona_resume_debug)
+			dev_info_ratelimited(qp->provider.dev,
+				"kona-icc: deferring %s ab=%llu ib=%llu (atomic=%d irqoff=%d target=%d)\n",
+				qp->nodes[index].name, ab, ib,
+				in_atomic(), irqs_disabled(),
+				READ_ONCE(pm_suspend_target_state));
+
+		/* Schedule a replay shortly after resume. */
+		schedule_delayed_work(&qp->retry_work, 0);
+		return 0;
+	}
 	if (qp->last_ab && qp->last_ib &&
 	    qp->last_ab[index] == ab && qp->last_ib[index] == ib)
 		return 0;
@@ -1101,6 +1100,38 @@ static void kona_icc_invalidate_cache(struct kona_icc_provider *qp)
 #endif
 }
 
+        static int kona_icc_suspend_noirq(struct device *dev)
+{
+	struct kona_icc_provider *qp = dev_get_drvdata(dev);
+
+	if (qp)
+		atomic_set(&qp->votes_paused, 1);
+
+	if (kona_resume_debug && qp)
+		dev_info(dev, "kona-icc: votes paused (suspend_noirq)\n");
+
+	return 0;
+}
+
+static int kona_icc_resume_noirq(struct device *dev)
+{
+	struct kona_icc_provider *qp = dev_get_drvdata(dev);
+
+	/*
+	 * Keep votes paused through resume_noirq. Unpause in normal resume() once
+	 * RPMh/apps_rsc is expected to be ready for ACTIVE_ONLY writes.
+	 */
+	if (qp)
+		atomic_set(&qp->votes_paused, 1);
+
+	if (kona_resume_debug && qp)
+		dev_info(dev, "kona-icc: resume_noirq (still paused)\n");
+
+	return 0;
+}
+
+
+
 static int kona_icc_suspend(struct device *dev)
 {
 	struct kona_icc_provider *qp = dev_get_drvdata(dev);
@@ -1108,18 +1139,9 @@ static int kona_icc_suspend(struct device *dev)
 	if (qp)
 		WRITE_ONCE(qp->system_suspended, true);
 
-	if (qp)
-		cancel_delayed_work_sync(&qp->retry_work);
-
-	/*
-	 * Consumers can still issue ICC requests during late suspend/resume
-	 * transitions. Drop our software cache pre-suspend so the next request is
-	 * always pushed to RPMh instead of being elided as a duplicate.
-	 */
-	kona_icc_invalidate_cache(qp);
-
 	return 0;
 }
+
 
 static int kona_icc_resume(struct device *dev)
 {
@@ -1127,6 +1149,12 @@ static int kona_icc_resume(struct device *dev)
 
 	if (qp)
 		WRITE_ONCE(qp->system_suspended, false);
+
+	if (qp)
+		atomic_set(&qp->votes_paused, 0);
+
+	if (kona_resume_debug && qp)
+		dev_info(dev, "kona-icc: votes unpaused (resume)\n");
 
 	/*
 	 * RPMh ACTIVE_ONLY votes are not retained across suspend. Invalidate the
@@ -1140,14 +1168,20 @@ static int kona_icc_resume(struct device *dev)
 	return 0;
 }
 
+
+#ifdef CONFIG_PM_SLEEP
 static const struct dev_pm_ops kona_icc_pm_ops = {
-	.suspend = kona_icc_suspend,
-	.freeze = kona_icc_suspend,
-	.poweroff = kona_icc_suspend,
-	.resume = kona_icc_resume,
-	.restore = kona_icc_resume,
-	.thaw = kona_icc_resume,
+	.suspend		= kona_icc_suspend,
+	.resume			= kona_icc_resume,
+	.suspend_noirq	= kona_icc_suspend_noirq,
+	.resume_noirq	= kona_icc_resume_noirq,
+	.freeze_noirq	= kona_icc_suspend_noirq,
+	.thaw_noirq	= kona_icc_resume_noirq,
+	.poweroff_noirq	= kona_icc_suspend_noirq,
+	.restore_noirq	= kona_icc_resume_noirq,
 };
+#endif
+
 
 static int kona_icc_probe(struct platform_device *pdev)
 {

@@ -24,6 +24,7 @@
 #include <linux/math64.h>
 #include <linux/freezer.h>
 #include <linux/pm.h>
+#include <linux/suspend.h>
 #include <trace/events/power.h>
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
@@ -56,7 +57,14 @@ struct dev_data {
 
 static bool devbw_suspend_in_progress(void)
 {
-	return atomic_read(&system_freezing_cnt) > 0;
+    /*
+     * Limit vote deferral to system suspend flows. cgroup/other freezer users
+     * should not influence devbw behavior.
+     */
+    if (READ_ONCE(pm_suspend_target_state) != PM_SUSPEND_ON)
+        return true;
+
+    return READ_ONCE(pm_freezing);
 }
 
 static void devbw_log_icc_state(struct device *dev, struct dev_data *d)
