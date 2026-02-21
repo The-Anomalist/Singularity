@@ -174,6 +174,9 @@ static unsigned long kona_cpu_keepalive_ib_kb = 2600000;  /* 2.6 GB/s */
 static bool kona_npu_keepalive_enable = true;
 static unsigned long kona_npu_keepalive_ab_kb = 1000000;  /* 1.0 GB/s */
 static unsigned long kona_npu_keepalive_ib_kb = 2000000;  /* 2.0 GB/s */
+static bool kona_disp_keepalive_enable = true;
+static unsigned long kona_disp_keepalive_ab_kb = 200000;   /* 200 MB/s */
+static unsigned long kona_disp_keepalive_ib_kb = 400000;   /* 400 MB/s */
 static unsigned int kona_gpu_ib_boost_percent = 145;
 static unsigned int kona_gpu_ib_min_ratio_percent = 180;
 static bool kona_gpu_llcc_turbo_enable = true;
@@ -208,6 +211,16 @@ MODULE_PARM_DESC(kona_npu_keepalive_ab_kb,
 module_param(kona_npu_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_npu_keepalive_ib_kb,
         "npu keepalive IB floor in KB/s (default: 2000000)");
+module_param(kona_disp_keepalive_enable, bool, 0644);
+MODULE_PARM_DESC(kona_disp_keepalive_enable,
+	"Keep non-zero floor for disp0/disp1 DDR AB/IB between idle/off transitions");
+module_param(kona_disp_keepalive_ab_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_disp_keepalive_ab_kb,
+	"display keepalive AB floor in KB/s (default: 200000)");
+module_param(kona_disp_keepalive_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_disp_keepalive_ib_kb,
+	"display keepalive IB floor in KB/s (default: 400000)");
+
 module_param(kona_gpu_ib_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_ib_boost_percent,
         "Percent boost applied to gpu-ddr IB after floors (default: 145)");
@@ -305,6 +318,12 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 		keepalive_ib = kona_npu_keepalive_ib_kb;
 		break;
 	case KONA_ROLE_DISPLAY:
+		if (!kona_disp_keepalive_enable)
+			break;
+		keepalive = true;
+		keepalive_ab = kona_disp_keepalive_ab_kb;
+		keepalive_ib = kona_disp_keepalive_ib_kb;
+		break;
 	case KONA_ROLE_GENERIC:
 	default:
 		break;
@@ -812,6 +831,20 @@ static void kona_icc_retry_workfn(struct work_struct *work)
 	bool need_retry = false;
 	unsigned int i;
 
+	/*
+	 * Never push ACTIVE_ONLY votes while suspend/resume is in a fragile stage.
+	 * Cached requests are replayed from resume() after votes are unpaused.
+	 */
+	if (unlikely(atomic_read(&qp->votes_paused) ||
+		     READ_ONCE(qp->system_suspended))) {
+		if (kona_resume_debug)
+			dev_info_ratelimited(qp->provider.dev,
+				"kona-icc: retry deferred (paused=%d suspended=%d)\n",
+				atomic_read(&qp->votes_paused),
+				READ_ONCE(qp->system_suspended));
+		return;
+	}
+
 	if (!qp->req_ab || !qp->req_ib)
 		return;
 
@@ -1136,8 +1169,10 @@ static int kona_icc_suspend(struct device *dev)
 {
 	struct kona_icc_provider *qp = dev_get_drvdata(dev);
 
-	if (qp)
+	if (qp) {
 		WRITE_ONCE(qp->system_suspended, true);
+		cancel_delayed_work_sync(&qp->retry_work);
+	}
 
 	return 0;
 }
