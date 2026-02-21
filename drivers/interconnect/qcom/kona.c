@@ -84,6 +84,11 @@ static bool kona_resume_debug;
 module_param_named(kona_resume_debug, kona_resume_debug, bool, 0644);
 MODULE_PARM_DESC(kona_resume_debug, "Enable Kona ICC suspend/resume deferral debug");
 
+static bool kona_perf_floor_enable;
+module_param(kona_perf_floor_enable, bool, 0644);
+MODULE_PARM_DESC(kona_perf_floor_enable,
+	"Enable aggressive hard bandwidth floors (default: off)");
+
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
 /*
@@ -410,6 +415,9 @@ static void __maybe_unused
 kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		     u64 *ab, u64 *ib)
 {
+	if (!kona_perf_floor_enable)
+		return;
+
 	switch (desc->id) {
 	case KONA_ICC_CPU_TO_MEM:
 	case KONA_ICC_CPU0_TO_MEM:
@@ -831,21 +839,14 @@ static void kona_icc_retry_workfn(struct work_struct *work)
 	bool need_retry = false;
 	unsigned int i;
 
-	/*
-	 * Never push ACTIVE_ONLY votes while suspend/resume is in a fragile stage.
-	 * Cached requests are replayed from resume() after votes are unpaused.
-	 */
-	if (unlikely(atomic_read(&qp->votes_paused) ||
-		     READ_ONCE(qp->system_suspended))) {
-		if (kona_resume_debug)
-			dev_info_ratelimited(qp->provider.dev,
-				"kona-icc: retry deferred (paused=%d suspended=%d)\n",
-				atomic_read(&qp->votes_paused),
-				READ_ONCE(qp->system_suspended));
-		return;
-	}
-
 	if (!qp->req_ab || !qp->req_ib)
+		return;
+
+	/*
+	 * Do not replay votes while the system is in a suspended/paused window.
+	 * Some wake/idle paths are not RPMh-safe and can wedge apps_rsc.
+	 */
+	if (unlikely(READ_ONCE(qp->system_suspended) || atomic_read(&qp->votes_paused)))
 		return;
 
 	for (i = 0; i < qp->num_nodes; i++) {
@@ -1169,10 +1170,12 @@ static int kona_icc_suspend(struct device *dev)
 {
 	struct kona_icc_provider *qp = dev_get_drvdata(dev);
 
-	if (qp) {
-		WRITE_ONCE(qp->system_suspended, true);
-		cancel_delayed_work_sync(&qp->retry_work);
-	}
+	if (!qp)
+		return 0;
+
+	WRITE_ONCE(qp->system_suspended, true);
+	/* Ensure no stale vote replays fire during suspend/idle windows. */
+	cancel_delayed_work_sync(&qp->retry_work);
 
 	return 0;
 }
