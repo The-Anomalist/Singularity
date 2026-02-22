@@ -1174,17 +1174,24 @@ static int gmu_gpu_bw_probe(struct kgsl_device *device, struct gmu_device *gmu)
 
 	gmu->gpu_bus_scale_table = bus_scale_table;
 	gmu->num_bwlevels = bus_scale_table->num_usecases;
-	gmu->pcl = msm_bus_scale_register_client(bus_scale_table);
-	if (!gmu->pcl) {
-		dev_err(&gmu->pdev->dev, "dt: cannot register bus client\n");
-		return -ENODEV;
-	}
 
 	ret = gmu_icc_probe(gmu);
 	if (ret)
 		dev_warn(&gmu->pdev->dev,
 			"Failed probing GMU ICC paths (%d), using msm_bus fallback\n",
 			ret);
+
+	gmu->pcl = msm_bus_scale_register_client(bus_scale_table);
+	if (!gmu->pcl) {
+		if (gmu->num_icc_paths) {
+			dev_warn(&gmu->pdev->dev,
+				"dt: cannot register bus client, continuing with ICC votes only\n");
+			return 0;
+		}
+
+		dev_err(&gmu->pdev->dev, "dt: cannot register bus client\n");
+		return -ENODEV;
+	}
 
 	return 0;
 }

@@ -2547,8 +2547,13 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 		 */
 		pwr->pcl = msm_bus_scale_register_client(bus_scale_table);
 		if (pwr->pcl == 0) {
-			result = -EINVAL;
-			goto error_cleanup_gpu_cfg;
+			if (pwr->num_icc_paths) {
+				dev_warn(device->dev,
+					"Unable to register gpu msm_bus client, using ICC votes only\n");
+			} else {
+				result = -EINVAL;
+				goto error_cleanup_gpu_cfg;
+			}
 		}
 	}
 
