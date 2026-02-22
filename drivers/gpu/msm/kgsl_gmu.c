@@ -726,16 +726,11 @@ static int rpmh_arc_votes_init(struct kgsl_device *device,
 	num_freqs = gmu->num_gpupwrlevels;
 	freq_tbl = gmu->gpu_freqs;
 
-	if (num_freqs > MAX_GX_LEVELS) {
+	if (num_freqs > pri_rail->num || num_freqs > MAX_GX_LEVELS) {
 		dev_err(&gmu->pdev->dev,
-			"Defined more GPU DCVS levels than driver can store\n");
+			"Defined more GPU DCVS levels than RPMh can support\n");
 		return -EINVAL;
 	}
-
-	if (num_freqs > pri_rail->num)
-		dev_warn(&gmu->pdev->dev,
-			"GPU DCVS levels (%u) exceed RPMh table entries (%u); reusing top rail votes\n",
-			num_freqs, pri_rail->num);
 
 	memset(vlvl_tbl, 0, sizeof(vlvl_tbl));
 
