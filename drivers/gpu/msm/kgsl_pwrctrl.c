@@ -8,6 +8,7 @@
 #include <linux/msm-bus-board.h>
 #include <linux/msm_kgsl.h>
 #include <linux/of_device.h>
+#include <linux/interconnect.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
@@ -248,19 +249,117 @@ static int kgsl_bus_scale_request(struct kgsl_device *device,
 		unsigned int buslevel)
 {
 	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
+	struct msm_bus_vectors *vectors;
+	struct msm_bus_paths *usecase;
+	u32 avg_bw, peak_bw;
+	unsigned int i;
 	int ret = 0;
 
 	/* GMU scales BW */
 	if (gmu_core_scales_bandwidth(device))
 		ret = gmu_core_dcvs_set(device, INVALID_DCVS_IDX, buslevel);
+	else if (pwr->num_icc_paths && pwr->bus_scale_table) {
+		if (buslevel >= pwr->bus_scale_table->num_usecases)
+			ret = -EINVAL;
+		else {
+			usecase = &pwr->bus_scale_table->usecase[buslevel];
+			vectors = usecase->vectors;
+
+			if (!vectors || !usecase->num_paths)
+				ret = -EINVAL;
+		}
+
+		for (i = 0; !ret && i < pwr->num_icc_paths; i++) {
+			unsigned int vec_idx = min_t(unsigned int, i,
+						    usecase->num_paths - 1);
+
+			avg_bw = div_u64((u64)vectors[vec_idx].ab, 1000ULL);
+			peak_bw = div_u64((u64)vectors[vec_idx].ib, 1000ULL);
+
+			ret = icc_set_bw(pwr->icc_paths[i], avg_bw, peak_bw);
+		}
+
+		if (ret)
+			dev_warn(device->dev,
+				"ICC bus vote failed (%d), falling back to msm_bus\n",
+				ret);
+	}
+
 	else if (pwr->pcl)
 		/* Linux bus driver scales BW */
+		ret = msm_bus_scale_client_update_request(pwr->pcl, buslevel);
+
+	if (ret && pwr->pcl)
 		ret = msm_bus_scale_client_update_request(pwr->pcl, buslevel);
 
 	if (ret)
 		dev_err(device->dev, "GPU BW scaling failure: %d\n", ret);
 
 	return ret;
+}
+
+static int kgsl_pwrctrl_icc_init(struct kgsl_device *device)
+{
+	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
+	struct device *dev = device->dev;
+	const char *icc_name;
+	int i, ret;
+	int num_icc_paths;
+
+	num_icc_paths = of_count_phandle_with_args(dev->of_node,
+					   "interconnects",
+					   "#interconnect-cells");
+	if (num_icc_paths <= 0)
+		return 0;
+
+	if (num_icc_paths > ARRAY_SIZE(pwr->icc_paths)) {
+		dev_warn(dev, "Ignoring unexpected number of ICC paths: %d\n",
+			num_icc_paths);
+		return 0;
+	}
+
+	if (of_find_property(dev->of_node, "interconnect-names", NULL)) {
+		for (i = 0; i < num_icc_paths; i++) {
+			ret = of_property_read_string_index(dev->of_node,
+							    "interconnect-names",
+							    i, &icc_name);
+			if (ret)
+				goto clear_icc;
+
+			pwr->icc_paths[i] = devm_of_icc_get(dev, icc_name);
+			if (IS_ERR(pwr->icc_paths[i])) {
+				ret = PTR_ERR(pwr->icc_paths[i]);
+				pwr->icc_paths[i] = NULL;
+				goto clear_icc;
+			}
+		}
+	} else if (num_icc_paths == 1) {
+		pwr->icc_paths[0] = devm_of_icc_get(dev, NULL);
+		if (IS_ERR(pwr->icc_paths[0])) {
+			ret = PTR_ERR(pwr->icc_paths[0]);
+			pwr->icc_paths[0] = NULL;
+			goto clear_icc;
+		}
+	} else {
+		dev_warn(dev,
+			"Missing interconnect-names for %d paths, disabling KGSL ICC votes\n",
+			num_icc_paths);
+		return 0;
+	}
+
+	pwr->num_icc_paths = num_icc_paths;
+	dev_info(dev, "Enabled %u KGSL ICC path(s)\n", pwr->num_icc_paths);
+	return 0;
+
+clear_icc:
+	dev_warn(dev,
+		"Failed to attach KGSL ICC paths (%d), using msm_bus fallback\n",
+		ret);
+	for (i = 0; i < ARRAY_SIZE(pwr->icc_paths); i++)
+		pwr->icc_paths[i] = NULL;
+	pwr->num_icc_paths = 0;
+
+	return 0;
 }
 
 /**
@@ -2289,6 +2388,8 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 	if (bus_scale_table == NULL)
 		return -EINVAL;
 
+	pwr->bus_scale_table = bus_scale_table;
+
 	result = _get_clocks(device);
 	if (result)
 		goto error_cleanup_clks;
@@ -2350,6 +2451,8 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 				"qcom,l2pc-update-queue");
 
 	pm_runtime_enable(&pdev->dev);
+
+	kgsl_pwrctrl_icc_init(device);
 
 	gpu_cfg_node =
 		of_find_node_by_name(device->pdev->dev.of_node,
