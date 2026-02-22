@@ -7,6 +7,7 @@
 #define __MSM_VIDC_RESOURCES_H__
 
 #include <linux/platform_device.h>
+#include <linux/interconnect.h>
 #include "msm_vidc.h"
 #include <linux/soc/qcom/llcc-qcom.h>
 #include "soc/qcom/cx_ipeak.h"
@@ -84,6 +85,7 @@ struct bus_info {
 	unsigned int range[2];
 	struct device *dev;
 	struct msm_bus_client_handle *client;
+	struct icc_path *icc_path;
 	bool is_prfm_mode;
 	const char *mode;
 };
@@ -214,4 +216,3 @@ static inline bool is_iommu_present(struct msm_vidc_platform_resources *res)
 }
 
 #endif
-

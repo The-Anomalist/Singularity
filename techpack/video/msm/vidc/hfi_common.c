@@ -19,6 +19,7 @@
 #include <linux/slab.h>
 #include <linux/workqueue.h>
 #include <linux/platform_device.h>
+#include <linux/interconnect.h>
 #include <linux/soc/qcom/llcc-qcom.h>
 #include <soc/qcom/cx_ipeak.h>
 #include <soc/qcom/scm.h>
@@ -994,6 +995,7 @@ static int __vote_bandwidth(struct bus_info *bus, unsigned long ab_kbps,
 			    unsigned long ib_kbps, u32 sid)
 {
 	int rc = 0;
+	int msm_bus_rc = 0;
 	uint64_t ab = 0, ib = 0;
 
 	/* Bus Driver expects values in Bps */
@@ -1001,11 +1003,29 @@ static int __vote_bandwidth(struct bus_info *bus, unsigned long ab_kbps,
 	ib = ib_kbps * 1000;
 	s_vpr_p(sid, "Voting bus %s to ab %llu ib %llu bps\n",
 						bus->name, ab, ib);
-	rc = msm_bus_scale_update_bw(bus->client, ab, ib);
-	if (rc)
+
+	if (bus->icc_path) {
+		rc = icc_set_bw(bus->icc_path, ab_kbps, ib_kbps);
+		if (rc)
+			s_vpr_e(sid,
+				"Failed ICC vote for bus %s ab %lu ib %lu kbps rc=%d\n",
+				bus->name, ab_kbps, ib_kbps, rc);
+		else
+			return 0;
+	}
+
+	if (!bus->client)
+		return rc;
+
+	msm_bus_rc = msm_bus_scale_update_bw(bus->client, ab, ib);
+	if (msm_bus_rc) {
 		s_vpr_e(sid,
 			"Failed voting bus %s to ab %llu ib %llu bps rc=%d\n",
-			bus->name, ab, ib, rc);
+			bus->name, ab, ib, msm_bus_rc);
+		if (!rc)
+			rc = msm_bus_rc;
+	}
+
 	return rc;
 }
 
@@ -1035,7 +1055,7 @@ static int __vote_buses(struct venus_hfi_device *device,
 	enum vidc_bus_type type;
 
 	venus_hfi_for_each_bus(device, bus) {
-		if (bus && bus->client) {
+		if (bus && (bus->client || bus->icc_path)) {
 			type = get_type_frm_name(bus->name);
 
 			if (type == DDR) {
@@ -3749,6 +3769,10 @@ static void __deinit_bus(struct venus_hfi_device *device)
 	device->bus_vote = DEFAULT_BUS_VOTE;
 
 	venus_hfi_for_each_bus_reverse(device, bus) {
+		if (bus->icc_path) {
+			icc_set_bw(bus->icc_path, 0, 0);
+			bus->icc_path = NULL;
+		}
 		msm_bus_scale_unregister(bus->client);
 		bus->client = NULL;
 	}
@@ -3763,6 +3787,13 @@ static int __init_bus(struct venus_hfi_device *device)
 		return -EINVAL;
 
 	venus_hfi_for_each_bus(device, bus) {
+		bus->icc_path = devm_of_icc_get(bus->dev, bus->name);
+		if (IS_ERR(bus->icc_path)) {
+			d_vpr_h("Unable to get ICC path for %s (%ld), using msm_bus fallback\n",
+				bus->name, PTR_ERR(bus->icc_path));
+			bus->icc_path = NULL;
+		}
+
 		if (!strcmp(bus->mode, "msm-vidc-llcc")) {
 			if (msm_vidc_syscache_disable) {
 				d_vpr_h("Skipping LLC bus init %s: %s\n",
@@ -3770,6 +3801,7 @@ static int __init_bus(struct venus_hfi_device *device)
 				continue;
 			}
 		}
+
 		bus->client = msm_bus_scale_register(bus->master, bus->slave,
 				bus->name, false);
 		if (IS_ERR_OR_NULL(bus->client)) {
