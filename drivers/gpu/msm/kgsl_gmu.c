@@ -951,6 +951,9 @@ static int gmu_bootstrap_bw_vote(struct gmu_device *gmu, unsigned int level)
 			return 0;
 	}
 
+	if (!gmu->pcl)
+		return -ENODEV;
+
 	ret = msm_bus_scale_client_update_request(gmu->pcl, level);
 	if (ret)
 		dev_err(&gmu->pdev->dev,
@@ -966,7 +969,8 @@ static void gmu_clear_bootstrap_bw_vote(struct gmu_device *gmu)
 	for (i = 0; i < gmu->num_icc_paths; i++)
 		icc_set_bw(gmu->icc_paths[i], 0, 0);
 
-	msm_bus_scale_client_update_request(gmu->pcl, 0);
+	if (gmu->pcl)
+		msm_bus_scale_client_update_request(gmu->pcl, 0);
 }
 
 static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
@@ -997,12 +1001,15 @@ static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
 	/*
 	 *Query CNOC TCS command set for each use case defined in cnoc bw table
 	 */
-	hdl.num_usecases = gmu->num_cnocbwlevels;
-	ret = msm_bus_scale_query_tcs_cmd_all(&hdl, gmu->ccl);
-	if (ret)
-		goto out;
+	if (gmu->num_cnocbwlevels && gmu->ccl) {
+		hdl.num_usecases = gmu->num_cnocbwlevels;
+		ret = msm_bus_scale_query_tcs_cmd_all(&hdl, gmu->ccl);
+		if (ret)
+			goto out;
 
-	build_rpmh_bw_votes(&votes->cnoc_votes, gmu->num_cnocbwlevels, hdl);
+		build_rpmh_bw_votes(&votes->cnoc_votes, gmu->num_cnocbwlevels,
+				hdl);
+	}
 
 	build_bwtable_cmd_cache(gmu);
 

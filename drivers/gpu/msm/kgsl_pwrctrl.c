@@ -241,6 +241,48 @@ static void kgsl_pwrctrl_set_l3_max(struct kgsl_device *device)
 }
 
 /**
+ * kgsl_pwrctrl_gpu_cfg_set() - set CPU-to-GPU cfg path vote
+ * @device: Pointer to the kgsl_device struct
+ * @buslevel: vote index in the legacy cfg bus table
+ */
+int kgsl_pwrctrl_gpu_cfg_set(struct kgsl_device *device, unsigned int buslevel)
+{
+	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
+	struct msm_bus_paths *usecase;
+	struct msm_bus_vectors *vector;
+	u32 avg_bw, peak_bw;
+	int ret;
+
+	if (pwr->gpu_cfg_icc_path && pwr->gpu_cfg_bus_scale_table) {
+		if (buslevel >= pwr->gpu_cfg_bus_scale_table->num_usecases)
+			ret = -EINVAL;
+		else {
+			usecase = &pwr->gpu_cfg_bus_scale_table->usecase[buslevel];
+			vector = usecase->vectors;
+			if (!vector || !usecase->num_paths)
+				ret = -EINVAL;
+			else {
+				avg_bw = div_u64((u64)vector[0].ab, 1000ULL);
+				peak_bw = div_u64((u64)vector[0].ib, 1000ULL);
+				ret = icc_set_bw(pwr->gpu_cfg_icc_path, avg_bw, peak_bw);
+			}
+		}
+
+		if (!ret)
+			return 0;
+
+		dev_warn(device->dev,
+			"ICC gpu-cfg vote failed (%d), falling back to msm_bus\n",
+			ret);
+	}
+
+	if (pwr->gpu_cfg)
+		return msm_bus_scale_client_update_request(pwr->gpu_cfg, buslevel);
+
+	return 0;
+}
+
+/**
  * kgsl_bus_scale_request() - set GPU BW vote
  * @device: Pointer to the kgsl_device struct
  * @buslevel: index of bw vector[] table
@@ -2303,6 +2345,7 @@ static void _close_gpu_cfg(struct kgsl_pwrctrl *pwr)
 		msm_bus_scale_unregister_client(pwr->gpu_cfg);
 
 	pwr->gpu_cfg = 0;
+	pwr->gpu_cfg_bus_scale_table = NULL;
 }
 
 static inline void _close_regulators(struct kgsl_pwrctrl *pwr)
@@ -2460,11 +2503,21 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 	if (gpu_cfg_node) {
 		gpu_cfg_table =
 			msm_bus_pdata_from_node(device->pdev, gpu_cfg_node);
+		pwr->gpu_cfg_bus_scale_table = gpu_cfg_table;
+
+		pwr->gpu_cfg_icc_path = devm_of_icc_get(device->dev, "cpu-gpu-cfg");
+		if (IS_ERR(pwr->gpu_cfg_icc_path)) {
+			dev_dbg(device->dev,
+				"Unable to get cpu-gpu-cfg ICC path (%ld), using msm_bus fallback\n",
+				PTR_ERR(pwr->gpu_cfg_icc_path));
+			pwr->gpu_cfg_icc_path = NULL;
+		}
+
 		if (gpu_cfg_table)
 			pwr->gpu_cfg =
 				msm_bus_scale_register_client(gpu_cfg_table);
 
-		if (!pwr->gpu_cfg) {
+		if (!pwr->gpu_cfg_icc_path && !pwr->gpu_cfg) {
 			result = -EINVAL;
 			goto error_disable_pm;
 		}

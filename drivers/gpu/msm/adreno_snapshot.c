@@ -864,9 +864,7 @@ void adreno_snapshot(struct kgsl_device *device, struct kgsl_snapshot *snapshot,
 	 * We read lots of registers during GPU snapshot. Keep
 	 * high bus vote to reduce AHB latency.
 	 */
-	if (device->pwrctrl.gpu_cfg)
-		msm_bus_scale_client_update_request(device->pwrctrl.gpu_cfg,
-			KGSL_GPU_CFG_PATH_HIGH);
+	kgsl_pwrctrl_gpu_cfg_set(device, KGSL_GPU_CFG_PATH_HIGH);
 
 	/* Add GPU specific sections - registers mainly, but other stuff too */
 	if (gpudev->snapshot)
@@ -989,9 +987,7 @@ void adreno_snapshot(struct kgsl_device *device, struct kgsl_snapshot *snapshot,
 			"GPU snapshot froze %zdKb of GPU buffers\n",
 			snapshot_frozen_objsize / 1024);
 
-	if (device->pwrctrl.gpu_cfg)
-		msm_bus_scale_client_update_request(device->pwrctrl.gpu_cfg,
-			KGSL_GPU_CFG_PATH_LOW);
+	kgsl_pwrctrl_gpu_cfg_set(device, KGSL_GPU_CFG_PATH_LOW);
 }
 
 /*

@@ -2113,9 +2113,7 @@ static int _adreno_start(struct adreno_device *adreno_dev)
 	 * Keep high bus vote to reduce AHB latency
 	 * during FW loading and wakeup.
 	 */
-	if (device->pwrctrl.gpu_cfg)
-		msm_bus_scale_client_update_request(device->pwrctrl.gpu_cfg,
-			KGSL_GPU_CFG_PATH_HIGH);
+	kgsl_pwrctrl_gpu_cfg_set(device, KGSL_GPU_CFG_PATH_HIGH);
 
 	/* Put the GPU in a responsive state */
 	status = kgsl_pwrctrl_change_state(device, KGSL_STATE_AWARE);
@@ -2352,9 +2350,7 @@ static int _adreno_start(struct adreno_device *adreno_dev)
 	 * sure CPU to GPU AHB infrastructure clocks are running at-least
 	 * at minimum frequency.
 	 */
-	if (device->pwrctrl.gpu_cfg)
-		msm_bus_scale_client_update_request(device->pwrctrl.gpu_cfg,
-			KGSL_GPU_CFG_PATH_LOW);
+	kgsl_pwrctrl_gpu_cfg_set(device, KGSL_GPU_CFG_PATH_LOW);
 
 	return 0;
 
@@ -2376,9 +2372,7 @@ error_pwr_off:
 		pm_qos_update_request(&device->pwrctrl.pm_qos_req_dma,
 				pmqos_active_vote);
 
-	if (device->pwrctrl.gpu_cfg)
-		msm_bus_scale_client_update_request(device->pwrctrl.gpu_cfg,
-			KGSL_GPU_CFG_PATH_OFF);
+	kgsl_pwrctrl_gpu_cfg_set(device, KGSL_GPU_CFG_PATH_OFF);
 	return status;
 }
 
@@ -2486,9 +2480,7 @@ no_gx_power:
 	 */
 	adreno_set_active_ctxs_null(adreno_dev);
 
-	if (device->pwrctrl.gpu_cfg)
-		msm_bus_scale_client_update_request(device->pwrctrl.gpu_cfg,
-			KGSL_GPU_CFG_PATH_OFF);
+	kgsl_pwrctrl_gpu_cfg_set(device, KGSL_GPU_CFG_PATH_OFF);
 
 	clear_bit(ADRENO_DEVICE_STARTED, &adreno_dev->priv);
 

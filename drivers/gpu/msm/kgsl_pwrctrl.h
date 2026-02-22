@@ -153,6 +153,8 @@ struct gpu_cx_ipeak_client {
  * @regulators - array of pointers to kgsl_regulator structs
  * @pcl - bus scale identifier
  * @gpu_cfg - CPU to GPU AHB path bus scale identifier
+ * @gpu_cfg_icc_path - optional ICC path for CPU to GPU AHB votes
+ * @gpu_cfg_bus_scale_table - msm_bus table used to map cfg vote indices to bw
  * @icc_paths - optional ICC paths used for bus bandwidth votes
  * @num_icc_paths - number of valid ICC paths in @icc_paths
  * @bus_scale_table - msm_bus table used to map legacy indices to bw
@@ -216,6 +218,8 @@ struct kgsl_pwrctrl {
 	struct kgsl_regulator regulators[KGSL_MAX_REGULATORS];
 	uint32_t pcl;
 	uint32_t gpu_cfg;
+	struct icc_path *gpu_cfg_icc_path;
+	struct msm_bus_scale_pdata *gpu_cfg_bus_scale_table;
 	struct icc_path *icc_paths[2];
 	unsigned int num_icc_paths;
 	struct msm_bus_scale_pdata *bus_scale_table;
@@ -301,5 +305,6 @@ void kgsl_pwrctrl_update_l2pc(struct kgsl_device *device,
 int kgsl_pwrctrl_set_default_gpu_pwrlevel(struct kgsl_device *device);
 void kgsl_pwrctrl_disable_unused_opp(struct kgsl_device *device,
 		struct device *dev);
+int kgsl_pwrctrl_gpu_cfg_set(struct kgsl_device *device, unsigned int buslevel);
 
 #endif /* __KGSL_PWRCTRL_H */
