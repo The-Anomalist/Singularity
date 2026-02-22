@@ -5,8 +5,12 @@
 #ifndef __KGSL_GMU_H
 #define __KGSL_GMU_H
 
+#include <linux/interconnect.h>
+
 #include "kgsl_gmu_core.h"
 #include "kgsl_hfi.h"
+
+struct msm_bus_scale_pdata;
 
 #define GMU_PWR_LEVELS  2
 #define GMU_FREQUENCY   400000000
@@ -158,6 +162,9 @@ struct kgsl_mailbox {
  * @num_gpupwrlevels: number GPU frequencies in GPU freq table
  * @num_bwlevel: number of GPU BW levels
  * @num_cnocbwlevel: number CNOC BW levels
+ * @icc_paths: optional ICC paths used for early GMU bootstrap votes
+ * @num_icc_paths: number of valid ICC paths in @icc_paths
+ * @gpu_bus_scale_table: msm_bus table used to map legacy indices to bw
  * @rpmh_votes: RPMh TCS command set for GPU, GMU voltage and bw scaling
  * @cx_gdsc: CX headswitch that controls power of GMU and
 		subsystem peripherals
@@ -194,6 +201,9 @@ struct gmu_device {
 	unsigned int num_gpupwrlevels;
 	unsigned int num_bwlevels;
 	unsigned int num_cnocbwlevels;
+	struct icc_path *icc_paths[2];
+	unsigned int num_icc_paths;
+	struct msm_bus_scale_pdata *gpu_bus_scale_table;
 	struct rpmh_votes_t rpmh_votes;
 	struct regulator *cx_gdsc;
 	struct regulator *gx_gdsc;

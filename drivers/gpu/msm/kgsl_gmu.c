@@ -836,6 +836,139 @@ static void build_bwtable_cmd_cache(struct gmu_device *gmu)
  * @gmu: Pointer to GMU device
  * @pwr: Pointer to KGSL power controller
  */
+
+static int gmu_icc_set_vote(struct gmu_device *gmu, unsigned int level)
+{
+	unsigned int i;
+	u32 avg_bw, peak_bw;
+	struct msm_bus_vectors *vectors;
+	struct msm_bus_paths *usecase;
+	int ret;
+
+	if (!gmu->num_icc_paths)
+		return 0;
+
+	if (!gmu->gpu_bus_scale_table ||
+		level >= gmu->gpu_bus_scale_table->num_usecases)
+		return -EINVAL;
+
+	usecase = &gmu->gpu_bus_scale_table->usecase[level];
+	if (!usecase->vectors || !usecase->num_paths)
+		return -EINVAL;
+
+	vectors = usecase->vectors;
+
+	for (i = 0; i < gmu->num_icc_paths; i++) {
+		unsigned int vec_idx = min_t(unsigned int, i,
+					    usecase->num_paths - 1);
+
+		avg_bw = div_u64((u64)vectors[vec_idx].ab, 1000ULL);
+		peak_bw = div_u64((u64)vectors[vec_idx].ib, 1000ULL);
+
+		ret = icc_set_bw(gmu->icc_paths[i], avg_bw, peak_bw);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int gmu_icc_probe(struct gmu_device *gmu)
+{
+	const char *icc_name;
+	int i;
+	int ret;
+	int num_icc_paths;
+	struct device *dev = &gmu->pdev->dev;
+
+	num_icc_paths = of_count_phandle_with_args(dev->of_node,
+						   "interconnects",
+						   "#interconnect-cells");
+	if (num_icc_paths <= 0)
+		return 0;
+
+	if (num_icc_paths > ARRAY_SIZE(gmu->icc_paths)) {
+		dev_warn(dev,
+			"Ignoring unexpected number of ICC paths: %d\n",
+			num_icc_paths);
+		return 0;
+	}
+
+	if (of_find_property(dev->of_node, "interconnect-names", NULL)) {
+		for (i = 0; i < num_icc_paths; i++) {
+			ret = of_property_read_string_index(dev->of_node,
+							    "interconnect-names",
+							    i, &icc_name);
+			if (ret)
+				goto clear_icc;
+
+			gmu->icc_paths[i] = devm_of_icc_get(dev, icc_name);
+			if (IS_ERR(gmu->icc_paths[i])) {
+				ret = PTR_ERR(gmu->icc_paths[i]);
+				gmu->icc_paths[i] = NULL;
+				goto clear_icc;
+			}
+		}
+	} else if (num_icc_paths == 1) {
+		gmu->icc_paths[0] = devm_of_icc_get(dev, NULL);
+		if (IS_ERR(gmu->icc_paths[0])) {
+			ret = PTR_ERR(gmu->icc_paths[0]);
+			gmu->icc_paths[0] = NULL;
+			goto clear_icc;
+		}
+	} else {
+		dev_warn(dev,
+			"Missing interconnect-names for %d paths, disabling GMU ICC votes\n",
+			num_icc_paths);
+		return 0;
+	}
+
+	gmu->num_icc_paths = num_icc_paths;
+	dev_info(dev, "Enabled %u GMU ICC path(s)\n", gmu->num_icc_paths);
+	return 0;
+
+clear_icc:
+	dev_warn(dev,
+		"Failed to attach GMU ICC paths (%d), using msm_bus fallback\n",
+		ret);
+	for (i = 0; i < ARRAY_SIZE(gmu->icc_paths); i++)
+		gmu->icc_paths[i] = NULL;
+	gmu->num_icc_paths = 0;
+	return 0;
+}
+
+static int gmu_bootstrap_bw_vote(struct gmu_device *gmu, unsigned int level)
+{
+	int ret = 0;
+
+	if (gmu->num_icc_paths) {
+		ret = gmu_icc_set_vote(gmu, level);
+		if (ret)
+			dev_warn(&gmu->pdev->dev,
+				"GMU ICC vote failed (%d), falling back to msm_bus\n",
+				ret);
+		else
+			return 0;
+	}
+
+	ret = msm_bus_scale_client_update_request(gmu->pcl, level);
+	if (ret)
+		dev_err(&gmu->pdev->dev,
+			"Failed to allocate gmu b/w: %d\n", ret);
+
+	return ret;
+}
+
+static void gmu_clear_bootstrap_bw_vote(struct gmu_device *gmu)
+{
+	unsigned int i;
+
+	for (i = 0; i < gmu->num_icc_paths; i++)
+		icc_set_bw(gmu->icc_paths[i], 0, 0);
+
+	msm_bus_scale_client_update_request(gmu->pcl, 0);
+}
+
 static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
 {
 	struct msm_bus_tcs_usecase *usecases;
@@ -1025,18 +1158,26 @@ static int gmu_gpu_bw_probe(struct kgsl_device *device, struct gmu_device *gmu)
 {
 	struct msm_bus_scale_pdata *bus_scale_table =
 		kgsl_get_bus_scale_table(device);
+	int ret;
 
 	if (bus_scale_table == NULL) {
 		dev_err(&gmu->pdev->dev, "dt: cannot get bus table\n");
 		return -ENODEV;
 	}
 
+	gmu->gpu_bus_scale_table = bus_scale_table;
 	gmu->num_bwlevels = bus_scale_table->num_usecases;
 	gmu->pcl = msm_bus_scale_register_client(bus_scale_table);
 	if (!gmu->pcl) {
 		dev_err(&gmu->pdev->dev, "dt: cannot register bus client\n");
 		return -ENODEV;
 	}
+
+	ret = gmu_icc_probe(gmu);
+	if (ret)
+		dev_warn(&gmu->pdev->dev,
+			"Failed probing GMU ICC paths (%d), using msm_bus fallback\n",
+			ret);
 
 	return 0;
 }
@@ -1622,11 +1763,8 @@ static int gmu_start(struct kgsl_device *device)
 		gmu_dev_ops->irq_enable(device);
 
 		/* Vote for minimal DDR BW for GMU to init */
-		ret = msm_bus_scale_client_update_request(gmu->pcl,
+		ret = gmu_bootstrap_bw_vote(gmu,
 				pwr->pwrlevels[pwr->default_pwrlevel].bus_min);
-		if (ret)
-			dev_err(&gmu->pdev->dev,
-				"Failed to allocate gmu b/w: %d\n", ret);
 
 		ret = gmu_dev_ops->rpmh_gpu_pwrctrl(device, GMU_FW_START,
 				GMU_COLD_BOOT, 0);
@@ -1642,7 +1780,7 @@ static int gmu_start(struct kgsl_device *device)
 		if (ret)
 			goto error_gmu;
 
-		msm_bus_scale_client_update_request(gmu->pcl, 0);
+		gmu_clear_bootstrap_bw_vote(gmu);
 		break;
 
 	case KGSL_STATE_SLUMBER:
@@ -1737,7 +1875,7 @@ static void gmu_stop(struct kgsl_device *device)
 	gmu_disable_clks(device);
 	gmu_disable_gdsc(device);
 
-	msm_bus_scale_client_update_request(gmu->pcl, 0);
+	gmu_clear_bootstrap_bw_vote(gmu);
 	return;
 
 error:
