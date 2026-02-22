@@ -25,6 +25,7 @@
 #include <linux/pm_opp.h>
 #include <linux/devfreq.h>
 #include <linux/devcoredump.h>
+#include <linux/moduleparam.h>
 #include <linux/sched/task.h>
 
 /*
@@ -89,17 +90,43 @@ static int msm_devfreq_get_cur_freq(struct device *dev, unsigned long *freq)
 }
 
 static struct devfreq_dev_profile msm_devfreq_profile = {
-	.polling_ms = 10,
+	.polling_ms = 5,
 	.target = msm_devfreq_target,
 	.get_dev_status = msm_devfreq_get_dev_status,
 	.get_cur_freq = msm_devfreq_get_cur_freq,
 };
 
+static unsigned int msm_devfreq_upthreshold = 35;
+module_param_named(devfreq_upthreshold, msm_devfreq_upthreshold, uint, 0644);
+MODULE_PARM_DESC(devfreq_upthreshold,
+		"simple_ondemand upthreshold percentage for MSM GPU devfreq");
+
+static unsigned int msm_devfreq_downdifferential = 5;
+module_param_named(devfreq_downdifferential, msm_devfreq_downdifferential,
+		uint, 0644);
+MODULE_PARM_DESC(devfreq_downdifferential,
+		"simple_ondemand downdifferential percentage for MSM GPU devfreq");
+
+static unsigned int msm_devfreq_polling_ms = 5;
+module_param_named(devfreq_polling_ms, msm_devfreq_polling_ms, uint, 0644);
+MODULE_PARM_DESC(devfreq_polling_ms,
+		"MSM GPU devfreq polling interval in milliseconds");
+
 static void msm_devfreq_init(struct msm_gpu *gpu)
 {
+	struct devfreq_simple_ondemand_data profile = {
+		.upthreshold = msm_devfreq_upthreshold,
+		.downdifferential = msm_devfreq_downdifferential,
+	};
+
 	/* We need target support to do devfreq */
 	if (!gpu->funcs->gpu_busy || !gpu->core_clk)
 		return;
+
+	if (msm_devfreq_polling_ms < 1)
+		msm_devfreq_polling_ms = 1;
+
+	msm_devfreq_profile.polling_ms = msm_devfreq_polling_ms;
 
 	msm_devfreq_profile.initial_freq = gpu->fast_rate;
 
@@ -109,7 +136,7 @@ static void msm_devfreq_init(struct msm_gpu *gpu)
 	 */
 
 	gpu->devfreq.devfreq = devm_devfreq_add_device(&gpu->pdev->dev,
-			&msm_devfreq_profile, "simple_ondemand", NULL);
+			&msm_devfreq_profile, "simple_ondemand", &profile);
 
 	if (IS_ERR(gpu->devfreq.devfreq)) {
 		dev_err(&gpu->pdev->dev, "Couldn't initialize GPU devfreq\n");

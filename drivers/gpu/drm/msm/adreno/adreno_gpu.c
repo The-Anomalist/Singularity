@@ -19,11 +19,17 @@
 
 #include <linux/ascii85.h>
 #include <linux/kernel.h>
+#include <linux/moduleparam.h>
 #include <linux/pm_opp.h>
 #include <linux/slab.h>
 #include "adreno_gpu.h"
 #include "msm_gem.h"
 #include "msm_mmu.h"
+
+static unsigned int adreno_autosuspend_delay = 250;
+module_param_named(autosuspend_delay, adreno_autosuspend_delay, uint, 0644);
+MODULE_PARM_DESC(autosuspend_delay,
+		"minimum runtime PM autosuspend delay for Adreno GPU (ms)");
 
 int adreno_get_param(struct msm_gpu *gpu, uint32_t param, uint64_t *value)
 {
@@ -723,7 +729,8 @@ int adreno_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 	adreno_get_pwrlevels(&pdev->dev, gpu);
 
 	pm_runtime_set_autosuspend_delay(&pdev->dev,
-		adreno_gpu->info->inactive_period);
+		max_t(unsigned int, adreno_gpu->info->inactive_period,
+			adreno_autosuspend_delay));
 	pm_runtime_use_autosuspend(&pdev->dev);
 
 	return msm_gpu_init(drm, pdev, &adreno_gpu->base, &funcs->base,
