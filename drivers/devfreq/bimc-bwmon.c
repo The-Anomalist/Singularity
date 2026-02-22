@@ -21,6 +21,7 @@
 #include <linux/log2.h>
 #include <linux/sizes.h>
 #include <linux/clk.h>
+#include <linux/interconnect.h>
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
 #include "governor_bw_hwmon.h"
@@ -96,6 +97,8 @@ struct bwmon {
 	int irq;
 	struct msm_bus_client_handle *bus_client;
 	const char *bus_name;
+	struct icc_path *icc_path;
+	const char *icc_name;
 	int nr_clks;
 	struct clk **clks;
 	const struct bwmon_spec *spec;
@@ -787,6 +790,18 @@ static __always_inline int mon_setup_enable(struct bwmon *m)
 	int ret;
 	int i;
 
+	if (m->icc_path) {
+		ret = icc_set_bw(m->icc_path, 1, 1);
+		if (ret) {
+			dev_warn(m->dev,
+				"Failed voting ICC path %s with error %d%s\n",
+				m->icc_name ? m->icc_name : "<unnamed>", ret,
+				m->bus_client ? ", falling back to msm_bus" : "");
+			if (!m->bus_client)
+				return ret;
+		}
+	}
+
 	if (m->bus_client) {
 		ret = msm_bus_scale_update_bw(m->bus_client, 0, 1);
 		if (ret) {
@@ -808,6 +823,9 @@ static __always_inline int mon_setup_enable(struct bwmon *m)
 err:
 	for (i--; i >= 0; i--)
 		clk_disable_unprepare(m->clks[i]);
+
+	if (m->icc_path)
+		icc_set_bw(m->icc_path, 0, 0);
 
 	if (m->bus_client) {
 		ret = msm_bus_scale_update_bw(m->bus_client, 0, 0);
@@ -904,6 +922,9 @@ static __always_inline int mon_setup_disable(struct bwmon *m)
 
 	for (i = m->nr_clks - 1; i >= 0; i--)
 		clk_disable_unprepare(m->clks[i]);
+
+	if (m->icc_path)
+		icc_set_bw(m->icc_path, 0, 0);
 
 	if (m->bus_client) {
 		ret = msm_bus_scale_update_bw(m->bus_client, 0, 0);
@@ -1200,6 +1221,31 @@ static int bimc_bwmon_driver_probe(struct platform_device *pdev)
 	m->count_shift = order_base_2(count_unit);
 	m->thres_lim = THRES_LIM(m->count_shift);
 
+	if (of_find_property(dev->of_node, "interconnects", NULL)) {
+		if (of_find_property(dev->of_node, "interconnect-names", NULL)) {
+			of_property_read_string_index(dev->of_node,
+						      "interconnect-names", 0,
+						      &m->icc_name);
+			m->icc_path = devm_of_icc_get(dev, m->icc_name);
+		} else {
+			m->icc_path = devm_of_icc_get(dev, NULL);
+		}
+
+		if (IS_ERR(m->icc_path)) {
+			ret = PTR_ERR(m->icc_path);
+			m->icc_path = NULL;
+			dev_warn(dev,
+				"Failed to get ICC path%s%s: %d, using msm_bus fallback\n",
+				m->icc_name ? " " : "",
+				m->icc_name ? m->icc_name : "",
+				ret);
+		} else {
+			dev_info(dev, "Using ICC path%s%s\n",
+				 m->icc_name ? " " : "",
+				 m->icc_name ? m->icc_name : "<unnamed>");
+		}
+	}
+
 	if (of_find_property(dev->of_node, "qcom,msm_bus", &len)) {
 		len /= sizeof(ports[0]);
 		if (len % 2 || len > ARRAY_SIZE(ports)) {
@@ -1270,6 +1316,9 @@ static int bimc_bwmon_driver_probe(struct platform_device *pdev)
 
 	return 0;
 err_out:
+	if (m->icc_path)
+		icc_set_bw(m->icc_path, 0, 0);
+
 	if (m->bus_client) {
 		msm_bus_scale_unregister(m->bus_client);
 		m->bus_client = NULL;
