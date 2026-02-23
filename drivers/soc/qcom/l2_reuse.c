@@ -13,7 +13,7 @@
 
 #define L2_REUSE_SMC_ID 0x00200090C
 
-static bool l2_reuse_enable;
+static bool l2_reuse_enable = true;
 static struct kobject *l2_reuse_kobj;
 
 static ssize_t sysfs_show(struct kobject *kobj,
@@ -43,6 +43,14 @@ struct kobj_attribute l2_reuse_attr = __ATTR(extended_cache_enable, 0660,
 
 static int __init l2_reuse_driver_init(void)
 {
+	struct arm_smccc_res res;
+
+	/*
+	 * Keep extended cache reuse enabled by default to reduce cold misses
+	 * and memory latency for input-heavy workloads.
+	 */
+	arm_smccc_smc(L2_REUSE_SMC_ID, l2_reuse_enable, 1, 0, 0, 0, 0, 0, &res);
+
 	l2_reuse_kobj = kobject_create_and_add("l2_reuse", power_kobj);
 
 	if (!l2_reuse_kobj) {

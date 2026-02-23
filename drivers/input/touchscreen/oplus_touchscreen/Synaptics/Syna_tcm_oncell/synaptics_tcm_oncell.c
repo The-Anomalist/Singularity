@@ -5848,14 +5848,16 @@ static void init_chip_dts(struct device *dev, void *chip_data)
 	if (!chip_np) {
 		tcm_info->display_refresh_rate = 60;
 		tcm_info->game_rate = 1;
-		/*default :1:120hz 2:180hz is for 19101 19191 20131*/
-		tcm_info->fps_report_rate_num = 6;
+		/* default aggressive profile: 60->1, 90->2, 120->3, 144->3 */
+		tcm_info->fps_report_rate_num = 8;
 		tcm_info->fps_report_rate_array[0] = 60;
 		tcm_info->fps_report_rate_array[1] = 1;
 		tcm_info->fps_report_rate_array[2] = 90;
 		tcm_info->fps_report_rate_array[3] = 2;
 		tcm_info->fps_report_rate_array[4] = 120;
-		tcm_info->fps_report_rate_array[5] = 2;
+		tcm_info->fps_report_rate_array[5] = 3;
+		tcm_info->fps_report_rate_array[6] = 144;
+		tcm_info->fps_report_rate_array[7] = 3;
 		tcm_info->fingerprint_and_grip_param_equal_19805 = 0;
 		tcm_info->syna_tempepratue[0] = 5;
 		tcm_info->syna_tempepratue[1] = 15;
@@ -5899,14 +5901,16 @@ static void init_chip_dts(struct device *dev, void *chip_data)
 			}
 		}
 	} else {
-		/*default :1:120hz 2:180hz is for 19101 19191 20131*/
-		tcm_info->fps_report_rate_num = 6;
+		/* default aggressive profile: 60->1, 90->2, 120->3, 144->3 */
+		tcm_info->fps_report_rate_num = 8;
 		tcm_info->fps_report_rate_array[0] = 60;
 		tcm_info->fps_report_rate_array[1] = 1;
 		tcm_info->fps_report_rate_array[2] = 90;
 		tcm_info->fps_report_rate_array[3] = 2;
 		tcm_info->fps_report_rate_array[4] = 120;
-		tcm_info->fps_report_rate_array[5] = 2;
+		tcm_info->fps_report_rate_array[5] = 3;
+		tcm_info->fps_report_rate_array[6] = 144;
+		tcm_info->fps_report_rate_array[7] = 3;
 		TPD_INFO("fps_report_rate is not dubole %d\n",
 			 tcm_info->fps_report_rate_num);
 	}
