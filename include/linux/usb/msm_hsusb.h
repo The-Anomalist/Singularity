@@ -23,6 +23,8 @@
 #include <linux/extcon.h>
 #include <linux/regulator/driver.h>
 
+struct icc_path;
+
 /**
  * Used different VDDCX voltage values
  */
@@ -231,6 +233,8 @@ struct msm_otg {
 	unsigned int dcd_time;
 	unsigned long caps;
 	uint32_t bus_perf_client;
+	bool use_icc;
+	struct icc_path *icc_ddr_path;
 	bool host_bus_suspend;
 	bool device_bus_suspend;
 	bool bus_clks_enabled;

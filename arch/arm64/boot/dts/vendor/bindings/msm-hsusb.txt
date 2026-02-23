@@ -106,6 +106,10 @@ Optional properties :
 
     - qcom,msm-bus,num_paths
     - qcom,msm-bus,vectors
+- interconnects: Optional interconnect path used for bandwidth voting.
+- interconnect-names: Must include "usb-ddr" when interconnects is provided.
+  Requires SoC support in an interconnect provider; otherwise the driver
+  falls back to legacy qcom,msm-bus voting.
 - qcom,hsusb-otg-lpm-on-dev-suspend: If present then USB enter to
 	    low power mode upon receiving bus suspend.
 - qcom,hsusb-otg-clk-always-on-workaround: If present then USB core clocks
@@ -288,6 +292,10 @@ Optional properties :
     - qcom,msm-bus,num_cases - Two cases (NONE and MAX) for voting are supported.
     - qcom,msm-bus,num_paths
     - qcom,msm-bus,vectors
+- interconnects: Optional interconnect path used for bandwidth voting.
+- interconnect-names: Must include "usb-ddr" when interconnects is provided.
+  Requires SoC support in an interconnect provider; otherwise the driver
+  falls back to legacy qcom,msm-bus voting.
 
 Example MSM HSUSB EHCI controller device node :
 	ehci: qcom,ehci-host@f9a55000 {

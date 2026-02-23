@@ -27,6 +27,7 @@
 #include <linux/pm_wakeup.h>
 #include <linux/reset.h>
 #include <linux/extcon.h>
+#include <linux/interconnect.h>
 #include <linux/power_supply.h>
 #include <linux/usb.h>
 #include <linux/usb/otg.h>
@@ -55,6 +56,19 @@ enum usb_bus_vote {
 	USB_NO_PERF_VOTE = 0,
 	USB_MAX_PERF_VOTE,
 	USB_MIN_PERF_VOTE,
+};
+
+
+static const u32 msm_otg_icc_default_ab_kbps[] = {
+	[USB_NO_PERF_VOTE] = 0,
+	[USB_MAX_PERF_VOTE] = 2400000,
+	[USB_MIN_PERF_VOTE] = 1000,
+};
+
+static const u32 msm_otg_icc_default_ib_kbps[] = {
+	[USB_NO_PERF_VOTE] = 0,
+	[USB_MAX_PERF_VOTE] = 2400000,
+	[USB_MIN_PERF_VOTE] = 10000,
 };
 
 /**
@@ -1231,6 +1245,7 @@ static void msm_otg_bus_vote(struct msm_otg *motg, enum usb_bus_vote vote)
 {
 	int ret;
 	struct msm_otg_platform_data *pdata = motg->pdata;
+	u32 ab_kbps, ib_kbps;
 
 	msm_otg_dbg_log_event(&motg->phy, "BUS VOTE", vote,
 						motg->phy.otg->state);
@@ -1239,12 +1254,26 @@ static void msm_otg_bus_vote(struct msm_otg *motg, enum usb_bus_vote vote)
 	    vote >= pdata->bus_scale_table->num_usecases)
 		vote = USB_NO_PERF_VOTE;
 
-	if (motg->bus_perf_client) {
+	if (motg->use_icc) {
+		ab_kbps = msm_otg_icc_default_ab_kbps[vote];
+		ib_kbps = msm_otg_icc_default_ib_kbps[vote];
+
+		if (pdata->bus_scale_table && vote < pdata->bus_scale_table->num_usecases) {
+			ab_kbps = pdata->bus_scale_table->usecase[vote].vectors[0].ab;
+			ib_kbps = pdata->bus_scale_table->usecase[vote].vectors[0].ib;
+		}
+
+		ret = icc_set_bw(motg->icc_ddr_path, ab_kbps, ib_kbps);
+		if (ret)
+			dev_err(motg->phy.dev,
+				"%s: Failed ICC vote (%d) bw (%u/%u) err %d\n",
+				__func__, vote, ab_kbps, ib_kbps, ret);
+	} else if (motg->bus_perf_client) {
 		ret = msm_bus_scale_client_update_request(
 			motg->bus_perf_client, vote);
 		if (ret)
 			dev_err(motg->phy.dev, "%s: Failed to vote (%d)\n"
-				   "for bus bw %d\n", __func__, vote, ret);
+			   "for bus bw %d\n", __func__, vote, ret);
 	}
 
 	if (vote == USB_MAX_PERF_VOTE)
@@ -1252,6 +1281,7 @@ static void msm_otg_bus_vote(struct msm_otg *motg, enum usb_bus_vote vote)
 	else
 		msm_otg_bus_clks_disable(motg);
 }
+
 
 static void msm_otg_enable_phy_hv_int(struct msm_otg *motg)
 {
@@ -4316,6 +4346,21 @@ static int msm_otg_probe(struct platform_device *pdev)
 	if (!pdata->bus_scale_table)
 		dev_dbg(&pdev->dev, "bus scaling is disabled\n");
 
+	motg->icc_ddr_path = devm_of_icc_get(&pdev->dev, "usb-ddr");
+	if (!IS_ERR(motg->icc_ddr_path)) {
+		motg->use_icc = true;
+		dev_info(&pdev->dev, "Using ICC usb-ddr voting path\n");
+	} else {
+		ret = PTR_ERR(motg->icc_ddr_path);
+		motg->icc_ddr_path = NULL;
+		if (ret == -EPROBE_DEFER)
+			goto disable_phy_csr_clk;
+		if (ret != -ENODATA && ret != -ENOENT)
+			dev_warn(&pdev->dev,
+				"Failed to get ICC path: %d, using msm-bus fallback\n",
+				ret);
+	}
+
 	if (pdata->phy_type == QUSB_ULPI_PHY) {
 		if (of_property_match_string(pdev->dev.of_node,
 					"clock-names", "phy_ref_clk") >= 0) {
@@ -4352,7 +4397,11 @@ static int msm_otg_probe(struct platform_device *pdev)
 	motg->dbg_lock = __RW_LOCK_UNLOCKED(lck);
 	mutex_init(&motg->lock);
 
-	if (motg->pdata->bus_scale_table) {
+	if (motg->use_icc) {
+		debug_bus_voting_enabled = true;
+		/* Some platforms require BUS vote to control clocks */
+		msm_otg_bus_vote(motg, USB_MIN_PERF_VOTE);
+	} else if (motg->pdata->bus_scale_table) {
 		motg->bus_perf_client =
 		    msm_bus_scale_register_client(motg->pdata->bus_scale_table);
 		if (!motg->bus_perf_client) {
@@ -4856,10 +4905,10 @@ free_xo_handle:
 free_regs:
 	iounmap(motg->regs);
 devote_bus_bw:
-	if (motg->bus_perf_client) {
+	if (motg->use_icc || motg->bus_perf_client)
 		msm_otg_bus_vote(motg, USB_NO_PERF_VOTE);
+	if (motg->bus_perf_client)
 		msm_bus_scale_unregister_client(motg->bus_perf_client);
-	}
 disable_phy_csr_clk:
 	if (motg->phy_csr_clk)
 		clk_disable_unprepare(motg->phy_csr_clk);
@@ -4959,10 +5008,10 @@ static int msm_otg_remove(struct platform_device *pdev)
 	clk_put(motg->pclk);
 	clk_put(motg->core_clk);
 
-	if (motg->bus_perf_client) {
+	if (motg->use_icc || motg->bus_perf_client)
 		msm_otg_bus_vote(motg, USB_NO_PERF_VOTE);
+	if (motg->bus_perf_client)
 		msm_bus_scale_unregister_client(motg->bus_perf_client);
-	}
 
 	return 0;
 }
