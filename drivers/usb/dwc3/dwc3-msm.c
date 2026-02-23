@@ -35,6 +35,7 @@
 #include <linux/cdev.h>
 #include <linux/completion.h>
 #include <linux/msm-bus.h>
+#include <linux/interconnect.h>
 #include <linux/irq.h>
 #include <linux/extcon.h>
 #include <linux/reset.h>
@@ -310,6 +311,8 @@ struct dwc3_msm {
 	enum bus_vote		override_bus_vote;
 	u32			bus_perf_client;
 	struct msm_bus_scale_pdata	*bus_scale_table;
+	struct icc_path		*icc_ddr_path;
+	bool			use_icc;
 	struct power_supply	*usb_psy;
 	struct work_struct	vbus_draw_work;
 	bool			in_host_mode;
@@ -364,6 +367,22 @@ struct dwc3_msm {
 	dma_addr_t		dummy_gsi_db_dma;
 	int			orientation_override;
 	bool			usb_data_enabled;
+};
+
+static const u32 dwc3_msm_icc_default_ab_kbps[BUS_VOTE_MAX + 1] = {
+	[BUS_VOTE_NONE] = 0,
+	[BUS_VOTE_NOMINAL] = 1000000,
+	[BUS_VOTE_SVS] = 240000,
+	[BUS_VOTE_MIN] = 1,
+	[BUS_VOTE_MAX] = 1000000,
+};
+
+static const u32 dwc3_msm_icc_default_ib_kbps[BUS_VOTE_MAX + 1] = {
+	[BUS_VOTE_NONE] = 0,
+	[BUS_VOTE_NOMINAL] = 2500000,
+	[BUS_VOTE_SVS] = 700000,
+	[BUS_VOTE_MIN] = 1,
+	[BUS_VOTE_MAX] = 2500000,
 };
 
 #define USB_HSPHY_3P3_VOL_MIN		3050000 /* uV */
@@ -2499,6 +2518,31 @@ static int dwc3_msm_update_bus_bw(struct dwc3_msm *mdwc, enum bus_vote bv)
 	int ret = 0;
 	struct dwc3 *dwc = platform_get_drvdata(mdwc->dwc3);
 	unsigned int bv_index = mdwc->override_bus_vote ?: bv;
+	u32 ab_kbps, ib_kbps;
+
+	if (mdwc->use_icc) {
+		if (bv_index > BUS_VOTE_MAX)
+			bv_index = mdwc->default_bus_vote;
+
+		if (bv == BUS_VOTE_NONE)
+			bv_index = BUS_VOTE_NONE;
+
+		ab_kbps = dwc3_msm_icc_default_ab_kbps[bv_index];
+		ib_kbps = dwc3_msm_icc_default_ib_kbps[bv_index];
+
+		if (mdwc->bus_scale_table &&
+		    bv_index < mdwc->bus_scale_table->num_usecases) {
+			ab_kbps = mdwc->bus_scale_table->usecase[bv_index].vectors[0].ab;
+			ib_kbps = mdwc->bus_scale_table->usecase[bv_index].vectors[0].ib;
+		}
+
+		ret = icc_set_bw(mdwc->icc_ddr_path, ab_kbps, ib_kbps);
+		if (ret)
+			dev_err(mdwc->dev,
+				"ICC bus bw voting %u failed %d (ab=%u ib=%u)\n",
+				bv_index, ret, ab_kbps, ib_kbps);
+		return ret;
+	}
 
 	if (!mdwc->bus_perf_client)
 		return 0;
@@ -2525,6 +2569,17 @@ static int dwc3_msm_update_bus_bw(struct dwc3_msm *mdwc, enum bus_vote bv)
 	dbg_event(0xFF, "bus_vote_end", bv_index);
 
 	return ret;
+}
+
+static bool dwc3_msm_vote_supported(struct dwc3_msm *mdwc, enum bus_vote bv)
+{
+	if (mdwc->use_icc)
+		return bv <= BUS_VOTE_MAX;
+
+	if (!mdwc->bus_scale_table)
+		return false;
+
+	return mdwc->bus_scale_table->num_usecases >= (bv + 1);
 }
 
 static int dwc3_msm_suspend(struct dwc3_msm *mdwc, bool enable_wakeup)
@@ -3663,14 +3718,12 @@ static ssize_t bus_vote_store(struct device *dev,
 	bool bv_fixed = false;
 	enum bus_vote bv;
 
-	if (sysfs_streq(buf, "min")
-			&& (mdwc->bus_scale_table->num_usecases
-			>= (BUS_VOTE_MIN + 1))) {
+	if (sysfs_streq(buf, "min") &&
+	    dwc3_msm_vote_supported(mdwc, BUS_VOTE_MIN)) {
 		bv_fixed = true;
 		mdwc->override_bus_vote = BUS_VOTE_MIN;
-	} else if (sysfs_streq(buf, "max")
-			&& (mdwc->bus_scale_table->num_usecases
-			>= (BUS_VOTE_MAX + 1))) {
+	} else if (sysfs_streq(buf, "max") &&
+		   dwc3_msm_vote_supported(mdwc, BUS_VOTE_MAX)) {
 		bv_fixed = true;
 		mdwc->override_bus_vote = BUS_VOTE_MAX;
 	} else if (sysfs_streq(buf, "cancel")) {
@@ -3996,8 +4049,19 @@ static int dwc3_msm_probe(struct platform_device *pdev)
 	ret = of_property_read_u32(node, "qcom,default-bus-vote",
 			&mdwc->default_bus_vote);
 
+	mdwc->icc_ddr_path = devm_of_icc_get(&pdev->dev, "usb-ddr");
+	if (!IS_ERR(mdwc->icc_ddr_path)) {
+		mdwc->use_icc = true;
+		dev_info(mdwc->dev, "Using ICC usb-ddr voting path\n");
+	} else {
+		ret = PTR_ERR(mdwc->icc_ddr_path);
+		mdwc->icc_ddr_path = NULL;
+		if (ret != -ENODATA && ret != -ENOENT)
+			dev_warn(mdwc->dev, "Failed to get ICC path: %d, using msm-bus fallback\n", ret);
+	}
+
 	mdwc->bus_scale_table = msm_bus_cl_get_pdata(pdev);
-	if (mdwc->bus_scale_table) {
+	if (mdwc->bus_scale_table && !mdwc->use_icc) {
 		mdwc->bus_perf_client =
 			msm_bus_scale_register_client(mdwc->bus_scale_table);
 
@@ -4136,7 +4200,7 @@ static int dwc3_msm_probe(struct platform_device *pdev)
 
 put_dwc3:
 	platform_device_put(mdwc->dwc3);
-	if (mdwc->bus_perf_client)
+	if (!mdwc->use_icc && mdwc->bus_perf_client)
 		msm_bus_scale_unregister_client(mdwc->bus_perf_client);
 
 	of_platform_depopulate(&pdev->dev);
@@ -4199,7 +4263,7 @@ static int dwc3_msm_remove(struct platform_device *pdev)
 	pm_runtime_set_suspended(mdwc->dev);
 	device_wakeup_disable(mdwc->dev);
 
-	if (mdwc->bus_perf_client)
+	if (!mdwc->use_icc && mdwc->bus_perf_client)
 		msm_bus_scale_unregister_client(mdwc->bus_perf_client);
 
 	if (!IS_ERR_OR_NULL(mdwc->vbus_reg))

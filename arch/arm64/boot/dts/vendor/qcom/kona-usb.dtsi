@@ -1,5 +1,6 @@
 #include <dt-bindings/clock/qcom,gcc-kona.h>
 #include <dt-bindings/phy/qcom,kona-qmp-usb3.h>
+#include <dt-bindings/interconnect/qcom,kona.h>
 
 &soc {
 	/* Primary USB port related controller */
@@ -52,6 +53,9 @@
 			0x144 /* GSI_RING_BASE_ADDR_H */
 			0x1a4>; /* GSI_IF_STS */
 		qcom,dwc-usb3-msm-tx-fifo-size = <27696>;
+
+		interconnects = <&kona_icc KONA_ICC_USB0_TO_MEM>;
+		interconnect-names = "usb-ddr";
 
 		qcom,msm-bus,name = "usb0";
 		qcom,msm-bus,num-cases = <4>;
@@ -396,6 +400,9 @@
 			 0x1a4>; /* GSI_IF_STS */
 		qcom,dwc-usb3-msm-tx-fifo-size = <27696>;
 		qcom,charging-disabled;
+
+		interconnects = <&kona_icc KONA_ICC_USB1_TO_MEM>;
+		interconnect-names = "usb-ddr";
 
 		qcom,msm-bus,name = "usb1";
 		qcom,msm-bus,num-cases = <3>;

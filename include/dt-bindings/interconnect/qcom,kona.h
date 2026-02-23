@@ -35,5 +35,7 @@
 #define KONA_ICC_CPU_TO_GPU_CFG	26
 #define KONA_ICC_GMU_TO_LLCC	27
 #define KONA_ICC_GMU_TO_MEM	28
+#define KONA_ICC_USB0_TO_MEM	26
+#define KONA_ICC_USB1_TO_MEM	27
 
 #endif

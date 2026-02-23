@@ -737,6 +737,20 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.ib = "CPU_MEM_IB",
 		.role = KONA_ROLE_GENERIC,
 	},
+	{
+		.id = KONA_ICC_USB0_TO_MEM,
+		.name = "usb0-ddr",
+		.ab = "USB0_MEM_AB",
+		.ib = "USB0_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
+	{
+		.id = KONA_ICC_USB1_TO_MEM,
+		.name = "usb1-ddr",
+		.ab = "USB1_MEM_AB",
+		.ib = "USB1_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
 };
 
 static const struct kona_icc_data kona_data = {
