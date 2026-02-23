@@ -13,6 +13,12 @@ Required properties:
 
 Optional properties:
 - qcom,iommu-s1-bypass:	Boolean flag to bypass IOMMU stage 1 translation.
+- interconnects:		Interconnect path(s) used for bandwidth voting.
+			If present, GENI-SE uses the Linux ICC framework.
+			One path maps to legacy single-path voting; two paths
+			map to core + DDR/NOC voting.
+- interconnect-names:	Optional names for each ICC path. Required when
+			multiple ICC paths are described.
 - qcom,msm-bus,num-paths: Number of paths to put vote for.
 - qcom,msm-bus,vectors-bus-ids: Master and slave Endpoint IDs for DDR
 				and Corex/2x paths.

@@ -10,6 +10,7 @@
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/interconnect.h>
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
 #include <linux/of.h>
@@ -112,6 +113,9 @@ struct geni_se_device {
 	struct msm_bus_scale_pdata *pdata;
 	int update;
 	bool vote_for_bw;
+	bool use_icc;
+	u32 num_icc_paths;
+	struct icc_path *icc_paths[2];
 };
 
 #define HW_VER_MAJOR_MASK GENMASK(31, 28)
@@ -121,6 +125,32 @@ struct geni_se_device {
 #define HW_VER_STEP_MASK GENMASK(15, 0)
 
 static int geni_se_iommu_map_and_attach(struct geni_se_device *geni_se_dev);
+
+static int geni_se_icc_set_bw(struct geni_se_device *geni_se_dev,
+			      unsigned long ab, unsigned long ib,
+			      unsigned long ab_noc, unsigned long ib_noc)
+{
+	int ret;
+	u32 avg_bw;
+	u32 peak_bw;
+
+	if (!geni_se_dev->use_icc)
+		return 0;
+
+	avg_bw = min_t(unsigned long, ab, U32_MAX);
+	peak_bw = min_t(unsigned long, ib, U32_MAX);
+	ret = icc_set_bw(geni_se_dev->icc_paths[0], avg_bw, peak_bw);
+	if (ret)
+		return ret;
+
+	if (geni_se_dev->num_icc_paths == 1)
+		return 0;
+
+	avg_bw = min_t(unsigned long, ab_noc, U32_MAX);
+	peak_bw = min_t(unsigned long, ib_noc, U32_MAX);
+
+	return icc_set_bw(geni_se_dev->icc_paths[1], avg_bw, peak_bw);
+}
 
 /**
  * geni_read_reg_nolog() - Helper function to read from a GENI register
@@ -714,6 +744,64 @@ static bool geni_se_check_bus_bw_noc(struct geni_se_device *geni_se_dev)
 	return bus_bw_update;
 }
 
+static int geni_se_probe_icc(struct geni_se_device *geni_se_dev)
+{
+	struct device *dev = geni_se_dev->dev;
+	const char *icc_name;
+	int num_icc_paths;
+	int i;
+	int ret = 0;
+
+	num_icc_paths = of_count_phandle_with_args(dev->of_node,
+						  "interconnects",
+						  "#interconnect-cells");
+	if (num_icc_paths <= 0)
+		return num_icc_paths;
+
+	if (num_icc_paths > ARRAY_SIZE(geni_se_dev->icc_paths)) {
+		dev_warn(dev,
+			 "Unexpected number of ICC paths (%d), falling back to msm-bus\n",
+			 num_icc_paths);
+		return -EINVAL;
+	}
+
+	if (of_find_property(dev->of_node, "interconnect-names", NULL)) {
+		for (i = 0; i < num_icc_paths; i++) {
+			ret = of_property_read_string_index(dev->of_node,
+							    "interconnect-names",
+							    i, &icc_name);
+			if (ret)
+				break;
+
+			geni_se_dev->icc_paths[i] = devm_of_icc_get(dev, icc_name);
+			if (IS_ERR(geni_se_dev->icc_paths[i])) {
+				ret = PTR_ERR(geni_se_dev->icc_paths[i]);
+				geni_se_dev->icc_paths[i] = NULL;
+				break;
+			}
+		}
+	} else if (num_icc_paths == 1) {
+		geni_se_dev->icc_paths[0] = devm_of_icc_get(dev, NULL);
+		if (IS_ERR(geni_se_dev->icc_paths[0])) {
+			ret = PTR_ERR(geni_se_dev->icc_paths[0]);
+			geni_se_dev->icc_paths[0] = NULL;
+		}
+	} else {
+		ret = -EINVAL;
+	}
+
+	if (ret) {
+		dev_warn(dev, "Failed to get ICC path(s): %d\n", ret);
+		return ret;
+	}
+
+	geni_se_dev->use_icc = true;
+	geni_se_dev->num_icc_paths = num_icc_paths;
+	geni_se_dev->num_paths = num_icc_paths;
+
+	return 0;
+}
+
 static int geni_se_rmv_ab_ib(struct geni_se_device *geni_se_dev,
 			     struct se_geni_rsc *rsc)
 {
@@ -734,7 +822,7 @@ static int geni_se_rmv_ab_ib(struct geni_se_device *geni_se_dev,
 
 	list_del_init(&rsc->ib_list);
 	tmp = list_first_entry_or_null(&geni_se_dev->ib_list_head,
-					   struct se_geni_rsc, ib_list);
+				   struct se_geni_rsc, ib_list);
 	if (tmp && tmp->ib != geni_se_dev->cur_ib)
 		geni_se_dev->cur_ib = tmp->ib;
 	else if (!tmp && geni_se_dev->cur_ib)
@@ -742,7 +830,7 @@ static int geni_se_rmv_ab_ib(struct geni_se_device *geni_se_dev,
 
 	bus_bw_update = geni_se_check_bus_bw(geni_se_dev);
 
-	if (geni_se_dev->num_paths == 2) {
+	if (!geni_se_dev->use_icc && geni_se_dev->num_paths == 2) {
 		geni_se_dev->pdata->usecase[new_update].vectors[0].ab  =
 			geni_se_dev->vote_for_bw ?
 			CONV_TO_BW(geni_se_dev->cur_ab) : geni_se_dev->cur_ab;
@@ -751,27 +839,24 @@ static int geni_se_rmv_ab_ib(struct geni_se_device *geni_se_dev,
 			CONV_TO_BW(geni_se_dev->cur_ib) : geni_se_dev->cur_ib;
 	}
 
-	if (bus_bw_update && geni_se_dev->num_paths != 2)
-		ret = msm_bus_scale_update_bw(geni_se_dev->bus_bw,
-						geni_se_dev->cur_ab,
-						geni_se_dev->cur_ib);
 	GENI_SE_DBG(geni_se_dev->log_ctx, false, NULL,
 		"%s: %s: cur_ab_ib(%lu:%lu) req_ab_ib(%lu:%lu) %d\n",
 		__func__, dev_name(rsc->ctrl_dev), geni_se_dev->cur_ab,
 		geni_se_dev->cur_ib, rsc->ab, rsc->ib, bus_bw_update);
 
-
 	if (geni_se_dev->num_paths == 2) {
 		if (unlikely(list_empty(&rsc->ab_list_noc) ||
-					list_empty(&rsc->ib_list_noc)))
-			return -EINVAL;
+					list_empty(&rsc->ib_list_noc))) {
+			ret = -EINVAL;
+			goto unlock;
+		}
 
 		list_del_init(&rsc->ab_list_noc);
 		geni_se_dev->cur_ab_noc -= rsc->ab_noc;
 
 		list_del_init(&rsc->ib_list_noc);
 		tmp = list_first_entry_or_null(&geni_se_dev->ib_list_head_noc,
-					struct se_geni_rsc, ib_list_noc);
+					   struct se_geni_rsc, ib_list_noc);
 		if (tmp && tmp->ib_noc != geni_se_dev->cur_ib_noc)
 			geni_se_dev->cur_ib_noc = tmp->ib_noc;
 		else if (!tmp && geni_se_dev->cur_ib_noc)
@@ -779,22 +864,40 @@ static int geni_se_rmv_ab_ib(struct geni_se_device *geni_se_dev,
 
 		bus_bw_update_noc = geni_se_check_bus_bw_noc(geni_se_dev);
 
-		geni_se_dev->pdata->usecase[new_update].vectors[1].ab  =
+		if (!geni_se_dev->use_icc) {
+			geni_se_dev->pdata->usecase[new_update].vectors[1].ab  =
 				geni_se_dev->cur_ab_noc;
-		geni_se_dev->pdata->usecase[new_update].vectors[1].ib  =
+			geni_se_dev->pdata->usecase[new_update].vectors[1].ib  =
 				geni_se_dev->cur_ib_noc;
-
-		if (bus_bw_update_noc || bus_bw_update) {
-			geni_se_dev->update = new_update;
-			ret = msm_bus_scale_client_update_request
-					(geni_se_dev->bus_bw_noc, new_update);
 		}
+
 		GENI_SE_DBG(geni_se_dev->log_ctx, false, NULL,
 			"%s: %s: cur_ab_ib_noc(%lu:%lu) req_ab_ib_noc(%lu:%lu) %d\n",
 			__func__, dev_name(rsc->ctrl_dev),
 			geni_se_dev->cur_ab_noc, geni_se_dev->cur_ib_noc,
 			rsc->ab_noc, rsc->ib_noc, bus_bw_update_noc);
 	}
+
+	if (bus_bw_update || bus_bw_update_noc) {
+		if (geni_se_dev->use_icc)
+			ret = geni_se_icc_set_bw(geni_se_dev,
+				geni_se_dev->vote_for_bw ?
+				CONV_TO_BW(geni_se_dev->cur_ab) : geni_se_dev->cur_ab,
+				geni_se_dev->vote_for_bw ?
+				CONV_TO_BW(geni_se_dev->cur_ib) : geni_se_dev->cur_ib,
+				geni_se_dev->cur_ab_noc, geni_se_dev->cur_ib_noc);
+		else if (geni_se_dev->num_paths == 2) {
+			geni_se_dev->update = new_update;
+			ret = msm_bus_scale_client_update_request
+					(geni_se_dev->bus_bw_noc, new_update);
+		} else {
+			ret = msm_bus_scale_update_bw(geni_se_dev->bus_bw,
+						geni_se_dev->cur_ab,
+						geni_se_dev->cur_ib);
+		}
+	}
+
+unlock:
 	mutex_unlock(&geni_se_dev->geni_dev_lock);
 	return ret;
 }
@@ -886,13 +989,12 @@ static int geni_se_add_ab_ib(struct geni_se_device *geni_se_dev,
 		ins_list_head = &tmp->ib_list;
 	}
 	list_add(&rsc->ib_list, ins_list_head);
-	/* Currently inserted node has greater average BW value */
 	if (ins_list_head == &geni_se_dev->ib_list_head)
 		geni_se_dev->cur_ib = rsc->ib;
 
 	bus_bw_update = geni_se_check_bus_bw(geni_se_dev);
 
-	if (geni_se_dev->num_paths == 2) {
+	if (!geni_se_dev->use_icc && geni_se_dev->num_paths == 2) {
 		geni_se_dev->pdata->usecase[new_update].vectors[0].ab  =
 			geni_se_dev->vote_for_bw ?
 			CONV_TO_BW(geni_se_dev->cur_ab) : geni_se_dev->cur_ab;
@@ -901,26 +1003,20 @@ static int geni_se_add_ab_ib(struct geni_se_device *geni_se_dev,
 			CONV_TO_BW(geni_se_dev->cur_ib) : geni_se_dev->cur_ib;
 	}
 
-	if (bus_bw_update && geni_se_dev->num_paths != 2)
-		ret = msm_bus_scale_update_bw(geni_se_dev->bus_bw,
-						geni_se_dev->cur_ab,
-						geni_se_dev->cur_ib);
 	GENI_SE_DBG(geni_se_dev->log_ctx, false, NULL,
 		"%s: %s: cur_ab_ib(%lu:%lu) req_ab_ib(%lu:%lu) %d\n",
 		__func__, dev_name(rsc->ctrl_dev),
 		geni_se_dev->cur_ab, geni_se_dev->cur_ib,
 		rsc->ab, rsc->ib, bus_bw_update);
 
-
 	if (geni_se_dev->num_paths == 2) {
-
 		list_add(&rsc->ab_list_noc, &geni_se_dev->ab_list_head_noc);
 		geni_se_dev->cur_ab_noc += rsc->ab_noc;
 		ins_list_head_noc = &geni_se_dev->ib_list_head_noc;
 
 		list_for_each_entry(tmp, &geni_se_dev->ib_list_head_noc,
 					ib_list_noc) {
-			if (tmp->ib < rsc->ib)
+			if (tmp->ib_noc < rsc->ib_noc)
 				break;
 			ins_list_head_noc = &tmp->ib_list_noc;
 		}
@@ -931,21 +1027,39 @@ static int geni_se_add_ab_ib(struct geni_se_device *geni_se_dev,
 
 		bus_bw_update_noc = geni_se_check_bus_bw_noc(geni_se_dev);
 
-		geni_se_dev->pdata->usecase[new_update].vectors[1].ab  =
+		if (!geni_se_dev->use_icc) {
+			geni_se_dev->pdata->usecase[new_update].vectors[1].ab  =
 				geni_se_dev->cur_ab_noc;
-		geni_se_dev->pdata->usecase[new_update].vectors[1].ib  =
+			geni_se_dev->pdata->usecase[new_update].vectors[1].ib  =
 				geni_se_dev->cur_ib_noc;
-		if (bus_bw_update_noc || bus_bw_update) {
-			geni_se_dev->update = new_update;
-			ret = msm_bus_scale_client_update_request
-					(geni_se_dev->bus_bw_noc, new_update);
 		}
+
 		GENI_SE_DBG(geni_se_dev->log_ctx, false, NULL,
 			"%s: %s: cur_ab_ib_noc(%lu:%lu) req_ab_ib_noc(%lu:%lu) %d\n",
 			__func__, dev_name(rsc->ctrl_dev),
 			geni_se_dev->cur_ab_noc, geni_se_dev->cur_ib_noc,
 			rsc->ab_noc, rsc->ib_noc, bus_bw_update_noc);
 	}
+
+	if (bus_bw_update || bus_bw_update_noc) {
+		if (geni_se_dev->use_icc)
+			ret = geni_se_icc_set_bw(geni_se_dev,
+				geni_se_dev->vote_for_bw ?
+				CONV_TO_BW(geni_se_dev->cur_ab) : geni_se_dev->cur_ab,
+				geni_se_dev->vote_for_bw ?
+				CONV_TO_BW(geni_se_dev->cur_ib) : geni_se_dev->cur_ib,
+				geni_se_dev->cur_ab_noc, geni_se_dev->cur_ib_noc);
+		else if (geni_se_dev->num_paths == 2) {
+			geni_se_dev->update = new_update;
+			ret = msm_bus_scale_client_update_request
+					(geni_se_dev->bus_bw_noc, new_update);
+		} else {
+			ret = msm_bus_scale_update_bw(geni_se_dev->bus_bw,
+						geni_se_dev->cur_ab,
+						geni_se_dev->cur_ib);
+		}
+	}
+
 	mutex_unlock(&geni_se_dev->geni_dev_lock);
 	return ret;
 }
@@ -1059,7 +1173,7 @@ int geni_se_resources_init(struct se_geni_rsc *rsc,
 		return -EPROBE_DEFER;
 
 	if (geni_se_dev->num_paths == 2) {
-		if (unlikely(!(geni_se_dev->bus_bw_noc))) {
+		if (!geni_se_dev->use_icc && unlikely(!(geni_se_dev->bus_bw_noc))) {
 			geni_se_dev->bus_bw_noc =
 			msm_bus_scale_register_client(geni_se_dev->pdata);
 			if (!(geni_se_dev->bus_bw_noc)) {
@@ -1078,7 +1192,7 @@ int geni_se_resources_init(struct se_geni_rsc *rsc,
 		INIT_LIST_HEAD(&rsc->ab_list_noc);
 		INIT_LIST_HEAD(&rsc->ib_list_noc);
 	} else {
-		if (unlikely(IS_ERR_OR_NULL(geni_se_dev->bus_bw))) {
+		if (!geni_se_dev->use_icc && IS_ERR_OR_NULL(geni_se_dev->bus_bw)) {
 			geni_se_dev->bus_bw = msm_bus_scale_register(
 						geni_se_dev->bus_mas_id,
 						geni_se_dev->bus_slv_id,
@@ -1770,37 +1884,31 @@ static int geni_se_probe(struct platform_device *pdev)
 
 	geni_se_dev->dev = dev;
 	geni_se_dev->cb_dev = dev;
-	ret = of_property_read_u32(dev->of_node, "qcom,msm-bus,num-paths",
-					&geni_se_dev->num_paths);
-	if (!ret) {
-		geni_se_dev->update = 0;
-		geni_se_dev->pdata = ab_ib_register(pdev, geni_se_dev);
-		if (geni_se_dev->pdata == NULL) {
-			dev_err(dev,
-			"%s: Error missing bus master and slave id\n",
-								__func__);
-			devm_iounmap(dev, geni_se_dev->base);
-			devm_kfree(dev, geni_se_dev);
-		}
-	}
 
-	else {
+	ret = geni_se_probe_icc(geni_se_dev);
+	if (!ret) {
+		dev_info(dev, "Using ICC interconnect path(s): %u\n",
+			 geni_se_dev->num_icc_paths);
+	} else {
 		geni_se_dev->num_paths = 1;
-		ret = of_property_read_u32(dev->of_node, "qcom,bus-mas-id",
-				   &geni_se_dev->bus_mas_id);
-		if (ret) {
-			dev_err(dev, "%s: Error missing bus master id\n",
-								__func__);
-			devm_iounmap(dev, geni_se_dev->base);
-			devm_kfree(dev, geni_se_dev);
-		}
-		ret = of_property_read_u32(dev->of_node, "qcom,bus-slv-id",
-				   &geni_se_dev->bus_slv_id);
-		if (ret) {
-			dev_err(dev, "%s: Error missing bus slave id\n",
-								 __func__);
-			devm_iounmap(dev, geni_se_dev->base);
-			devm_kfree(dev, geni_se_dev);
+		ret = of_property_read_u32(dev->of_node, "qcom,msm-bus,num-paths",
+						   &geni_se_dev->num_paths);
+		if (!ret && geni_se_dev->num_paths == 2) {
+			geni_se_dev->update = 0;
+			geni_se_dev->pdata = ab_ib_register(pdev, geni_se_dev);
+			if (!geni_se_dev->pdata)
+				return -EINVAL;
+		} else {
+			geni_se_dev->num_paths = 1;
+			ret = of_property_read_u32(dev->of_node, "qcom,bus-mas-id",
+						   &geni_se_dev->bus_mas_id);
+			if (ret)
+				return ret;
+
+			ret = of_property_read_u32(dev->of_node, "qcom,bus-slv-id",
+						   &geni_se_dev->bus_slv_id);
+			if (ret)
+				return ret;
 		}
 	}
 

@@ -1245,7 +1245,9 @@
 				<  300000 MHZ_TO_MBPS( 150, 16) >,
 				<  729600 MHZ_TO_MBPS( 300, 16) >,
 				< 1497600 MHZ_TO_MBPS( 466, 16) >,
-				< 1670400 MHZ_TO_MBPS( 600, 16) >;
+				< 1670400 MHZ_TO_MBPS( 600, 16) >,
+				< 1804800 MHZ_TO_MBPS( 806, 16) >,
+				< 2016000 MHZ_TO_MBPS( 933, 16) >;
 		};
 
 		cpu0_llcc_ddr_latmon: qcom,cpu0-llcc-ddr-latmon {
@@ -1260,7 +1262,9 @@
 					<  729600 MHZ_TO_MBPS(  451, 4) >,
 					< 1132800 MHZ_TO_MBPS(  547, 4) >,
 					< 1497600 MHZ_TO_MBPS(  768, 4) >,
-					< 1670400 MHZ_TO_MBPS( 1017, 4) >;
+					< 1670400 MHZ_TO_MBPS( 1017, 4) >,
+					< 1804800 MHZ_TO_MBPS( 1353, 4) >,
+					< 2016000 MHZ_TO_MBPS( 1555, 4) >;
 			};
 
 			ddr5-map {
@@ -1270,7 +1274,9 @@
 					<  729600 MHZ_TO_MBPS(  451, 4) >,
 					< 1132800 MHZ_TO_MBPS(  547, 4) >,
 					< 1497600 MHZ_TO_MBPS(  768, 4) >,
-					< 1670400 MHZ_TO_MBPS( 1017, 4) >;
+					< 1670400 MHZ_TO_MBPS( 1017, 4) >,
+					< 1804800 MHZ_TO_MBPS( 1353, 4) >,
+					< 2016000 MHZ_TO_MBPS( 1555, 4) >;
 			};
 		};
 
