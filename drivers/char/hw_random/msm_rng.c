@@ -14,6 +14,7 @@
 #include <linux/io.h>
 #include <linux/err.h>
 #include <linux/types.h>
+#include <linux/interconnect.h>
 #include <soc/qcom/socinfo.h>
 #include <linux/msm-bus.h>
 #include <linux/qrng.h>
@@ -49,6 +50,7 @@ struct msm_rng_device {
 	struct platform_device *pdev;
 	void __iomem *base;
 	struct clk *prng_clk;
+	struct icc_path *icc_path;
 	uint32_t qrng_perf_client;
 	struct mutex rng_lock;
 };
@@ -56,6 +58,32 @@ struct msm_rng_device {
 struct msm_rng_device msm_rng_device_info;
 static struct msm_rng_device *msm_rng_dev_cached;
 struct mutex cached_rng_lock;
+
+static int msm_rng_bus_vote(struct msm_rng_device *msm_rng_dev, bool enable)
+{
+	int ret;
+
+	if (msm_rng_dev->icc_path) {
+		ret = icc_set_bw(msm_rng_dev->icc_path, enable ? 1 : 0,
+				enable ? 1 : 0);
+		if (!ret)
+			return 0;
+
+		dev_warn(&msm_rng_dev->pdev->dev,
+			"ICC vote failed (%d), using msm_bus fallback\n", ret);
+	}
+
+	if (!msm_rng_dev->qrng_perf_client)
+		return 0;
+
+	ret = msm_bus_scale_client_update_request(msm_rng_dev->qrng_perf_client,
+			enable ? 1 : 0);
+	if (ret)
+		pr_err("bus_scale_client_update_req failed\n");
+
+	return ret;
+}
+
 static long msm_rng_ioctl(struct file *filp, unsigned int cmd,
 				unsigned long arg)
 {
@@ -64,8 +92,11 @@ static long msm_rng_ioctl(struct file *filp, unsigned int cmd,
 	switch (cmd) {
 	case QRNG_IOCTL_RESET_BUS_BANDWIDTH:
 		pr_debug("calling msm_rng_bus_scale(LOW)\n");
-		ret = msm_bus_scale_client_update_request(
-				msm_rng_device_info.qrng_perf_client, 0);
+		if (msm_rng_dev_cached)
+			ret = msm_rng_bus_vote(msm_rng_dev_cached, false);
+		else
+			ret = msm_bus_scale_client_update_request(
+					msm_rng_device_info.qrng_perf_client, 0);
 		if (ret)
 			pr_err("failed qrng_reset_bus_bw, ret = %ld\n", ret);
 		break;
@@ -102,14 +133,9 @@ static int msm_rng_direct_read(struct msm_rng_device *msm_rng_dev,
 
 	mutex_lock(&msm_rng_dev->rng_lock);
 
-	if (msm_rng_dev->qrng_perf_client) {
-		ret = msm_bus_scale_client_update_request(
-				msm_rng_dev->qrng_perf_client, 1);
-		if (ret) {
-			pr_err("bus_scale_client_update_req failed\n");
-			goto bus_err;
-		}
-	}
+	ret = msm_rng_bus_vote(msm_rng_dev, true);
+	if (ret)
+		goto bus_err;
 	/* enable PRNG clock */
 	if (msm_rng_dev->prng_clk) {
 		ret = clk_prepare_enable(msm_rng_dev->prng_clk);
@@ -148,12 +174,9 @@ static int msm_rng_direct_read(struct msm_rng_device *msm_rng_dev,
 	if (msm_rng_dev->prng_clk)
 		clk_disable_unprepare(msm_rng_dev->prng_clk);
 err:
-	if (msm_rng_dev->qrng_perf_client) {
-		ret = msm_bus_scale_client_update_request(
-				msm_rng_dev->qrng_perf_client, 0);
-		if (ret)
-			pr_err("bus_scale_client_update_req failed\n");
-	}
+	ret = msm_rng_bus_vote(msm_rng_dev, false);
+	if (ret)
+		pr_err("failed to reset rng bus vote\n");
 bus_err:
 	mutex_unlock(&msm_rng_dev->rng_lock);
 
@@ -184,12 +207,9 @@ static int msm_rng_enable_hw(struct msm_rng_device *msm_rng_dev)
 	unsigned long reg_val = 0;
 	int ret = 0;
 
-	if (msm_rng_dev->qrng_perf_client) {
-		ret = msm_bus_scale_client_update_request(
-				msm_rng_dev->qrng_perf_client, 1);
-		if (ret)
-			pr_err("bus_scale_client_update_req failed\n");
-	}
+	ret = msm_rng_bus_vote(msm_rng_dev, true);
+	if (ret)
+		pr_err("failed to set rng bus vote\n");
 	/* Enable the PRNG CLK */
 	if (msm_rng_dev->prng_clk) {
 		ret = clk_prepare_enable(msm_rng_dev->prng_clk);
@@ -226,12 +246,9 @@ static int msm_rng_enable_hw(struct msm_rng_device *msm_rng_dev)
 	if (msm_rng_dev->prng_clk)
 		clk_disable_unprepare(msm_rng_dev->prng_clk);
 
-	if (msm_rng_dev->qrng_perf_client) {
-		ret = msm_bus_scale_client_update_request(
-				msm_rng_dev->qrng_perf_client, 0);
-		if (ret)
-			pr_err("bus_scale_client_update_req failed\n");
-	}
+	ret = msm_rng_bus_vote(msm_rng_dev, false);
+	if (ret)
+		pr_err("failed to reset rng bus vote\n");
 
 	return 0;
 }
@@ -307,6 +324,17 @@ static int msm_rng_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, msm_rng_dev);
 
 	if (pdev->dev.of_node) {
+		if (of_find_property(pdev->dev.of_node, "interconnects", NULL)) {
+			msm_rng_dev->icc_path = devm_of_icc_get(&pdev->dev, NULL);
+			if (IS_ERR(msm_rng_dev->icc_path)) {
+				ret = PTR_ERR(msm_rng_dev->icc_path);
+				msm_rng_dev->icc_path = NULL;
+				dev_warn(&pdev->dev,
+					"Unable to get RNG ICC path (%d), using msm_bus fallback\n",
+					ret);
+			}
+		}
+
 		/* Register bus client */
 		qrng_platform_support = msm_bus_cl_get_pdata(pdev);
 		msm_rng_dev->qrng_perf_client = msm_bus_scale_register_client(
@@ -380,6 +408,7 @@ static int msm_rng_remove(struct platform_device *pdev)
 	hwrng_unregister(&msm_rng);
 	if (msm_rng_dev->prng_clk)
 		clk_put(msm_rng_dev->prng_clk);
+	msm_rng_bus_vote(msm_rng_dev, false);
 	iounmap(msm_rng_dev->base);
 	platform_set_drvdata(pdev, NULL);
 	if (msm_rng_dev->qrng_perf_client)

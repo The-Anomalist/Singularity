@@ -998,6 +998,8 @@
 		compatible = "qcom,bimc-bwmon4";
 		reg = <0x90b6400 0x300>, <0x90b6300 0x200>;
 		reg-names = "base", "global_base";
+		interconnects = <&kona_icc KONA_ICC_CPU_TO_LLCC>;
+		interconnect-names = "cpu-llcc";
 		interrupts = <GIC_SPI 581 IRQ_TYPE_LEVEL_HIGH>;
 		qcom,mport = <0>;
 		qcom,hw-timer-hz = <19200000>;
@@ -1022,6 +1024,8 @@
 		compatible = "qcom,bimc-bwmon5";
 		reg = <0x9091000 0x1000>;
 		reg-names = "base";
+		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+		interconnect-names = "cpu-ddr";
 		interrupts = <GIC_SPI 81 IRQ_TYPE_LEVEL_HIGH>;
 		qcom,hw-timer-hz = <19200000>;
 		qcom,target-dev = <&cpu_llcc_ddr_bw>;
@@ -1043,6 +1047,8 @@
 		compatible = "qcom,bimc-bwmon4";
 		reg = <0x00060400 0x300>, <0x00060300 0x200>;
 		reg-names = "base", "global_base";
+		interconnects = <&kona_icc KONA_ICC_NPU_TO_LLCC>;
+		interconnect-names = "npu-llcc";
 		qcom,msm_bus = <154 10070>;
 		qcom,msm_bus_name = "npu_bwmon_cdsp";
 		clocks = <&clock_gcc GCC_NPU_BWMON_CFG_AHB_CLK>,
@@ -1071,6 +1077,8 @@
 		compatible = "qcom,bimc-bwmon5";
 		reg = <0x9093000 0x1000>;
 		reg-names = "base";
+		interconnects = <&kona_icc KONA_ICC_NPU_TO_MEM>;
+		interconnect-names = "npu-ddr";
 		interrupts = <GIC_SPI 81 IRQ_TYPE_LEVEL_HIGH>;
 		qcom,hw-timer-hz = <19200000>;
 		qcom,target-dev = <&npu_llcc_ddr_bw>;
@@ -1092,6 +1100,8 @@
 		compatible = "qcom,bimc-bwmon4";
 		reg = <0x00070300 0x300>, <0x00070200 0x200>;
 		reg-names = "base", "global_base";
+		interconnects = <&kona_icc KONA_ICC_NPUDSP_TO_MEM>;
+		interconnect-names = "npudsp-ddr";
 		qcom,msm_bus = <154 10070>;
 		qcom,msm_bus_name = "npudsp_bwmon_cdsp";
 		clocks = <&clock_gcc GCC_NPU_BWMON_CFG_AHB_CLK>,
@@ -2432,6 +2442,8 @@
 	qcom_rng: qrng@793000 {
 		compatible = "qcom,msm-rng";
 		reg = <0x793000 0x1000>;
+		interconnects = <&kona_icc KONA_ICC_CPU_TO_PRNG>;
+		interconnect-names = "rng";
 		qcom,msm-rng-iface-clk;
 		qcom,no-qrng-config;
 		qcom,msm-bus,name = "msm-rng-noc";

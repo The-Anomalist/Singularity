@@ -8,6 +8,8 @@ Optional property:
 - qcom,msm-rng-iface-clk : If the device uses iface-clk.
 - qcom,msm-rng-hwkm-clk  : If the device uses hwkm clock.
 - qcom,no-qrng-config    : Flag to decide whether the driver do the hardware configuration or not.
+- interconnects          : Phandle/path pair for RNG bandwidth voting.
+- interconnect-names     : Name for the interconnect path; use "rng" for single path.
 
 Example:
 

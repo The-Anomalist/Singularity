@@ -31,5 +31,6 @@
 #define KONA_ICC_CPU6_TO_MEM	22
 #define KONA_ICC_CPU7_TO_LLCC	23
 #define KONA_ICC_CPU7_TO_MEM	24
+#define KONA_ICC_CPU_TO_PRNG	25
 
 #endif

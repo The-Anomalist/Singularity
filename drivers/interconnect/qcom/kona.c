@@ -501,6 +501,13 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 	if (*ib && *ib < KONA_ICC_MIN_IB_FLOOR_KB)
 		*ib = KONA_ICC_MIN_IB_FLOOR_KB;
 
+	/*
+	 * Keep low-bandwidth peripheral paths (e.g. RNG) unmodified so
+	 * small functional votes do not get inflated by performance floors.
+	 */
+	if (desc->id == KONA_ICC_CPU_TO_PRNG)
+		return;
+
         /*
          * Add configurable headroom to CPU/GPU/NPU/DDR/LLCC paths to avoid collapsing
          * performance when the SoC is under heavy load. Display paths stay closer
@@ -698,6 +705,13 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.ab = "NPU_MEM_AB",
 		.ib = "NPU_MEM_IB",
 		.role = KONA_ROLE_NPU,
+	},
+	{
+		.id = KONA_ICC_CPU_TO_PRNG,
+		.name = "cpu-prng",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
 	},
 };
 
