@@ -752,6 +752,20 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.role = KONA_ROLE_GENERIC,
 	},
 	{
+		.id = KONA_ICC_UFS_TO_LLCC,
+		.name = "ufs-llcc",
+		.ab = "CPU_LLCC_AB",
+		.ib = "CPU_LLCC_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
+	{
+		.id = KONA_ICC_UFS_TO_MEM,
+		.name = "ufs-ddr",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
+	{
 		.id = KONA_ICC_CAM_CFG,
 		.name = "cam-cfg",
 		.ab = "CPU_MEM_AB",

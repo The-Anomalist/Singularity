@@ -17,6 +17,7 @@
 
 #include <linux/phy/phy.h>
 #include <linux/pm_qos.h>
+#include <linux/interconnect.h>
 #include "ufshcd.h"
 
 #define MAX_UFS_QCOM_HOSTS	2
@@ -334,6 +335,9 @@ struct ufs_qcom_host {
 	struct phy *generic_phy;
 	struct ufs_hba *hba;
 	struct ufs_qcom_bus_vote bus_vote;
+	struct icc_path *icc_paths[2];
+	int num_icc_paths;
+	bool use_icc;
 	struct ufs_pa_layer_attr dev_req_params;
 	struct clk *rx_l0_sync_clk;
 	struct clk *tx_l0_sync_clk;

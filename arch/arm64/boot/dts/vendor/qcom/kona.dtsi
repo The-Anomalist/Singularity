@@ -3129,8 +3129,8 @@
 		reg = <0x1d84000 0x3000>, <0x1d90000 0x8000>;
 		reg-names = "ufs_mem", "ufs_ice";
 		interrupts = <GIC_SPI 265 IRQ_TYPE_LEVEL_HIGH>;
-		interconnects = <&kona_icc KONA_ICC_CPU_TO_LLCC>,
-				<&kona_icc KONA_ICC_CPU_TO_MEM>;
+		interconnects = <&kona_icc KONA_ICC_UFS_TO_LLCC>,
+				<&kona_icc KONA_ICC_UFS_TO_MEM>;
 		interconnect-names = "ufs-llcc", "ufs-ddr";
 		qcom,src-dst-ports = <MSM_BUS_MASTER_UFS_MEM MSM_BUS_SLAVE_LLCC>,
 				     <MSM_BUS_MASTER_UFS_MEM MSM_BUS_SLAVE_EBI_CH0>;

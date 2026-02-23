@@ -18,6 +18,7 @@
 #include <linux/phy/phy.h>
 #include <linux/phy/phy-qcom-ufs.h>
 #include <linux/clk/qcom.h>
+#include <linux/interconnect.h>
 
 #ifdef CONFIG_QCOM_BUS_SCALING
 #include <linux/msm-bus.h>
@@ -40,6 +41,8 @@
 
 #define UFS_QCOM_DEFAULT_DBG_PRINT_EN	\
 	(UFS_QCOM_DBG_PRINT_REGS_EN | UFS_QCOM_DBG_PRINT_TEST_BUS_EN)
+
+#define UFS_QCOM_MAX_ICC_PATHS	2
 
 enum {
 	TSTBUS_UAWM,
@@ -1109,11 +1112,62 @@ static void ufs_qcom_get_speed_mode(struct ufs_pa_layer_attr *p, char *result)
 	}
 }
 
+static int ufs_qcom_get_icc_bw_for_vote(struct ufs_qcom_host *host,
+					 int vote, int path, u32 *avg_bw, u32 *peak_bw)
+{
+	struct device_node *np = host->hba->dev->of_node;
+	u32 num_paths;
+	int offset, err;
+
+	err = of_property_read_u32(np, "qcom,msm-bus,num-paths", &num_paths);
+	if (err)
+		return err;
+
+	if (num_paths != host->num_icc_paths)
+		return -EINVAL;
+
+	offset = ((vote * num_paths) + path) * 4;
+	err = of_property_read_u32_index(np, "qcom,msm-bus,vectors-KBps",
+			offset + 2, avg_bw);
+	if (err)
+		return err;
+
+	return of_property_read_u32_index(np, "qcom,msm-bus,vectors-KBps",
+			offset + 3, peak_bw);
+}
+
 static int __ufs_qcom_set_bus_vote(struct ufs_qcom_host *host, int vote)
 {
 	int err = 0;
 
 	if (vote != host->bus_vote.curr_vote) {
+		if (host->use_icc) {
+			int i;
+
+			for (i = 0; i < host->num_icc_paths; i++) {
+				u32 avg_bw = 0, peak_bw = 0;
+
+				err = ufs_qcom_get_icc_bw_for_vote(host, vote, i,
+							   &avg_bw, &peak_bw);
+				if (err)
+					break;
+
+				err = icc_set_bw(host->icc_paths[i], avg_bw, peak_bw);
+				if (err)
+					break;
+			}
+
+			if (!err)
+				goto update_vote;
+
+			dev_warn(host->hba->dev,
+				 "ICC vote failed (%d), using msm_bus fallback\n",
+				 err);
+		}
+
+		if (!host->bus_vote.client_handle)
+			return -ENODEV;
+
 		err = msm_bus_scale_client_update_request(
 				host->bus_vote.client_handle, vote);
 		if (err) {
@@ -1123,7 +1177,7 @@ static int __ufs_qcom_set_bus_vote(struct ufs_qcom_host *host, int vote)
 				vote, err);
 			goto out;
 		}
-
+update_vote:
 		host->bus_vote.curr_vote = vote;
 	}
 out:
@@ -1214,6 +1268,37 @@ static int ufs_qcom_bus_register(struct ufs_qcom_host *host)
 	struct device *dev = host->hba->dev;
 	struct platform_device *pdev = to_platform_device(dev);
 	struct device_node *np = dev->of_node;
+	int num_icc_paths, i;
+	static const char * const icc_names[UFS_QCOM_MAX_ICC_PATHS] = {
+		"ufs-llcc", "ufs-ddr"
+	};
+
+	num_icc_paths = of_count_phandle_with_args(np, "interconnects",
+						   "#interconnect-cells");
+	if (num_icc_paths > 0) {
+		if (num_icc_paths > UFS_QCOM_MAX_ICC_PATHS) {
+			dev_warn(dev,
+				 "Too many ICC paths (%d), using msm_bus fallback\n",
+				 num_icc_paths);
+		} else {
+			host->num_icc_paths = num_icc_paths;
+			host->use_icc = true;
+			for (i = 0; i < num_icc_paths; i++) {
+				host->icc_paths[i] = devm_of_icc_get(dev,
+						num_icc_paths > 1 ? icc_names[i] : NULL);
+				if (IS_ERR(host->icc_paths[i])) {
+					err = PTR_ERR(host->icc_paths[i]);
+					host->icc_paths[i] = NULL;
+					host->use_icc = false;
+					host->num_icc_paths = 0;
+					dev_warn(dev,
+						 "Failed to get UFS ICC path %d (%d), using msm_bus fallback\n",
+						 i, err);
+					break;
+				}
+			}
+		}
+	}
 
 	bus_pdata = msm_bus_cl_get_pdata(pdev);
 	if (!bus_pdata) {
