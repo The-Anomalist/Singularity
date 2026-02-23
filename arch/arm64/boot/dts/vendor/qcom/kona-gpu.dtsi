@@ -62,7 +62,7 @@
 
 		qcom,initial-pwrlevel = <2>;
 
-		qcom,idle-timeout = <80>; /* msecs */
+		qcom,idle-timeout = <300>; /* msecs */
 
 		qcom,no-nap;
 
