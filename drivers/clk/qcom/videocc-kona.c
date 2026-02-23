@@ -10,6 +10,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/msm-bus.h>
+#include <linux/interconnect.h>
 #include <linux/of_device.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -629,18 +630,25 @@ static int video_cc_kona_probe(struct platform_device *pdev)
 		return PTR_ERR(vdd_mm.regulator[0]);
 	}
 
-	videocc_bus_id =
-		msm_bus_scale_register_client(&clk_debugfs_scale_table);
-	if (!videocc_bus_id) {
-		dev_err(&pdev->dev, "Unable to register for bw voting\n");
-		return -EPROBE_DEFER;
+	video_cc_debug_mux.icc_path = devm_of_icc_get(&pdev->dev, NULL);
+	if (IS_ERR(video_cc_debug_mux.icc_path)) {
+		video_cc_debug_mux.icc_path = NULL;
+		videocc_bus_id =
+			msm_bus_scale_register_client(&clk_debugfs_scale_table);
+		if (!videocc_bus_id) {
+			dev_err(&pdev->dev, "Unable to register for bw voting\n");
+			return -EPROBE_DEFER;
+		}
 	}
 
 	for (i = 0; i < ARRAY_SIZE(video_cc_kona_clocks); i++)
-		if (video_cc_kona_clocks[i])
+		if (video_cc_kona_clocks[i]) {
 			*(unsigned int *)(void *)
-			&video_cc_kona_clocks[i]->hw.init->bus_cl_id =
-							videocc_bus_id;
+			&video_cc_kona_clocks[i]->hw.init->bus_cl_id = videocc_bus_id;
+			*(struct icc_path **)(void *)
+			&video_cc_kona_clocks[i]->hw.init->icc_path =
+				video_cc_debug_mux.icc_path;
+		}
 
 	clk_lucid_pll_configure(&video_pll0, regmap, &video_pll0_config);
 	clk_lucid_pll_configure(&video_pll1, regmap, &video_pll1_config);

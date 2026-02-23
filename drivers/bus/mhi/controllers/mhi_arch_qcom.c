@@ -9,6 +9,7 @@
 #include <linux/esoc_client.h>
 #include <linux/list.h>
 #include <linux/of.h>
+#include <linux/interconnect.h>
 #include <linux/memblock.h>
 #include <linux/module.h>
 #include <linux/msm-bus.h>
@@ -24,6 +25,8 @@ struct arch_info {
 	struct esoc_desc *esoc_client;
 	struct esoc_client_hook esoc_ops;
 	struct msm_bus_scale_pdata *msm_bus_pdata;
+	struct icc_path *icc_path;
+	bool use_icc;
 	u32 bus_client;
 	struct msm_pcie_register_event pcie_reg_event;
 	struct pci_saved_state *pcie_state;
@@ -124,6 +127,32 @@ static int mhi_arch_set_bus_request(struct mhi_controller *mhi_cntrl, int index)
 {
 	struct mhi_dev *mhi_dev = mhi_controller_get_devdata(mhi_cntrl);
 	struct arch_info *arch_info = mhi_dev->arch_info;
+	u32 peak_bw;
+
+	if (arch_info->use_icc) {
+		switch (index) {
+		case 0:
+			peak_bw = 0;
+			break;
+		case PCI_EXP_LNKSTA_CLS_2_5GB:
+			peak_bw = 250000;
+			break;
+		case PCI_EXP_LNKSTA_CLS_5_0GB:
+			peak_bw = 500000;
+			break;
+		case PCI_EXP_LNKSTA_CLS_8_0GB:
+			peak_bw = 985000;
+			break;
+		case PCI_EXP_LNKSTA_CLS_16_0GB:
+			peak_bw = 1969000;
+			break;
+		default:
+			peak_bw = 500000;
+			break;
+		}
+
+		return icc_set_bw(arch_info->icc_path, 0, peak_bw);
+	}
 
 	MHI_LOG("Setting bus request to index %d\n", index);
 
@@ -432,6 +461,8 @@ int mhi_arch_pcie_init(struct mhi_controller *mhi_cntrl)
 	struct arch_info *arch_info = mhi_dev->arch_info;
 	struct mhi_link_info *cur_link_info;
 	char node[32];
+	const char *icc_name;
+	int num_icc_paths;
 	int ret;
 	u16 linkstat;
 
@@ -469,15 +500,49 @@ int mhi_arch_pcie_init(struct mhi_controller *mhi_cntrl)
 		if (arch_info->tsync_ipc_log)
 			mhi_cntrl->tsync_log = mhi_arch_timesync_log;
 
-		/* register for bus scale if defined */
-		arch_info->msm_bus_pdata = msm_bus_cl_get_pdata_from_dev(
+		num_icc_paths = of_count_phandle_with_args(
+					mhi_dev->pci_dev->dev.of_node,
+					"interconnects",
+					"#interconnect-cells");
+		if (num_icc_paths > 0) {
+			if (!of_property_read_string_index(
+						mhi_dev->pci_dev->dev.of_node,
+						"interconnect-names", 0,
+						&icc_name))
+				arch_info->icc_path = devm_of_icc_get(
+							&mhi_dev->pci_dev->dev,
+							icc_name);
+			else if (num_icc_paths == 1)
+				arch_info->icc_path = devm_of_icc_get(
+							&mhi_dev->pci_dev->dev,
+							NULL);
+
+			if (!IS_ERR_OR_NULL(arch_info->icc_path)) {
+				arch_info->use_icc = true;
+			} else {
+				if (!IS_ERR(arch_info->icc_path))
+					ret = -ENODEV;
+				else
+					ret = PTR_ERR(arch_info->icc_path);
+
+				MHI_CNTRL_LOG(
+					"ICC path unavailable (%d), falling back to msm_bus\n",
+					ret);
+				arch_info->icc_path = NULL;
+			}
+		}
+
+		/* register for bus scale if ICC isn't available */
+		if (!arch_info->use_icc) {
+			arch_info->msm_bus_pdata = msm_bus_cl_get_pdata_from_dev(
 							&mhi_dev->pci_dev->dev);
-		if (arch_info->msm_bus_pdata) {
-			arch_info->bus_client =
-				msm_bus_scale_register_client(
-						arch_info->msm_bus_pdata);
-			if (!arch_info->bus_client)
-				return -EINVAL;
+			if (arch_info->msm_bus_pdata) {
+				arch_info->bus_client =
+					msm_bus_scale_register_client(
+							arch_info->msm_bus_pdata);
+				if (!arch_info->bus_client)
+					return -EINVAL;
+			}
 		}
 
 		/* check if root-complex support DRV */

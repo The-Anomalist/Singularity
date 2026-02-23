@@ -10,6 +10,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/msm-bus.h>
+#include <linux/interconnect.h>
 #include <linux/of_device.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -1548,16 +1549,23 @@ static int disp_cc_kona_probe(struct platform_device *pdev)
 		return PTR_ERR(vdd_mm.regulator[0]);
 	}
 
-	dispcc_bus_id = msm_bus_scale_register_client(&clk_debugfs_scale_table);
-	if (!dispcc_bus_id) {
-		dev_err(&pdev->dev, "Unable to register for bw voting\n");
-		return -EPROBE_DEFER;
+	disp_cc_debug_mux.icc_path = devm_of_icc_get(&pdev->dev, NULL);
+	if (IS_ERR(disp_cc_debug_mux.icc_path)) {
+		disp_cc_debug_mux.icc_path = NULL;
+		dispcc_bus_id = msm_bus_scale_register_client(&clk_debugfs_scale_table);
+		if (!dispcc_bus_id) {
+			dev_err(&pdev->dev, "Unable to register for bw voting\n");
+			return -EPROBE_DEFER;
+		}
 	}
 	for (i = 0; i < ARRAY_SIZE(disp_cc_kona_clocks); i++)
-		if (disp_cc_kona_clocks[i])
+		if (disp_cc_kona_clocks[i]) {
 			*(unsigned int *)(void *)
-			&disp_cc_kona_clocks[i]->hw.init->bus_cl_id =
-							dispcc_bus_id;
+			&disp_cc_kona_clocks[i]->hw.init->bus_cl_id = dispcc_bus_id;
+			*(struct icc_path **)(void *)
+			&disp_cc_kona_clocks[i]->hw.init->icc_path =
+				disp_cc_debug_mux.icc_path;
+		}
 
 	clk_lucid_pll_configure(&disp_cc_pll0, regmap, &disp_cc_pll0_config);
 	clk_lucid_pll_configure(&disp_cc_pll1, regmap, &disp_cc_pll1_config);

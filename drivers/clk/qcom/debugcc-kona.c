@@ -14,6 +14,7 @@
 #include <linux/clk-provider.h>
 #include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
+#include <linux/interconnect.h>
 
 #include <dt-bindings/msm/msm-bus-ids.h>
 
@@ -1046,11 +1047,14 @@ static int clk_debug_kona_probe(struct platform_device *pdev)
 	}
 
 	debug_mux_priv.cxo = clk;
-	gcc_debug_mux.bus_cl_id =
-		msm_bus_scale_register_client(&clk_measure_scale_table);
-
-	if (!gcc_debug_mux.bus_cl_id)
-		return -EPROBE_DEFER;
+	gcc_debug_mux.icc_path = devm_of_icc_get(&pdev->dev, NULL);
+	if (IS_ERR(gcc_debug_mux.icc_path)) {
+		gcc_debug_mux.icc_path = NULL;
+		gcc_debug_mux.bus_cl_id =
+			msm_bus_scale_register_client(&clk_measure_scale_table);
+		if (!gcc_debug_mux.bus_cl_id)
+			return -EPROBE_DEFER;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(mux_list); i++) {
 		ret = map_debug_bases(pdev, mux_list[i].regmap_name,

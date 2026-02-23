@@ -37,5 +37,8 @@
 #define KONA_ICC_GMU_TO_MEM	28
 #define KONA_ICC_USB0_TO_MEM	26
 #define KONA_ICC_USB1_TO_MEM	27
+#define KONA_ICC_CAM_CFG		29
+#define KONA_ICC_DISP_CFG		30
+#define KONA_ICC_VIDEO_CFG		31
 
 #endif

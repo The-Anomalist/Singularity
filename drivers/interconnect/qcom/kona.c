@@ -751,6 +751,27 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.ib = "USB1_MEM_IB",
 		.role = KONA_ROLE_GENERIC,
 	},
+	{
+		.id = KONA_ICC_CAM_CFG,
+		.name = "cam-cfg",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
+	{
+		.id = KONA_ICC_DISP_CFG,
+		.name = "disp-cfg",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
+	{
+		.id = KONA_ICC_VIDEO_CFG,
+		.name = "video-cfg",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
 };
 
 static const struct kona_icc_data kona_data = {

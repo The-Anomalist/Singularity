@@ -10,6 +10,7 @@
 #include <linux/err.h>
 #include <linux/of.h>
 #include <linux/msm-bus.h>
+#include <linux/interconnect.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/machine.h>
@@ -59,6 +60,7 @@ struct gdsc {
 	struct regulator	*parent_regulator;
 	struct reset_control	**reset_clocks;
 	struct msm_bus_scale_pdata *bus_pdata;
+	struct icc_path		*icc_path;
 	u32			bus_handle;
 	bool			toggle_mem;
 	bool			toggle_periph;
@@ -83,6 +85,18 @@ enum gdscr_status {
 	ENABLED,
 	DISABLED,
 };
+
+
+static int gdsc_bus_vote(struct gdsc *sc, bool enable)
+{
+	if (sc->icc_path)
+		return icc_set_bw(sc->icc_path, 0, enable ? 1 : 0);
+
+	if (sc->bus_handle)
+		return msm_bus_scale_client_update_request(sc->bus_handle, enable);
+
+	return 0;
+}
 
 static inline u32 gdsc_mb(struct gdsc *gds)
 {
@@ -175,8 +189,8 @@ static int gdsc_is_enabled(struct regulator_dev *rdev)
 		}
 	}
 
-	if (sc->bus_handle && !sc->is_bus_enabled) {
-		ret = msm_bus_scale_client_update_request(sc->bus_handle, 1);
+	if ((sc->bus_handle || sc->icc_path) && !sc->is_bus_enabled) {
+		ret = gdsc_bus_vote(sc, true);
 		if (ret) {
 			dev_err(&rdev->dev, "bus scaling failed, ret=%d\n",
 				ret);
@@ -197,8 +211,8 @@ static int gdsc_is_enabled(struct regulator_dev *rdev)
 	}
 
 
-	if (sc->bus_handle && !sc->is_bus_enabled)
-		msm_bus_scale_client_update_request(sc->bus_handle, 0);
+	if ((sc->bus_handle || sc->icc_path) && !sc->is_bus_enabled)
+		gdsc_bus_vote(sc, false);
 end:
 	if (sc->parent_regulator) {
 		regulator_disable(sc->parent_regulator);
@@ -224,8 +238,8 @@ static int gdsc_enable(struct regulator_dev *rdev)
 			return ret;
 	}
 
-	if (sc->bus_handle) {
-		ret = msm_bus_scale_client_update_request(sc->bus_handle, 1);
+	if (sc->bus_handle || sc->icc_path) {
+		ret = gdsc_bus_vote(sc, true);
 		if (ret) {
 			dev_err(&rdev->dev, "bus scaling failed, ret=%d\n",
 				ret);
@@ -376,8 +390,8 @@ static int gdsc_enable(struct regulator_dev *rdev)
 
 	sc->is_gdsc_enabled = true;
 end:
-	if (ret && sc->bus_handle) {
-		msm_bus_scale_client_update_request(sc->bus_handle, 0);
+	if (ret && (sc->bus_handle || sc->icc_path)) {
+		gdsc_bus_vote(sc, false);
 		sc->is_bus_enabled = false;
 	}
 
@@ -450,8 +464,8 @@ static int gdsc_disable(struct regulator_dev *rdev)
 	if ((sc->is_gdsc_enabled && sc->root_en) || sc->force_root_en)
 		clk_disable_unprepare(sc->clocks[sc->root_clk_idx]);
 
-	if (sc->bus_handle) {
-		ret = msm_bus_scale_client_update_request(sc->bus_handle, 0);
+	if (sc->bus_handle || sc->icc_path) {
+		ret = gdsc_bus_vote(sc, false);
 		if (ret)
 			dev_err(&rdev->dev, "bus scaling failed, ret=%d\n",
 				ret);
@@ -485,8 +499,8 @@ static unsigned int gdsc_get_mode(struct regulator_dev *rdev)
 		}
 	}
 
-	if (sc->bus_handle && !sc->is_bus_enabled) {
-		ret = msm_bus_scale_client_update_request(sc->bus_handle, 1);
+	if ((sc->bus_handle || sc->icc_path) && !sc->is_bus_enabled) {
+		ret = gdsc_bus_vote(sc, true);
 		if (ret) {
 			dev_err(&rdev->dev, "bus scaling failed, ret=%d\n",
 				ret);
@@ -501,8 +515,8 @@ static unsigned int gdsc_get_mode(struct regulator_dev *rdev)
 
 	regmap_read(sc->regmap, REG_OFFSET, &regval);
 
-	if (sc->bus_handle && !sc->is_bus_enabled)
-		msm_bus_scale_client_update_request(sc->bus_handle, 0);
+	if ((sc->bus_handle || sc->icc_path) && !sc->is_bus_enabled)
+		gdsc_bus_vote(sc, false);
 
 	if (sc->parent_regulator) {
 		regulator_disable(sc->parent_regulator);
@@ -534,8 +548,8 @@ static int gdsc_set_mode(struct regulator_dev *rdev, unsigned int mode)
 		}
 	}
 
-	if (sc->bus_handle && !sc->is_bus_enabled) {
-		ret = msm_bus_scale_client_update_request(sc->bus_handle, 1);
+	if ((sc->bus_handle || sc->icc_path) && !sc->is_bus_enabled) {
+		ret = gdsc_bus_vote(sc, true);
 		if (ret) {
 			dev_err(&rdev->dev, "bus scaling failed, ret=%d\n",
 				ret);
@@ -598,8 +612,8 @@ static int gdsc_set_mode(struct regulator_dev *rdev, unsigned int mode)
 		break;
 	}
 
-	if (sc->bus_handle && !sc->is_bus_enabled)
-		msm_bus_scale_client_update_request(sc->bus_handle, 0);
+	if ((sc->bus_handle || sc->icc_path) && !sc->is_bus_enabled)
+		gdsc_bus_vote(sc, false);
 
 	if (sc->parent_regulator) {
 		regulator_disable(sc->parent_regulator);
@@ -833,7 +847,12 @@ static int gdsc_get_resources(struct gdsc *sc, struct platform_device *pdev)
 		}
 	}
 
-	if (of_find_property(pdev->dev.of_node, "qcom,msm-bus,name", NULL)) {
+	sc->icc_path = devm_of_icc_get(&pdev->dev, NULL);
+	if (IS_ERR(sc->icc_path))
+		sc->icc_path = NULL;
+
+	if (!sc->icc_path &&
+	    of_find_property(pdev->dev.of_node, "qcom,msm-bus,name", NULL)) {
 		sc->bus_pdata = msm_bus_cl_get_pdata(pdev);
 		if (!sc->bus_pdata) {
 			dev_err(&pdev->dev, "Failed to get bus config data\n");
@@ -877,13 +896,13 @@ static int gdsc_probe(struct platform_device *pdev)
 	if (ret)
 		goto err;
 
-	if (sc->bus_handle) {
+	if (sc->bus_handle || sc->icc_path) {
 		/*
 		 * Request non-zero bus bandwidth to ensure that the slave
 		 * hardware block containing the GDSC is not disconnected from
 		 * the bus.  This allows register IO for the GDSC to succeed.
 		 */
-		ret = msm_bus_scale_client_update_request(sc->bus_handle, 1);
+		ret = gdsc_bus_vote(sc, true);
 		if (ret) {
 			dev_err(&pdev->dev, "bus scaling failed, ret=%d\n",
 				ret);
@@ -922,14 +941,14 @@ static int gdsc_probe(struct platform_device *pdev)
 		}
 	}
 
-	if (sc->bus_handle) {
+	if (sc->bus_handle || sc->icc_path) {
 		regmap_read(sc->regmap, REG_OFFSET, &regval);
 		if (!(regval & PWR_ON_MASK) || (regval & SW_COLLAPSE_MASK)) {
 			/*
 			 * Software is not enabling the GDSC so remove the
 			 * bus vote.
 			 */
-			msm_bus_scale_client_update_request(sc->bus_handle, 0);
+			gdsc_bus_vote(sc, false);
 			sc->is_bus_enabled = false;
 		}
 	}
@@ -972,11 +991,12 @@ static int gdsc_probe(struct platform_device *pdev)
 	return 0;
 
 err:
-	if (sc->bus_handle) {
+	if (sc->bus_handle || sc->icc_path) {
 		if (sc->is_bus_enabled)
-			msm_bus_scale_client_update_request(sc->bus_handle, 0);
-		msm_bus_scale_unregister_client(sc->bus_handle);
+			gdsc_bus_vote(sc, false);
 	}
+	if (sc->bus_handle)
+		msm_bus_scale_unregister_client(sc->bus_handle);
 
 	return ret;
 }
@@ -985,11 +1005,12 @@ static int gdsc_remove(struct platform_device *pdev)
 {
 	struct gdsc *sc = platform_get_drvdata(pdev);
 
-	if (sc->bus_handle) {
+	if (sc->bus_handle || sc->icc_path) {
 		if (sc->is_bus_enabled)
-			msm_bus_scale_client_update_request(sc->bus_handle, 0);
-		msm_bus_scale_unregister_client(sc->bus_handle);
+			gdsc_bus_vote(sc, false);
 	}
+	if (sc->bus_handle)
+		msm_bus_scale_unregister_client(sc->bus_handle);
 
 	return 0;
 }

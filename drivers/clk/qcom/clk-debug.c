@@ -12,6 +12,7 @@
 #include <linux/bitops.h>
 #include <linux/mfd/syscon.h>
 #include <linux/msm-bus.h>
+#include <linux/interconnect.h>
 #include <trace/events/power.h>
 
 #define CREATE_TRACE_POINTS
@@ -127,6 +128,18 @@ static unsigned long clk_debug_mux_measure_rate(struct clk_hw *hw)
 	clk_disable_unprepare(data->cxo);
 
 	return ret;
+}
+
+
+static int clk_debug_icc_bus_vote(struct icc_path *icc_path, u32 bus_cl_id, bool enable)
+{
+	if (icc_path)
+		return icc_set_bw(icc_path, 0, enable ? 1 : 0);
+
+	if (bus_cl_id)
+		return msm_bus_scale_client_update_request(bus_cl_id, enable);
+
+	return 0;
 }
 
 static int clk_find_and_set_parent(struct clk_hw *mux, struct clk_hw *clk)
@@ -264,8 +277,7 @@ static int clk_debug_measure_get(void *data, u64 *val)
 	 * Vote for bandwidth to re-connect config ports
 	 * to multimedia clock controllers.
 	 */
-	if (meas->bus_cl_id)
-		msm_bus_scale_client_update_request(meas->bus_cl_id, 1);
+	clk_debug_icc_bus_vote(meas->icc_path, meas->bus_cl_id, true);
 
 	ret = clk_find_and_set_parent(measure, hw);
 	if (ret) {
@@ -282,8 +294,7 @@ static int clk_debug_measure_get(void *data, u64 *val)
 	trace_clk_measure(clk_hw_get_name(hw), *val);
 	disable_debug_clks(measure);
 exit:
-	if (meas->bus_cl_id)
-		msm_bus_scale_client_update_request(meas->bus_cl_id, 0);
+	clk_debug_icc_bus_vote(meas->icc_path, meas->bus_cl_id, false);
 	mutex_unlock(&clk_debug_lock);
 	return ret;
 }
@@ -342,8 +353,7 @@ void clk_debug_measure_add(struct clk_hw *hw, struct dentry *dentry)
 	}
 
 	meas = to_clk_measure(measure);
-	if (meas->bus_cl_id)
-		msm_bus_scale_client_update_request(meas->bus_cl_id, 1);
+	clk_debug_icc_bus_vote(meas->icc_path, meas->bus_cl_id, true);
 	ret = clk_find_and_set_parent(measure, hw);
 	if (ret) {
 		pr_debug("Unable to set %s as %s's parent, ret=%d\n",
@@ -359,13 +369,11 @@ void clk_debug_measure_add(struct clk_hw *hw, struct dentry *dentry)
 	if (parent->init->flags & CLK_IS_MEASURE && !meas_parent->mux_sels) {
 		debugfs_create_file("clk_measure", 0444, dentry, hw,
 				&clk_read_period_fops);
-	}
-	else
+	} else
 		debugfs_create_file("clk_measure", 0444, dentry, hw,
 				&clk_measure_fops);
 err:
-	if (meas->bus_cl_id)
-		msm_bus_scale_client_update_request(meas->bus_cl_id, 0);
+	clk_debug_icc_bus_vote(meas->icc_path, meas->bus_cl_id, false);
 }
 EXPORT_SYMBOL(clk_debug_measure_add);
 
@@ -385,9 +393,7 @@ EXPORT_SYMBOL(clk_debug_measure_register);
 
 void clk_debug_bus_vote(struct clk_hw *hw, bool enable)
 {
-	if (hw->init->bus_cl_id)
-		msm_bus_scale_client_update_request(hw->init->bus_cl_id,
-								enable);
+	clk_debug_icc_bus_vote(hw->init->icc_path, hw->init->bus_cl_id, enable);
 }
 
 /**

@@ -51,6 +51,7 @@
 
 struct clk;
 struct clk_hw;
+struct icc_path;
 struct clk_core;
 struct dentry;
 
@@ -287,6 +288,7 @@ struct clk_ops {
  * @rate_max: maximum clock rate in Hz supported at each voltage level
  * @num_rate_max: number of maximum voltage level supported
  * @bus_cl_id: client id registered with the bus driver used for bw votes
+ * @icc_path: interconnect path used for bandwidth votes
  */
 struct clk_init_data {
 	const char		*name;
@@ -298,6 +300,7 @@ struct clk_init_data {
 	unsigned long		*rate_max;
 	int			num_rate_max;
 	unsigned int		bus_cl_id;
+	struct icc_path	*icc_path;
 };
 
 struct regulator;

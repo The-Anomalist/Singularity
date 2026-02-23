@@ -7,6 +7,8 @@
 #include <linux/platform_device.h>
 #include "../clk.h"
 
+struct icc_path;
+
 /**
  * struct mux_regmap_names - Structure of mux regmap mapping
  * @mux:		pointer to a clock debug mux
@@ -79,6 +81,7 @@ struct clk_debug_mux {
 	u32 post_div_val;
 	u32 period_offset;
 	u32 bus_cl_id;
+	struct icc_path *icc_path;
 	struct clk_hw hw;
 };
 
