@@ -1522,9 +1522,10 @@ MODULE_DEVICE_TABLE(of, disp_cc_kona_match_table);
 
 static int disp_cc_kona_probe(struct platform_device *pdev)
 {
-	unsigned int dispcc_bus_id;
+	unsigned int dispcc_bus_id = 0;
 	struct regmap *regmap;
 	struct clk *clk;
+	struct icc_path *icc_path;
 	int ret, i;
 
 	regmap = qcom_cc_map(pdev, &disp_cc_kona_desc);
@@ -1549,9 +1550,13 @@ static int disp_cc_kona_probe(struct platform_device *pdev)
 		return PTR_ERR(vdd_mm.regulator[0]);
 	}
 
-	disp_cc_debug_mux.icc_path = devm_of_icc_get(&pdev->dev, NULL);
-	if (IS_ERR(disp_cc_debug_mux.icc_path)) {
-		disp_cc_debug_mux.icc_path = NULL;
+	icc_path = devm_of_icc_get(&pdev->dev, NULL);
+	if (IS_ERR(icc_path)) {
+		ret = PTR_ERR(icc_path);
+		/* Honor deferred probing for ICC providers */
+		if (ret == -EPROBE_DEFER)
+			return ret;
+		icc_path = NULL;
 		dispcc_bus_id = msm_bus_scale_register_client(&clk_debugfs_scale_table);
 		if (!dispcc_bus_id) {
 			dev_err(&pdev->dev, "Unable to register for bw voting\n");
@@ -1564,7 +1569,7 @@ static int disp_cc_kona_probe(struct platform_device *pdev)
 			&disp_cc_kona_clocks[i]->hw.init->bus_cl_id = dispcc_bus_id;
 			*(struct icc_path **)(void *)
 			&disp_cc_kona_clocks[i]->hw.init->icc_path =
-				disp_cc_debug_mux.icc_path;
+				icc_path;
 		}
 
 	clk_lucid_pll_configure(&disp_cc_pll0, regmap, &disp_cc_pll0_config);

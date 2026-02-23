@@ -598,10 +598,12 @@ static void video_cc_kona_fixup_konav2(struct regmap *regmap)
 static int video_cc_kona_probe(struct platform_device *pdev)
 {
 	unsigned int videocc_bus_id;
+	struct icc_path *icc_path;
 	struct regmap *regmap;
 	struct clk *clk;
 	int ret, i;
 
+	videocc_bus_id = 0;
 	regmap = qcom_cc_map(pdev, &video_cc_kona_desc);
 	if (IS_ERR(regmap)) {
 		pr_err("Failed to map the Video CC registers\n");
@@ -630,9 +632,11 @@ static int video_cc_kona_probe(struct platform_device *pdev)
 		return PTR_ERR(vdd_mm.regulator[0]);
 	}
 
-	video_cc_debug_mux.icc_path = devm_of_icc_get(&pdev->dev, NULL);
-	if (IS_ERR(video_cc_debug_mux.icc_path)) {
-		video_cc_debug_mux.icc_path = NULL;
+	icc_path = devm_of_icc_get(&pdev->dev, NULL);
+	if (IS_ERR(icc_path)) {
+		if (PTR_ERR(icc_path) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		icc_path = NULL;
 		videocc_bus_id =
 			msm_bus_scale_register_client(&clk_debugfs_scale_table);
 		if (!videocc_bus_id) {
@@ -647,7 +651,7 @@ static int video_cc_kona_probe(struct platform_device *pdev)
 			&video_cc_kona_clocks[i]->hw.init->bus_cl_id = videocc_bus_id;
 			*(struct icc_path **)(void *)
 			&video_cc_kona_clocks[i]->hw.init->icc_path =
-				video_cc_debug_mux.icc_path;
+				icc_path;
 		}
 
 	clk_lucid_pll_configure(&video_pll0, regmap, &video_pll0_config);

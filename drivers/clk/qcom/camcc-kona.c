@@ -2740,8 +2740,9 @@ static int cam_cc_kona_probe(struct platform_device *pdev)
 {
 	struct regmap *regmap;
 	struct clk *clk;
+	struct icc_path *icc_path;
 	int ret, i;
-	unsigned int camcc_bus_id;
+	unsigned int camcc_bus_id = 0;
 
 	regmap = qcom_cc_map(pdev, &cam_cc_kona_desc);
 	if (IS_ERR(regmap)) {
@@ -2773,9 +2774,9 @@ static int cam_cc_kona_probe(struct platform_device *pdev)
 		return PTR_ERR(vdd_mm.regulator[0]);
 	}
 
-	cam_cc_debug_mux.icc_path = devm_of_icc_get(&pdev->dev, NULL);
-	if (IS_ERR(cam_cc_debug_mux.icc_path)) {
-		cam_cc_debug_mux.icc_path = NULL;
+	icc_path = devm_of_icc_get(&pdev->dev, NULL);
+	if (IS_ERR(icc_path)) {
+		icc_path = NULL;
 		camcc_bus_id = msm_bus_scale_register_client(&clk_debugfs_scale_table);
 		if (!camcc_bus_id) {
 			dev_err(&pdev->dev, "Unable to register for bw voting\n");
@@ -2789,7 +2790,7 @@ static int cam_cc_kona_probe(struct platform_device *pdev)
 			&cam_cc_kona_clocks[i]->hw.init->bus_cl_id = camcc_bus_id;
 			*(struct icc_path **)(void *)
 			&cam_cc_kona_clocks[i]->hw.init->icc_path =
-				cam_cc_debug_mux.icc_path;
+				icc_path;
 		}
 
 	clk_lucid_pll_configure(&cam_cc_pll0, regmap, &cam_cc_pll0_config);
