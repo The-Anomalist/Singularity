@@ -2497,6 +2497,14 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 
 	kgsl_pwrctrl_icc_init(device);
 
+	pwr->gpu_cfg_icc_path = devm_of_icc_get(device->dev, "cpu-gpu-cfg");
+	if (IS_ERR(pwr->gpu_cfg_icc_path)) {
+		dev_dbg(device->dev,
+			"Unable to get cpu-gpu-cfg ICC path (%ld), using msm_bus fallback\n",
+			PTR_ERR(pwr->gpu_cfg_icc_path));
+		pwr->gpu_cfg_icc_path = NULL;
+	}
+
 	gpu_cfg_node =
 		of_find_node_by_name(device->pdev->dev.of_node,
 			"qcom,cpu-to-gpu-cfg-path");
@@ -2504,14 +2512,6 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 		gpu_cfg_table =
 			msm_bus_pdata_from_node(device->pdev, gpu_cfg_node);
 		pwr->gpu_cfg_bus_scale_table = gpu_cfg_table;
-
-		pwr->gpu_cfg_icc_path = devm_of_icc_get(device->dev, "cpu-gpu-cfg");
-		if (IS_ERR(pwr->gpu_cfg_icc_path)) {
-			dev_dbg(device->dev,
-				"Unable to get cpu-gpu-cfg ICC path (%ld), using msm_bus fallback\n",
-				PTR_ERR(pwr->gpu_cfg_icc_path));
-			pwr->gpu_cfg_icc_path = NULL;
-		}
 
 		if (gpu_cfg_table)
 			pwr->gpu_cfg =

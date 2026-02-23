@@ -49,6 +49,10 @@
 
 &msm_gpu {
 	qcom,chipid = <0x06050001>;
+	interconnects = <&kona_icc KONA_ICC_GPU_TO_LLCC>,
+			<&kona_icc KONA_ICC_GPU_TO_MEM>,
+			<&kona_icc KONA_ICC_CPU_TO_GPU_CFG>;
+	interconnect-names = "gpu-llcc", "gpu-ddr", "cpu-gpu-cfg";
 
 	/* GPU OPP data */
 	operating-points-v2 = <&gpu_opp_table_v2>;
@@ -772,4 +776,10 @@
 			};
 		};
 	};
+};
+
+&gmu {
+	interconnects = <&kona_icc KONA_ICC_GMU_TO_LLCC>,
+			<&kona_icc KONA_ICC_GMU_TO_MEM>;
+	interconnect-names = "gmu-llcc", "gmu-ddr";
 };

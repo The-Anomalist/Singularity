@@ -420,6 +420,7 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 
 	switch (desc->id) {
 	case KONA_ICC_CPU_TO_MEM:
+	case KONA_ICC_CPU_TO_GPU_CFG:
 	case KONA_ICC_CPU0_TO_MEM:
 	case KONA_ICC_CPU1_TO_MEM:
 	case KONA_ICC_CPU2_TO_MEM:
@@ -471,6 +472,7 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 			*ib = KONA_NPU_LLCC_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_GPU_TO_MEM:
+	case KONA_ICC_GMU_TO_MEM:
 		if (*ab && *ab < KONA_GPU_DDR_AB_FLOOR_KB)
 			*ab = KONA_GPU_DDR_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_GPU_DDR_IB_FLOOR_KB)
@@ -485,6 +487,7 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 				     kona_gpu_ib_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_GPU_TO_LLCC:
+	case KONA_ICC_GMU_TO_LLCC:
 		if (*ab && *ab < KONA_GPU_LLCC_AB_FLOOR_KB)
 			*ab = KONA_GPU_LLCC_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_GPU_LLCC_IB_FLOOR_KB)
@@ -544,6 +547,27 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.ab = "GPU_MEM_AB",
 		.ib = "GPU_MEM_IB",
 		.role = KONA_ROLE_GPU,
+	},
+	{
+		.id = KONA_ICC_GMU_TO_LLCC,
+		.name = "gmu-llcc",
+		.ab = "GPU_LLCC_AB",
+		.ib = "GPU_LLCC_IB",
+		.role = KONA_ROLE_GPU,
+	},
+	{
+		.id = KONA_ICC_GMU_TO_MEM,
+		.name = "gmu-ddr",
+		.ab = "GPU_MEM_AB",
+		.ib = "GPU_MEM_IB",
+		.role = KONA_ROLE_GPU,
+	},
+	{
+		.id = KONA_ICC_CPU_TO_GPU_CFG,
+		.name = "cpu-gpu-cfg",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_CPU,
 	},
 	{
 		.id = KONA_ICC_NPU_TO_LLCC,
