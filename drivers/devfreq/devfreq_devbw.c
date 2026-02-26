@@ -57,14 +57,13 @@ struct dev_data {
 
 static bool devbw_suspend_in_progress(void)
 {
-    /*
-     * Limit vote deferral to system suspend flows. cgroup/other freezer users
-     * should not influence devbw behavior.
-     */
-    if (READ_ONCE(pm_suspend_target_state) != PM_SUSPEND_ON)
-        return true;
-
-    return READ_ONCE(pm_freezing);
+	/*
+	 * Defer bandwidth churn only while tasks/devices are being frozen for
+	 * system suspend. During resume, pm_suspend_target_state may still reflect
+	 * the previous sleep state while display bring-up is already running; do not
+	 * block resume votes in that window.
+	 */
+	return READ_ONCE(pm_freezing);
 }
 
 static void devbw_log_icc_state(struct device *dev, struct dev_data *d)

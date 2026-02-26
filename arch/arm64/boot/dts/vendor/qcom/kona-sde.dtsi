@@ -304,6 +304,9 @@
 		};
 
 		qcom,sde-reg-bus {
+			interconnects = <&kona_icc KONA_ICC_DISP_CFG>;
+			interconnect-names = "disp-cfg";
+
 			qcom,msm-bus,name = "mdss_reg";
 			qcom,msm-bus,num-cases = <4>;
 			qcom,msm-bus,num-paths = <1>;
@@ -475,28 +478,38 @@
 
 		/* data and reg bus scale settings */
 		qcom,sde-data-bus {
+			interconnects = <&kona_icc KONA_ICC_DISP0_TO_MEM>,
+					<&kona_icc KONA_ICC_DISP1_TO_MEM>;
+			interconnect-names = "disp0-ddr", "disp1-ddr";
+
 			qcom,msm-bus,name = "disp_rsc_mnoc_llcc";
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-cases = <3>;
 			qcom,msm-bus,num-paths = <2>;
 			qcom,msm-bus,vectors-KBps =
-			    <20003 20513 0 0>, <20004 20513 0 0>,
-			    <20003 20513 0 6400000>, <20004 20513 0 6400000>,
-			    <20003 20513 0 6400000>, <20004 20513 0 6400000>;
+				<20003 20513 0 0>, <20004 20513 0 0>,
+				<20003 20513 0 6400000>, <20004 20513 0 6400000>,
+				<20003 20513 0 6400000>, <20004 20513 0 6400000>;
 		};
 
 		qcom,sde-ebi-bus {
+			interconnects = <&kona_icc KONA_ICC_DISP0_TO_MEM>;
+			interconnect-names = "disp0-ddr";
+
 			qcom,msm-bus,name = "disp_rsc_ebi";
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-cases = <3>;
 			qcom,msm-bus,num-paths = <1>;
 			qcom,msm-bus,vectors-KBps =
-			    <20000 20512 0 0>,
-			    <20000 20512 0 6400000>,
-			    <20000 20512 0 6400000>;
+				<20000 20512 0 0>,
+				<20000 20512 0 6400000>,
+				<20000 20512 0 6400000>;
 		};
 
 		qcom,sde-reg-bus {
+			interconnects = <&kona_icc KONA_ICC_DISP_CFG>;
+			interconnect-names = "disp-cfg";
+
 			qcom,msm-bus,name = "disp_rsc_reg";
 			qcom,msm-bus,num-cases = <4>;
 			qcom,msm-bus,num-paths = <1>;
@@ -522,6 +535,9 @@
 		qcom,mdss-highest-bank-bit = <0x3>;
 
 		/* Bus Scale Settings */
+		interconnects = <&kona_icc KONA_ICC_DISP0_TO_MEM>;
+		interconnect-names = "rot-ddr";
+
 		qcom,msm-bus,name = "mdss_rotator";
 		qcom,msm-bus,num-cases = <3>;
 		qcom,msm-bus,num-paths = <1>;
@@ -561,6 +577,9 @@
 
 		/* reg bus scale settings */
 		rot_reg: qcom,rot-reg-bus {
+			interconnects = <&kona_icc KONA_ICC_DISP_CFG>;
+			interconnect-names = "disp-cfg";
+
 			qcom,msm-bus,name = "mdss_rot_reg";
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,num-paths = <1>;

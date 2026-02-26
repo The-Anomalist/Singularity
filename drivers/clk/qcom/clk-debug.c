@@ -133,8 +133,21 @@ static unsigned long clk_debug_mux_measure_rate(struct clk_hw *hw)
 
 static int clk_debug_icc_bus_vote(struct icc_path *icc_path, u32 bus_cl_id, bool enable)
 {
-	if (icc_path)
-		return icc_set_bw(icc_path, 0, enable ? 1 : 0);
+	if (icc_path) {
+		int ret;
+
+		ret = icc_set_bw(icc_path, 0, enable ? 1 : 0);
+		if (!ret)
+			return 0;
+
+		/*
+		 * If ICC accepted the path but cannot apply an immediate vote
+		 * (provider not ready / transient RPMh backpressure), allow the
+		 * legacy msm-bus vote path to keep clock debug consumers functional.
+		 */
+		if (ret != -EAGAIN || !bus_cl_id)
+			return ret;
+	}
 
 	if (bus_cl_id)
 		return msm_bus_scale_client_update_request(bus_cl_id, enable);
