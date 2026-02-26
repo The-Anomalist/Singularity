@@ -11,6 +11,8 @@
 #include <linux/io.h>
 #include <linux/ipc_logging.h>
 #include <linux/kernel.h>
+#include <linux/sched.h>
+#include <linux/ktime.h>
 #include <linux/list.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
@@ -449,6 +451,14 @@ done_write:
 int rpmh_rsc_send_data(struct rsc_drv *drv, const struct tcs_request *msg)
 {
 	int ret;
+	u32 backoff_us = 10;
+	ktime_t start;
+	/*
+	 * DRV TCS Busy is timing sensitive during resume (eg. display/power rails).
+	 * Spin-waiting with a tiny udelay can starve other work and still fail
+	 * to clear contention. Use a bounded, increasing backoff with resched.
+	 */
+	const s64 timeout_us = 500 * 1000; /* 500ms */
 
 	if (!msg || !msg->cmds || !msg->num_cmds ||
 	    msg->num_cmds > MAX_RPMH_PAYLOAD) {
@@ -456,12 +466,29 @@ int rpmh_rsc_send_data(struct rsc_drv *drv, const struct tcs_request *msg)
 		return -EINVAL;
 	}
 
+	start = ktime_get();
 	do {
 		ret = tcs_write(drv, msg);
 		if (ret == -EBUSY) {
 			pr_info_ratelimited("DRV:%s TCS Busy, retrying RPMH message send: addr=%#x\n",
 					    drv->name, msg->cmds[0].addr);
-			udelay(10);
+			if (ktime_to_us(ktime_sub(ktime_get(), start)) > timeout_us) {
+				pr_err_ratelimited("DRV:%s TCS Busy timeout (%lldus): addr=%#x\n",
+						   drv->name, timeout_us, msg->cmds[0].addr);
+				return -ETIMEDOUT;
+			}
+
+			/*
+			 * Keep early retries fast, then yield to let other clients drain
+			 * the TCS queue.
+			 */
+			if (backoff_us <= 50)
+				udelay(backoff_us);
+			else
+				usleep_range(backoff_us, backoff_us + 500);
+
+			backoff_us = min(backoff_us << 1, 5000U);
+			cond_resched();
 		}
 	} while (ret == -EBUSY);
 

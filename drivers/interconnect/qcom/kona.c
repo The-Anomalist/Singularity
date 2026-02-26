@@ -19,6 +19,7 @@
 #include <linux/slab.h>
 #include <linux/sysfs.h>
 #include <linux/workqueue.h>
+#include <linux/jiffies.h>
 #include <linux/suspend.h>
 #include <linux/atomic.h>
 
@@ -59,6 +60,10 @@ struct kona_icc_provider {
 	u64 *last_ib;
 	u64 *req_ab;
 	u64 *req_ib;
+	u64 *saved_ab;
+	u64 *saved_ib;
+	unsigned long resume_jiffies;
+	u8 resume_phase;
 	struct delayed_work retry_work;
 	struct device **sysfs_nodes;
 	struct class *icc_class;
@@ -80,6 +85,11 @@ struct kona_icc_node_sysfs {
 
 #define KONA_RETRY_DELAY_MS	20
 
+#define KONA_RESUME_PHASE0_DELAY_MS	0
+#define KONA_RESUME_PHASE1_DELAY_MS	25
+#define KONA_RESUME_PHASE2_DELAY_MS	120
+
+
 static bool kona_resume_debug;
 module_param_named(kona_resume_debug, kona_resume_debug, bool, 0644);
 MODULE_PARM_DESC(kona_resume_debug, "Enable Kona ICC suspend/resume deferral debug");
@@ -88,6 +98,20 @@ static bool kona_perf_floor_enable;
 module_param(kona_perf_floor_enable, bool, 0644);
 MODULE_PARM_DESC(kona_perf_floor_enable,
 	"Enable aggressive hard bandwidth floors (default: off)");
+
+static bool kona_display_resume_floor_enable = true;
+module_param_named(kona_display_resume_floor_enable, kona_display_resume_floor_enable, bool, 0644);
+MODULE_PARM_DESC(kona_display_resume_floor_enable,
+	"Enable a minimal DISPLAY resume bandwidth floor to avoid black-screen resumes");
+
+static unsigned int kona_display_resume_floor_ab_kBps = 100000; /* 100 MB/s */
+module_param_named(kona_display_resume_floor_ab_kBps, kona_display_resume_floor_ab_kBps, uint, 0644);
+MODULE_PARM_DESC(kona_display_resume_floor_ab_kBps, "DISPLAY resume floor average BW (kB/s)");
+
+static unsigned int kona_display_resume_floor_ib_kBps = 1000000; /* 1 GB/s */
+module_param_named(kona_display_resume_floor_ib_kBps, kona_display_resume_floor_ib_kBps, uint, 0644);
+MODULE_PARM_DESC(kona_display_resume_floor_ib_kBps, "DISPLAY resume floor peak BW (kB/s)");
+
 
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
@@ -784,14 +808,16 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.name = "disp-cfg",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		/* Display register/config bus: treat as DISPLAY-critical. */
+		.role = KONA_ROLE_DISPLAY,
 	},
 	{
 		.id = KONA_ICC_VIDEO_CFG,
 		.name = "video-cfg",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		/* Video/display clock/config bus: keep warm across resume. */
+		.role = KONA_ROLE_DISPLAY,
 	},
 };
 
@@ -925,23 +951,14 @@ out_retry:
 	return -EAGAIN;
 }
 
-static void kona_icc_retry_workfn(struct work_struct *work)
+
+static bool kona_icc_replay_req_votes(struct kona_icc_provider *qp)
 {
-	struct kona_icc_provider *qp = container_of(to_delayed_work(work),
-						    struct kona_icc_provider,
-						    retry_work);
 	bool need_retry = false;
-	unsigned int i;
+	int i;
 
-	if (!qp->req_ab || !qp->req_ib)
-		return;
-
-	/*
-	 * Do not replay votes while the system is in a suspended/paused window.
-	 * Some wake/idle paths are not RPMh-safe and can wedge apps_rsc.
-	 */
-	if (unlikely(READ_ONCE(qp->system_suspended) || atomic_read(&qp->votes_paused)))
-		return;
+	if (!qp || !qp->req_ab || !qp->req_ib)
+		return false;
 
 	for (i = 0; i < qp->num_nodes; i++) {
 		u64 ab = qp->req_ab[i];
@@ -960,6 +977,122 @@ static void kona_icc_retry_workfn(struct work_struct *work)
 			need_retry = true;
 	}
 
+	return need_retry;
+}
+
+
+static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
+					  enum kona_icc_role role,
+					  bool apply_display_floor)
+{
+	bool need_retry = false;
+	int i;
+
+	for (i = 0; i < qp->num_nodes; i++) {
+		bool retry = false;
+		int ret;
+		u64 ab = qp->req_ab[i];
+		u64 ib = qp->req_ib[i];
+
+		if (qp->nodes[i].role != role)
+			continue;
+
+		/* Treat "uninitialized" as 0. */
+		if (ab == U64_MAX)
+			ab = 0;
+		if (ib == U64_MAX)
+			ib = 0;
+
+		if (apply_display_floor && kona_display_resume_floor_enable &&
+		    role == KONA_ROLE_DISPLAY) {
+			u64 floor_ab = (u64)kona_display_resume_floor_ab_kBps;
+			u64 floor_ib = (u64)kona_display_resume_floor_ib_kBps;
+			/*
+			 * DISPLAY resume floor needs peak headroom for the initial modeset burst.
+			 * If only AB is specified, derive IB = 2x AB. If both are specified,
+			 * enforce IB >= 2x AB to avoid black-screen resumes on battery.
+			 */
+			if (floor_ab && !floor_ib)
+				floor_ib = floor_ab * 2;
+			else if (floor_ab && floor_ib < floor_ab * 2)
+				floor_ib = floor_ab * 2;
+
+			if (floor_ab && ab < floor_ab)
+				ab = floor_ab;
+			if (floor_ib && ib < floor_ib)
+				ib = floor_ib;
+		}
+
+		if (!ab && !ib)
+			continue;
+
+		ret = kona_icc_send_node_votes(qp, i, ab, ib, &retry);
+		if (ret == -EAGAIN || retry)
+			need_retry = true;
+	}
+
+	return need_retry;
+}
+
+static bool kona_icc_replay_req_votes_phased(struct kona_icc_provider *qp)
+{
+	bool need_retry = false;
+
+	switch (qp->resume_phase) {
+	case 0:
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_CPU, false);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_CPU_PRIME, false);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_NPU, false);
+		qp->resume_phase = 1;
+		schedule_delayed_work(&qp->retry_work,
+				      msecs_to_jiffies(KONA_RESUME_PHASE1_DELAY_MS));
+		return need_retry;
+	case 1:
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_GPU, false);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_GENERIC, false);
+		qp->resume_phase = 2;
+		schedule_delayed_work(&qp->retry_work,
+				      msecs_to_jiffies(KONA_RESUME_PHASE2_DELAY_MS));
+		return need_retry;
+	case 2:
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_DISPLAY, true);
+		qp->resume_phase = 3; /* done */
+		return need_retry;
+	default:
+		break;
+	}
+
+	/* Normal steady-state replay path. */
+	return kona_icc_replay_req_votes(qp);
+}
+static void kona_icc_retry_workfn(struct work_struct *work)
+{
+	struct kona_icc_provider *qp = container_of(to_delayed_work(work),
+						    struct kona_icc_provider,
+						    retry_work);
+	bool need_retry = false;
+
+	if (!qp->req_ab || !qp->req_ib)
+		return;
+
+	/*
+	 * Do not replay votes while the system is in a suspended/paused window.
+	 * Some wake/idle paths are not RPMh-safe and can wedge apps_rsc.
+	 *
+	 * If we were scheduled during resume_noirq (votes_paused=1), don't
+	 * permanently drop the replay. Reschedule and try again once resume()
+	 * unpauses voting.
+	 */
+	if (unlikely(READ_ONCE(qp->system_suspended)))
+		return;
+	if (unlikely(atomic_read(&qp->votes_paused))) {
+		if (qp->req_ab && qp->req_ib)
+			schedule_delayed_work(&qp->retry_work, msecs_to_jiffies(50));
+		return;
+	}
+
+	need_retry = kona_icc_replay_req_votes_phased(qp);
+
 	if (need_retry)
 		schedule_delayed_work(&qp->retry_work,
 				     msecs_to_jiffies(KONA_RETRY_DELAY_MS));
@@ -970,7 +1103,6 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	struct kona_icc_provider *qp;
 	u64 ab, ib;
 	unsigned int index;
-	int ret;
 
 	if (IS_ERR_OR_NULL(path) || !path->provider)
 		return -EINVAL;
@@ -1040,43 +1172,51 @@ skip_perf_floor:
 			qp->last_ab ? qp->last_ab[index] : 0,
 			qp->last_ib ? qp->last_ib[index] : 0);
 #endif
+	
 	/* Cache requested AB/IB first. */
-	if (qp->req_ab) {
+	if (qp->req_ab)
 		qp->req_ab[index] = ab;
-	}
-	if (qp->req_ib) {
+	if (qp->req_ib)
 		qp->req_ib[index] = ib;
-	}
 
 	/*
-	 * During suspend/resume noirq windows, cache votes but do not issue RPMh
-	 * ACTIVE_ONLY writes. apps_rsc/TCS readiness races here can permanently
-	 * stall deep resume.
+	 * Track last-known non-zero DISPLAY votes so resume can re-assert
+	 * fabric bandwidth before dispcc/panel bring-up sequences.
 	 */
-	if (unlikely(atomic_read(&qp->votes_paused))) {
-		if (kona_resume_debug)
-			dev_info_ratelimited(qp->provider.dev,
-				"kona-icc: deferring %s ab=%llu ib=%llu (atomic=%d irqoff=%d target=%d)\n",
-				qp->nodes[index].name, ab, ib,
-				in_atomic(), irqs_disabled(),
-				READ_ONCE(pm_suspend_target_state));
-
-		/* Schedule a replay shortly after resume. */
-		schedule_delayed_work(&qp->retry_work, 0);
-		return 0;
-	}
-	if (qp->last_ab && qp->last_ib &&
-	    qp->last_ab[index] == ab && qp->last_ib[index] == ib)
-		return 0;
-
-	ret = kona_icc_send_node_votes(qp, index, ab, ib, NULL);
-	if (ret == -EAGAIN) {
-		schedule_delayed_work(&qp->retry_work,
-				     msecs_to_jiffies(KONA_RETRY_DELAY_MS));
-		return 0;
+	if (qp->nodes[index].role == KONA_ROLE_DISPLAY && (ab || ib)) {
+		qp->saved_ab[index] = ab;
+		qp->saved_ib[index] = ib;
 	}
 
-	return ret;
+
+	/*
+	 * Best-effort synchronous programming:
+	 * - Apply the vote immediately when we're in a normal runtime window.
+	 * - If RPMh/apps_rsc is busy, defer to retry_workfn() to replay later.
+	 *
+	 * Some clients (display / clock enable sequences) require the bandwidth
+	 * vote to be active before continuing; fully deferring votes can cause
+	 * black-screen / stuck-resume symptoms when the fabric stays at 0/0.
+	 */
+	if (unlikely(READ_ONCE(qp->system_suspended) || atomic_read(&qp->votes_paused))) {
+		const struct kona_icc_node_desc *desc = &qp->nodes[index];
+
+		/* Allow msm_bus fallbacks to engage for display-critical paths. */
+		if (desc->role == KONA_ROLE_DISPLAY && (ab || ib))
+			return -EAGAIN;
+		return 0;
+	} else {
+		bool retry = false;
+		int ret = kona_icc_send_node_votes(qp, index, ab, ib, &retry);
+
+		if (ret == -EAGAIN || retry)
+			schedule_delayed_work(&qp->retry_work,
+					      msecs_to_jiffies(KONA_RETRY_DELAY_MS));
+		else if (ret)
+			return ret;
+	}
+
+	return 0;
 }
 
 static ssize_t ab_show(struct device *dev,
@@ -1234,6 +1374,9 @@ static void kona_icc_invalidate_cache(struct kona_icc_provider *qp)
 
 	if (qp)
 		atomic_set(&qp->votes_paused, 1);
+	/* Ensure no stale vote replays fire during suspend_noirq. */
+	if (qp)
+		cancel_delayed_work_sync(&qp->retry_work);
 
 	if (kona_resume_debug && qp)
 		dev_info(dev, "kona-icc: votes paused (suspend_noirq)\n");
@@ -1294,11 +1437,22 @@ static int kona_icc_resume(struct device *dev)
 	 */
 	kona_icc_invalidate_cache(qp);
 
-	if (qp)
-		schedule_delayed_work(&qp->retry_work, 0);
+	/*
+	 * Resume hardening (no-idle-drain):
+	 *   - Avoid an early resume replay storm that can congest RPMh/apps_rsc
+	 *     and race the DSI/SDE bring-up window on battery.
+	 *   - Replay last requested votes in phases (CPU/NPU -> GPU/GENERIC -> DISPLAY).
+	 */
+	if (qp) {
+		qp->resume_jiffies = jiffies;
+		qp->resume_phase = 0;
+		schedule_delayed_work(&qp->retry_work,
+				      msecs_to_jiffies(KONA_RESUME_PHASE0_DELAY_MS));
+	}
 
 	return 0;
 }
+
 
 
 #ifdef CONFIG_PM_SLEEP
@@ -1320,7 +1474,7 @@ static int kona_icc_probe(struct platform_device *pdev)
 	const struct kona_icc_data *data =
 		of_device_get_match_data(&pdev->dev);
 	struct kona_icc_provider *qp;
-	u64 ab, ib;
+	u64 __maybe_unused ab, ib;
 	int ret, i;
 
 	qp = devm_kzalloc(&pdev->dev, sizeof(*qp), GFP_KERNEL);
@@ -1357,6 +1511,17 @@ static int kona_icc_probe(struct platform_device *pdev)
 	if (!qp->req_ib)
 		return -ENOMEM;
 
+	qp->saved_ab = devm_kcalloc(&pdev->dev, qp->num_nodes, sizeof(u64),
+				  GFP_KERNEL);
+	if (!qp->saved_ab)
+		return -ENOMEM;
+
+	qp->saved_ib = devm_kcalloc(&pdev->dev, qp->num_nodes, sizeof(u64),
+				  GFP_KERNEL);
+	if (!qp->saved_ib)
+		return -ENOMEM;
+
+
 	INIT_DELAYED_WORK(&qp->retry_work, kona_icc_retry_workfn);
 
 	for (i = 0; i < qp->num_nodes; i++) {
@@ -1364,6 +1529,8 @@ static int kona_icc_probe(struct platform_device *pdev)
 		qp->last_ib[i] = U64_MAX;
 		qp->req_ab[i] = U64_MAX;
 		qp->req_ib[i] = U64_MAX;
+		qp->saved_ab[i] = U64_MAX;
+		qp->saved_ib[i] = U64_MAX;
 	}
 
         qp->provider.dev = &pdev->dev;

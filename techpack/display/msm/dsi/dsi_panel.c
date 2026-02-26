@@ -9,6 +9,7 @@
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
 #include <linux/pwm.h>
+#include <linux/regulator/consumer.h>
 #include <video/mipi_display.h>
 
 #include "dsi_panel.h"
@@ -348,6 +349,53 @@ static int dsi_panel_vreg_put(struct dsi_panel *panel)
 	return rc;
 }
 
+
+/*
+ * Some suspend/resume paths (especially on battery where deeper collapse is
+ * allowed) can leave panel regulators disabled while the display stack still
+ * attempts a logical re-enable. USB power can mask this by keeping rails biased.
+ *
+ * Be defensive: if any panel regulator is found disabled during prepare/enable,
+ * re-assert the full panel regulator set before issuing panel commands.
+ *
+ * This does NOT keep rails on permanently and has no idle drain impact.
+ */
+static int dsi_panel_ensure_vregs_enabled(struct dsi_panel *panel)
+{
+	int i;
+	bool need_enable = false;
+
+	if (!panel)
+		return -EINVAL;
+
+	/* If we don't manage any vregs, nothing to do. */
+	if (!panel->power_info.vregs || panel->power_info.count <= 0)
+		return 0;
+
+	for (i = 0; i < panel->power_info.count; i++) {
+		struct regulator *vreg = panel->power_info.vregs[i].vreg;
+
+		if (!vreg)
+			continue;
+
+		/*
+		 * regulator_is_enabled() returns >0 if enabled, 0 if disabled,
+		 * and <0 on error. Treat errors as a hint that re-enable is safer.
+		 */
+		if (regulator_is_enabled(vreg) <= 0) {
+			need_enable = true;
+			break;
+		}
+	}
+
+	if (!need_enable)
+		return 0;
+
+	DSI_INFO("[%s] detected panel vregs disabled; re-enabling vreg set\n",
+		 panel->name);
+
+	return dsi_pwr_enable_regulator(&panel->power_info, true);
+}
 static int dsi_panel_gpio_request(struct dsi_panel *panel)
 {
 	int rc = 0;
@@ -5601,6 +5649,13 @@ int dsi_panel_prepare(struct dsi_panel *panel)
 	}
 
 	mutex_lock(&panel->panel_lock);
+
+	/* Defensive: make sure panel regulators are actually on before issuing cmds */
+	rc = dsi_panel_ensure_vregs_enabled(panel);
+	if (rc) {
+		DSI_ERR("[%s] failed to ensure vregs enabled, rc=%d\n", panel->name, rc);
+		goto error;
+	}
 #ifdef OPLUS_BUG_STABILITY
 	if (!strcmp(panel->name,
 		    "samsung amb655uv01 amoled fhd+ panel with DSC") ||
