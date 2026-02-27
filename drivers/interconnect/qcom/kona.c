@@ -993,17 +993,31 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 		int ret;
 		u64 ab = qp->req_ab[i];
 		u64 ib = qp->req_ib[i];
+		bool req_unset = (ab == U64_MAX && ib == U64_MAX);
 
 		if (qp->nodes[i].role != role)
 			continue;
 
-		/* Treat "uninitialized" as 0. */
-		if (ab == U64_MAX)
-			ab = 0;
-		if (ib == U64_MAX)
-			ib = 0;
+		/*
+		 * Never synthesize votes for nodes that have never received a request.
+		 * For DISPLAY resume, prefer the last known non-zero vote if we have one.
+		 */
+		if (req_unset) {
+			if (role != KONA_ROLE_DISPLAY || !apply_display_floor ||
+			    !qp->saved_ab || !qp->saved_ib ||
+			    qp->saved_ab[i] == U64_MAX || qp->saved_ib[i] == U64_MAX)
+				continue;
 
-		if (apply_display_floor && kona_display_resume_floor_enable &&
+			ab = qp->saved_ab[i];
+			ib = qp->saved_ib[i];
+		} else {
+			if (ab == U64_MAX)
+				ab = 0;
+			if (ib == U64_MAX)
+				ib = 0;
+		}
+
+		if ((ab || ib) && apply_display_floor && kona_display_resume_floor_enable &&
 		    role == KONA_ROLE_DISPLAY) {
 			u64 floor_ab = (u64)kona_display_resume_floor_ab_kBps;
 			u64 floor_ib = (u64)kona_display_resume_floor_ib_kBps;
