@@ -16,6 +16,8 @@ Required properties :
 of the clocks.
 - clock-names: Shall contain "cfg_ahb_clk"
 - clocks: phandle clock reference to the GCC AHB clock.
+- interconnects : path specifier to the display configuration bus (kona only)
+- interconnect-names : shall contain "disp-cfg" (kona only)
 - #clock-cells : from common clock binding, shall contain 1.
 - #reset-cells : from common reset binding, shall contain 1.
 - #power-domain-cells : from generic power domain binding, shall contain 1.
@@ -38,6 +40,8 @@ Examples:
 		reg = <0xaf00000 0x20000>;
 		reg-names = "cc_base";
 		vdd_mm-supply = <&VDD_MMCX_LEVEL>;
+		interconnects = <&kona_icc KONA_ICC_DISP_CFG>;
+		interconnect-names = "disp-cfg";
 		clock-names = "cfg_ahb_clk";
 		clocks = <&clock_gcc GCC_DISP_AHB_CLK>;
 		#clock-cells = <1>;

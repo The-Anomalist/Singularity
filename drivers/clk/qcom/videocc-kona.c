@@ -40,6 +40,9 @@
 static struct icc_path *kona_cc_get_icc_path(struct device *dev, const char *who)
 {
 	static const char * const try_names[] = {
+		"videocc",
+		"dispcc",
+		"camcc",
 		"cfg",
 		"disp-cfg",
 		"video-cfg",
