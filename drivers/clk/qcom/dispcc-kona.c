@@ -1604,6 +1604,9 @@ static int disp_cc_kona_probe(struct platform_device *pdev)
 		dev_warn(&pdev->dev, "msm_bus fallback bw voting unavailable\n");
 
 	icc_path = kona_cc_get_icc_path(&pdev->dev, "dispcc");
+	if (icc_path && dispcc_bus_id)
+		dev_dbg(&pdev->dev,
+			"dispcc: ICC path attached; msm_bus fallback kept for transient ICC deferrals\n");
 
 	for (i = 0; i < ARRAY_SIZE(disp_cc_kona_clocks); i++)
 		if (disp_cc_kona_clocks[i]) {

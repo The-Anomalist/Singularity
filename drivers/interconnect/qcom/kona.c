@@ -113,6 +113,11 @@ module_param_named(kona_display_resume_floor_ib_kBps, kona_display_resume_floor_
 MODULE_PARM_DESC(kona_display_resume_floor_ib_kBps, "DISPLAY resume floor peak BW (kB/s)");
 
 
+static unsigned int kona_display_resume_hold_ms = 15000;
+module_param_named(kona_display_resume_hold_ms, kona_display_resume_hold_ms, uint, 0644);
+MODULE_PARM_DESC(kona_display_resume_hold_ms,
+	"Hold a small DISPLAY non-zero vote for N ms after resume to avoid early collapse");
+
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
 /*
@@ -867,7 +872,7 @@ static struct icc_path *kona_icc_xlate(struct icc_provider *provider,
 	return path;
 }
 
-static int kona_icc_send_bw(struct device *dev, const char *res, u32 kbps)
+static int kona_icc_send_bw(struct device *dev, const char *res, u32 kbps, bool wait)
 {
 	struct tcs_cmd cmd = {};
 	u32 addr;
@@ -881,23 +886,29 @@ static int kona_icc_send_bw(struct device *dev, const char *res, u32 kbps)
 	 * ready during early boot. Never propagate -EPROBE_DEFER to ICC consumers.
 	 * Use -EAGAIN internally to signal "try again later".
 	 */
-	if (!cmd_db_ready())
+	if (!cmd_db_ready()) {
+		dev_dbg_ratelimited(dev, "kona-icc: cmd-db not ready for %s\n", res ?: "?");
 		return -EAGAIN;
+	}
 
 	addr = cmd_db_read_addr(res);
-	if (!addr)
+	if (!addr) {
+		dev_dbg_ratelimited(dev, "kona-icc: missing cmd-db addr for %s\n", res ?: "?");
 		return -EAGAIN;
+	}
 
 	/* cmd.data is KB/s; callers must already scale to KB/s. */
 	cmd.addr = addr;
 	cmd.data = kbps;
-	cmd.wait = false;
+	cmd.wait = wait;
 
 	ret = rpmh_write(dev, RPMH_ACTIVE_ONLY_STATE, &cmd, 1);
-	if (ret == -EBUSY || ret == -ETIMEDOUT)
+	if (ret == -EBUSY || ret == -ETIMEDOUT || ret == -EPROBE_DEFER) {
+		dev_dbg_ratelimited(dev,
+			"kona-icc: rpmh deferring %s=%uKB/s ret=%d\n",
+			res ?: "?", kbps, ret);
 		return -EAGAIN;
-	if (ret == -EPROBE_DEFER)
-		return -EAGAIN;
+	}
 
 	return ret;
 }
@@ -907,30 +918,31 @@ static int kona_icc_send_node_votes(struct kona_icc_provider *qp,
 				    bool *retry)
 {
 	int ret;
+	bool wait = (qp->nodes[index].role == KONA_ROLE_DISPLAY);
 
 	if (retry)
 		*retry = false;
 
 	if (qp->nodes[index].id == KONA_ICC_GPU_TO_MEM) {
-		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ib, ib);
+		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ib, ib, wait);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
 			return ret;
 
-		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ab, ab);
+		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ab, ab, wait);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
 			return ret;
 	} else {
-		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ab, ab);
+		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ab, ab, wait);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
 			return ret;
 
-		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ib, ib);
+		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ib, ib, wait);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
@@ -994,6 +1006,7 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 		u64 ab = qp->req_ab[i];
 		u64 ib = qp->req_ib[i];
 		bool req_unset = (ab == U64_MAX && ib == U64_MAX);
+		bool req_zero = (!req_unset && !ab && !ib);
 
 		if (qp->nodes[i].role != role)
 			continue;
@@ -1002,11 +1015,16 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 		 * Never synthesize votes for nodes that have never received a request.
 		 * For DISPLAY resume, prefer the last known non-zero vote if we have one.
 		 */
-		if (req_unset) {
+		if (req_unset || req_zero) {
 			if (role != KONA_ROLE_DISPLAY || !apply_display_floor ||
 			    !qp->saved_ab || !qp->saved_ib ||
 			    qp->saved_ab[i] == U64_MAX || qp->saved_ib[i] == U64_MAX)
 				continue;
+
+			if (kona_resume_debug && req_zero)
+				dev_info_ratelimited(qp->provider.dev,
+					"kona-icc: replaying saved DISPLAY vote for %s during resume (req=0/0)\n",
+					qp->nodes[i].name);
 
 			ab = qp->saved_ab[i];
 			ib = qp->saved_ib[i];
@@ -1195,6 +1213,31 @@ skip_perf_floor:
 			qp->last_ib ? qp->last_ib[index] : 0);
 #endif
 	
+	/*
+	 * Short post-resume anti-collapse window for DISPLAY: some clients
+	 * transiently vote 0/0 during panel re-enable sequencing. On battery
+	 * this can collapse interconnect too early and wedge panel bring-up.
+	 */
+	if (qp->nodes[index].role == KONA_ROLE_DISPLAY && !ab && !ib &&
+	    !READ_ONCE(qp->system_suspended) && !atomic_read(&qp->votes_paused) &&
+	    kona_display_resume_hold_ms &&
+	    time_before(jiffies, qp->resume_jiffies +
+			msecs_to_jiffies(kona_display_resume_hold_ms)) &&
+	    qp->saved_ab && qp->saved_ib &&
+	    qp->saved_ab[index] != U64_MAX && qp->saved_ib[index] != U64_MAX) {
+		u64 hold_ab = max_t(u64, qp->saved_ab[index],
+				   (u64)kona_display_resume_floor_ab_kBps);
+		u64 hold_ib = max_t(u64, qp->saved_ib[index],
+				   (u64)kona_display_resume_floor_ib_kBps);
+
+		ab = hold_ab;
+		ib = hold_ib;
+		if (kona_resume_debug)
+			dev_info_ratelimited(qp->provider.dev,
+				"kona-icc: hold DISPLAY vote for %s during resume grace: ab=%llu ib=%llu\n",
+				qp->nodes[index].name, ab, ib);
+	}
+
 	/* Cache requested AB/IB first. */
 	if (qp->req_ab)
 		qp->req_ab[index] = ab;
@@ -1221,11 +1264,19 @@ skip_perf_floor:
 	 * black-screen / stuck-resume symptoms when the fabric stays at 0/0.
 	 */
 	if (unlikely(READ_ONCE(qp->system_suspended) || atomic_read(&qp->votes_paused))) {
-		const struct kona_icc_node_desc *desc = &qp->nodes[index];
+		/*
+		 * During suspend/resume windows RPMh ACTIVE_ONLY writes may be unsafe or
+		 * transiently blocked. Keep cached requests updated and replay later, but
+		 * do not fail consumers (e.g. devbw/SDE) on transient -EAGAIN windows.
+		 */
+		if (!READ_ONCE(qp->system_suspended) && (ab || ib))
+			schedule_delayed_work(&qp->retry_work, 0);
 
-		/* Allow msm_bus fallbacks to engage for display-critical paths. */
-		if (desc->role == KONA_ROLE_DISPLAY && (ab || ib))
-			return -EAGAIN;
+		if (kona_resume_debug && (ab || ib))
+			dev_info_ratelimited(qp->provider.dev,
+				"kona-icc: defer %s vote while paused/suspended: ab=%llu ib=%llu\n",
+				qp->nodes[index].name, ab, ib);
+
 		return 0;
 	} else {
 		bool retry = false;
@@ -1587,9 +1638,9 @@ static int kona_icc_probe(struct platform_device *pdev)
 			kona_icc_apply_floor(&qp->nodes[i], &ab, &ib);
 
 			r_ab = kona_icc_send_bw(qp->provider.dev,
-					     qp->nodes[i].ab, ab);
+					     qp->nodes[i].ab, ab, false);
 			r_ib = kona_icc_send_bw(qp->provider.dev,
-					     qp->nodes[i].ib, ib);
+					     qp->nodes[i].ib, ib, false);
 
 			/*
 			 * Only cache if both votes were applied. If we got -EAGAIN,

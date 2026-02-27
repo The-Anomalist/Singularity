@@ -127,6 +127,12 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 
 		for (i = 0; i < d->num_icc_paths; i++) {
 			ret = icc_set_bw(d->icc_paths[i], avg_bw, peak_bw);
+			if (ret == -EAGAIN) {
+				dev_dbg_ratelimited(dev,
+					"ICC bandwidth request deferred (-EAGAIN), continuing\n");
+				ret = 0;
+				continue;
+			}
 			if (ret) {
 				dev_err(dev, "ICC bandwidth request failed (%d)\n",
 					ret);
