@@ -1040,22 +1040,29 @@ static bool kona_icc_replay_req_votes_phased(struct kona_icc_provider *qp)
 
 	switch (qp->resume_phase) {
 	case 0:
-		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_CPU, false);
-		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_CPU_PRIME, false);
-		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_NPU, false);
+		/*
+		 * Display bring-up can start immediately after resume unpauses voting.
+		 * Prioritize DISPLAY paths first so panel/SDE sees fabric/DDR votes early,
+		 * especially on battery where CX can fully collapse.
+		 *
+		 * Keep this phase small to avoid an RPMh/apps_rsc replay storm.
+		 */
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_DISPLAY, true);
 		qp->resume_phase = 1;
 		schedule_delayed_work(&qp->retry_work,
 				      msecs_to_jiffies(KONA_RESUME_PHASE1_DELAY_MS));
 		return need_retry;
 	case 1:
-		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_GPU, false);
-		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_GENERIC, false);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_CPU, false);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_CPU_PRIME, false);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_NPU, false);
 		qp->resume_phase = 2;
 		schedule_delayed_work(&qp->retry_work,
 				      msecs_to_jiffies(KONA_RESUME_PHASE2_DELAY_MS));
 		return need_retry;
 	case 2:
-		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_DISPLAY, true);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_GPU, false);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_GENERIC, false);
 		qp->resume_phase = 3; /* done */
 		return need_retry;
 	default:
@@ -1065,6 +1072,7 @@ static bool kona_icc_replay_req_votes_phased(struct kona_icc_provider *qp)
 	/* Normal steady-state replay path. */
 	return kona_icc_replay_req_votes(qp);
 }
+
 static void kona_icc_retry_workfn(struct work_struct *work)
 {
 	struct kona_icc_provider *qp = container_of(to_delayed_work(work),
@@ -1441,7 +1449,7 @@ static int kona_icc_resume(struct device *dev)
 	 * Resume hardening (no-idle-drain):
 	 *   - Avoid an early resume replay storm that can congest RPMh/apps_rsc
 	 *     and race the DSI/SDE bring-up window on battery.
-	 *   - Replay last requested votes in phases (CPU/NPU -> GPU/GENERIC -> DISPLAY).
+	 *   - Replay last requested votes in phases (DISPLAY -> CPU/NPU -> GPU/GENERIC).
 	 */
 	if (qp) {
 		qp->resume_jiffies = jiffies;
