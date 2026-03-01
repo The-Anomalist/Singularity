@@ -839,6 +839,12 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 	},
 };
 
+static inline void kona_icc_validate_node_count(void)
+{
+	BUILD_BUG_ON(ARRAY_SIZE(kona_nodes) != KONA_ICC_NUM_NODES);
+}
+
+
 static const struct kona_icc_data kona_data = {
 	.nodes = kona_nodes,
 	.num_nodes = ARRAY_SIZE(kona_nodes),
@@ -1113,18 +1119,16 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 		 * For DISPLAY resume, prefer the last known non-zero vote if we have one.
 		 */
 		if (req_unset || req_zero) {
-			bool have_saved_display_vote;
-
-			if (role != KONA_ROLE_DISPLAY || !apply_display_floor) {
+			if (role != KONA_ROLE_DISPLAY || !apply_display_floor ||
+			    !qp->saved_ab || !qp->saved_ib ||
+			    qp->saved_ab[i] == U64_MAX || qp->saved_ib[i] == U64_MAX) {
 				if (role == KONA_ROLE_DISPLAY)
 					atomic_inc(&qp->display_replay_skips);
 				continue;
 			}
 
-			have_saved_display_vote = qp->saved_ab && qp->saved_ib &&
-				qp->saved_ab[i] != U64_MAX && qp->saved_ib[i] != U64_MAX;
-
-			if (have_saved_display_vote) {
+			if (qp->saved_ab && qp->saved_ib &&
+			    qp->saved_ab[i] != U64_MAX && qp->saved_ib[i] != U64_MAX) {
 				if (kona_resume_debug && req_zero)
 					dev_info_ratelimited(qp->provider.dev,
 						"kona-icc: replaying saved DISPLAY vote for %s during resume (req=0/0)\n",
@@ -1672,6 +1676,8 @@ static int kona_icc_probe(struct platform_device *pdev)
 	struct kona_icc_provider *qp;
 	u64 __maybe_unused ab, ib;
 	int ret, i;
+
+	kona_icc_validate_node_count();
 
 	qp = devm_kzalloc(&pdev->dev, sizeof(*qp), GFP_KERNEL);
 	if (!qp)
