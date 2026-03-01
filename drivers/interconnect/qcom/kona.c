@@ -1113,16 +1113,18 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 		 * For DISPLAY resume, prefer the last known non-zero vote if we have one.
 		 */
 		if (req_unset || req_zero) {
-			if (role != KONA_ROLE_DISPLAY || !apply_display_floor ||
-			    !qp->saved_ab || !qp->saved_ib ||
-			    qp->saved_ab[i] == U64_MAX || qp->saved_ib[i] == U64_MAX) {
+			bool have_saved_display_vote;
+
+			if (role != KONA_ROLE_DISPLAY || !apply_display_floor) {
 				if (role == KONA_ROLE_DISPLAY)
 					atomic_inc(&qp->display_replay_skips);
 				continue;
 			}
 
-			if (qp->saved_ab && qp->saved_ib &&
-			    qp->saved_ab[i] != U64_MAX && qp->saved_ib[i] != U64_MAX) {
+			have_saved_display_vote = qp->saved_ab && qp->saved_ib &&
+				qp->saved_ab[i] != U64_MAX && qp->saved_ib[i] != U64_MAX;
+
+			if (have_saved_display_vote) {
 				if (kona_resume_debug && req_zero)
 					dev_info_ratelimited(qp->provider.dev,
 						"kona-icc: replaying saved DISPLAY vote for %s during resume (req=0/0)\n",

@@ -2821,6 +2821,8 @@
 		regulator-name = "mdss_core_gdsc";
 		clock-names = "ahb_clk";
 		clocks = <&clock_gcc GCC_DISP_AHB_CLK>;
+		interconnects = <&kona_icc KONA_ICC_DISP_CFG>;
+		interconnect-names = "disp-cfg";
 		parent-supply = <&VDD_MMCX_LEVEL>;
 		vdd_parent-supply = <&VDD_MMCX_LEVEL>;
 		qcom,msm-bus,name = "mdss_core_gdsc_ahb";
@@ -2899,6 +2901,8 @@
 		regulator-name = "mvs0_gdsc";
 		clock-names = "ahb_clk";
 		clocks = <&clock_gcc GCC_VIDEO_AHB_CLK>;
+		interconnects = <&kona_icc KONA_ICC_VIDEO_CFG>;
+		interconnect-names = "video-cfg";
 		parent-supply = <&VDD_MMCX_LEVEL>;
 		vdd_parent-supply = <&VDD_MMCX_LEVEL>;
 		qcom,msm-bus,name = "mvs0_gdsc_ahb";
@@ -2917,6 +2921,8 @@
 		regulator-name = "mvs0c_gdsc";
 		clock-names = "ahb_clk";
 		clocks = <&clock_gcc GCC_VIDEO_AHB_CLK>;
+		interconnects = <&kona_icc KONA_ICC_VIDEO_CFG>;
+		interconnect-names = "video-cfg";
 		parent-supply = <&VDD_MMCX_LEVEL>;
 		vdd_parent-supply = <&VDD_MMCX_LEVEL>;
 		qcom,msm-bus,name = "mvs0c_gdsc_ahb";
@@ -2934,6 +2940,8 @@
 		regulator-name = "mvs1_gdsc";
 		clock-names = "ahb_clk";
 		clocks = <&clock_gcc GCC_VIDEO_AHB_CLK>;
+		interconnects = <&kona_icc KONA_ICC_VIDEO_CFG>;
+		interconnect-names = "video-cfg";
 		parent-supply = <&VDD_MMCX_LEVEL>;
 		vdd_parent-supply = <&VDD_MMCX_LEVEL>;
 		qcom,msm-bus,name = "mvs1_gdsc_ahb";
@@ -2952,6 +2960,8 @@
 		regulator-name = "mvs1c_gdsc";
 		clock-names = "ahb_clk";
 		clocks = <&clock_gcc GCC_VIDEO_AHB_CLK>;
+		interconnects = <&kona_icc KONA_ICC_VIDEO_CFG>;
+		interconnect-names = "video-cfg";
 		parent-supply = <&VDD_MMCX_LEVEL>;
 		vdd_parent-supply = <&VDD_MMCX_LEVEL>;
 		qcom,msm-bus,name = "mvs1c_gdsc_ahb";
