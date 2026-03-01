@@ -43,5 +43,6 @@
 #define KONA_ICC_USB0_TO_MEM	34
 #define KONA_ICC_USB1_TO_MEM	35
 #define KONA_ICC_QUP_TO_MEM	36
+#define KONA_ICC_NUM_NODES	37
 
 #endif

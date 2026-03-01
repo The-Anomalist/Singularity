@@ -12,6 +12,8 @@
 #define DSIPHY_CMN_GLBL_TEST_CTRL	0x0018
 #define DSIPHY_PLL_CLKBUFLR_EN		0x041c
 
+struct icc_path;
+
 struct mdss_rgb_data {
 	int ndx;
 	bool res_init;
@@ -60,6 +62,7 @@ struct mdss_rgb_data {
 	struct msm_bus_scale_pdata *bus_scale_table;
 	u32 bus_handle;
 	u32 bus_refcount;
+	struct icc_path *icc_path;
 
 	int bklt_ctrl;  /* backlight ctrl */
 	int pwm_enabled;

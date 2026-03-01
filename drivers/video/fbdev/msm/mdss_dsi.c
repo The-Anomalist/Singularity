@@ -16,6 +16,7 @@
 #include <linux/msm-bus.h>
 #include <linux/pm_qos.h>
 #include <linux/dma-buf.h>
+#include <linux/interconnect.h>
 
 #include "mdss.h"
 #include "mdss_panel.h"
@@ -3718,9 +3719,17 @@ static int mdss_dsi_bus_scale_init(struct platform_device *pdev,
 {
 	int rc = 0;
 
+	sdata->icc_path = devm_of_icc_get(&pdev->dev, "disp0-ddr");
+	if (IS_ERR(sdata->icc_path))
+		sdata->icc_path = devm_of_icc_get(&pdev->dev, NULL);
+	if (IS_ERR(sdata->icc_path))
+		sdata->icc_path = NULL;
+
 	sdata->bus_scale_table = msm_bus_cl_get_pdata(pdev);
 	if (IS_ERR_OR_NULL(sdata->bus_scale_table)) {
 		rc = PTR_ERR(sdata->bus_scale_table);
+		if (sdata->icc_path)
+			return 0;
 		pr_err("%s: msm_bus_cl_get_pdata() failed, rc=%d\n", __func__,
 								     rc);
 		return rc;
@@ -3730,7 +3739,7 @@ static int mdss_dsi_bus_scale_init(struct platform_device *pdev,
 	sdata->bus_handle =
 		msm_bus_scale_register_client(sdata->bus_scale_table);
 
-	if (!sdata->bus_handle) {
+	if (!sdata->bus_handle && !sdata->icc_path) {
 		rc = -EINVAL;
 		pr_err("%sbus_client register failed\n", __func__);
 	}
@@ -3740,6 +3749,9 @@ static int mdss_dsi_bus_scale_init(struct platform_device *pdev,
 
 static void mdss_dsi_bus_scale_deinit(struct dsi_shared_data *sdata)
 {
+	if (sdata->icc_path)
+		icc_set_bw(sdata->icc_path, 0, 0);
+
 	if (sdata->bus_handle) {
 		if (sdata->bus_refcount)
 			msm_bus_scale_client_update_request(sdata->bus_handle,

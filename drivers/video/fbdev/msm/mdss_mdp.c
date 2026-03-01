@@ -38,6 +38,7 @@
 
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
+#include <linux/interconnect.h>
 #include <soc/qcom/scm.h>
 #include <soc/qcom/rpm-smd.h>
 #include "soc/qcom/secure_buffer.h"
@@ -142,6 +143,28 @@ static struct msm_bus_scale_pdata mdp_reg_bus_scale_table = {
 	.name = "mdss_reg",
 	.active_only = true,
 };
+
+static void mdss_mdp_icc_get_uc_bw(struct msm_bus_scale_pdata *pdata,
+					u32 usecase, u32 *avg_bw, u32 *peak_bw)
+{
+	u64 avg = 0, peak = 0;
+	int i;
+
+	if (!pdata || usecase >= pdata->num_usecases)
+		goto done;
+
+	for (i = 0; i < pdata->usecase[usecase].num_paths; i++) {
+		avg += pdata->usecase[usecase].vectors[i].ab;
+		peak += pdata->usecase[usecase].vectors[i].ib;
+	}
+
+done:
+	if (avg_bw)
+		*avg_bw = min_t(u64, avg, U32_MAX);
+	if (peak_bw)
+		*peak_bw = min_t(u64, peak, U32_MAX);
+}
+
 static int mdss_mdp_parse_dt_bus_scale(struct platform_device *pdev);
 #endif
 
@@ -477,21 +500,23 @@ static int mdss_mdp_bus_scale_register(struct mdss_data_type *mdata)
 	struct msm_bus_scale_pdata *reg_bus_pdata;
 	int i, rc;
 
-	if (!mdata->bus_hdl) {
+	if (!mdata->bus_hdl && !mdata->bus_icc_path) {
 		rc = mdss_mdp_parse_dt_bus_scale(mdata->pdev);
 		if (rc) {
 			pr_err("Error in device tree : bus scale\n");
 			return rc;
 		}
 
-		mdata->bus_hdl =
-			msm_bus_scale_register_client(mdata->bus_scale_table);
-		if (!mdata->bus_hdl) {
-			pr_err("bus_client register failed\n");
-			return -EINVAL;
-		}
+		if (mdata->bus_scale_table) {
+			mdata->bus_hdl =
+				msm_bus_scale_register_client(mdata->bus_scale_table);
+			if (!mdata->bus_hdl) {
+				pr_err("bus_client register failed\n");
+				return -EINVAL;
+			}
 
-		pr_debug("register bus_hdl=%x\n", mdata->bus_hdl);
+			pr_debug("register bus_hdl=%x\n", mdata->bus_hdl);
+		}
 	}
 
 	if (!mdata->reg_bus_scale_table) {
@@ -540,6 +565,15 @@ static void mdss_mdp_bus_scale_unregister(struct mdss_data_type *mdata)
 {
 	pr_debug("unregister bus_hdl=%x\n", mdata->bus_hdl);
 
+	if (mdata->bus_icc_path)
+		icc_set_bw(mdata->bus_icc_path, 0, 0);
+
+	if (mdata->reg_bus_icc_path)
+		icc_set_bw(mdata->reg_bus_icc_path, 0, 0);
+
+	if (mdata->hw_rt_bus_icc_path)
+		icc_set_bw(mdata->hw_rt_bus_icc_path, 0, 0);
+
 	if (mdata->bus_hdl)
 		msm_bus_scale_unregister_client(mdata->bus_hdl);
 
@@ -567,7 +601,7 @@ static int mdss_mdp_bus_scale_set_quota(u64 ab_quota_rt, u64 ab_quota_nrt,
 	u64 ib_quota[MAX_AXI_PORT_COUNT] = {0, 0};
 	int rc;
 
-	if (mdss_res->bus_hdl < 1) {
+	if (mdss_res->bus_hdl < 1 && !mdss_res->bus_icc_path) {
 		pr_err("invalid bus handle %d\n", mdss_res->bus_hdl);
 		return -EINVAL;
 	}
@@ -656,6 +690,21 @@ static int mdss_mdp_bus_scale_set_quota(u64 ab_quota_rt, u64 ab_quota_nrt,
 	if ((mdss_res->bus_ref_cnt == 0) && mdss_res->curr_bw_uc_idx) {
 		rc = 0;
 	} else { /* vote BW if bus_bw_cnt > 0 or uc_idx is zero */
+		u32 avg_bw = 0, peak_bw = 0;
+
+		mdss_mdp_icc_get_uc_bw(mdss_res->bus_scale_table, new_uc_idx,
+					&avg_bw, &peak_bw);
+		if (mdss_res->bus_icc_path) {
+			rc = icc_set_bw(mdss_res->bus_icc_path, avg_bw, peak_bw);
+			if (!rc)
+				return 0;
+			pr_debug("%s: ICC data vote failed rc=%d, using msm_bus fallback\n",
+				__func__, rc);
+		}
+
+		if (mdss_res->bus_hdl < 1)
+			return rc ? rc : -EINVAL;
+
 		ATRACE_BEGIN("msm_bus_scale_req");
 		rc = msm_bus_scale_client_update_request(mdss_res->bus_hdl,
 			new_uc_idx);
@@ -712,7 +761,7 @@ int mdss_update_reg_bus_vote(struct reg_bus_client *bus_client, u32 usecase_ndx)
 	u32 max_usecase_ndx = VOTE_INDEX_DISABLE;
 	struct reg_bus_client *client, *temp_client;
 
-	if (!mdss_res || !mdss_res->reg_bus_hdl || !bus_client)
+	if (!mdss_res || (!mdss_res->reg_bus_hdl && !mdss_res->reg_bus_icc_path) || !bus_client)
 		return 0;
 
 	mutex_lock(&mdss_res->reg_bus_lock);
@@ -734,9 +783,27 @@ int mdss_update_reg_bus_vote(struct reg_bus_client *bus_client, u32 usecase_ndx)
 		__builtin_return_address(0), changed, max_usecase_ndx,
 		bus_client->name, bus_client->id, usecase_ndx);
 	MDSS_XLOG(changed, max_usecase_ndx, bus_client->id, usecase_ndx);
-	if (changed)
-		ret = msm_bus_scale_client_update_request(mdss_res->reg_bus_hdl,
-			max_usecase_ndx);
+	if (changed) {
+		u32 avg_bw = 0, peak_bw = 0;
+
+		mdss_mdp_icc_get_uc_bw(mdss_res->reg_bus_scale_table, max_usecase_ndx,
+					&avg_bw, &peak_bw);
+		if (mdss_res->reg_bus_icc_path) {
+			ret = icc_set_bw(mdss_res->reg_bus_icc_path, avg_bw, peak_bw);
+			if (!ret) {
+				mutex_unlock(&mdss_res->reg_bus_lock);
+				return 0;
+			}
+			pr_debug("%s: ICC reg vote failed rc=%d, using msm_bus fallback\n",
+				__func__, ret);
+		}
+
+		if (mdss_res->reg_bus_hdl)
+			ret = msm_bus_scale_client_update_request(mdss_res->reg_bus_hdl,
+				max_usecase_ndx);
+		else
+			ret = ret ? ret : -EINVAL;
+	}
 
 	mutex_unlock(&mdss_res->reg_bus_lock);
 	return ret;
@@ -1362,7 +1429,7 @@ static int mdss_bus_rt_bw_vote(bool enable)
 	int rc = 0;
 	bool changed = false;
 
-	if (!mdata->hw_rt_bus_hdl || mdata->handoff_pending)
+	if ((!mdata->hw_rt_bus_hdl && !mdata->hw_rt_bus_icc_path) || mdata->handoff_pending)
 		return 0;
 
 	if (enable) {
@@ -1385,8 +1452,24 @@ static int mdss_bus_rt_bw_vote(bool enable)
 		mdata->hw_rt_bus_ref_cnt, changed, enable);
 
 	if (changed) {
-		rc = msm_bus_scale_client_update_request(mdata->hw_rt_bus_hdl,
+		u32 avg_bw = 0, peak_bw = 0;
+
+		mdss_mdp_icc_get_uc_bw(mdata->hw_rt_bus_scale_table,
+					enable ? 1 : 0, &avg_bw, &peak_bw);
+		if (mdata->hw_rt_bus_icc_path) {
+			rc = icc_set_bw(mdata->hw_rt_bus_icc_path, avg_bw, peak_bw);
+			if (!rc)
+				return 0;
+			pr_debug("%s: ICC hw_rt vote failed rc=%d, using msm_bus fallback\n",
+				__func__, rc);
+		}
+
+		if (mdata->hw_rt_bus_hdl)
+			rc = msm_bus_scale_client_update_request(mdata->hw_rt_bus_hdl,
 							 enable ? 1 : 0);
+		else
+			rc = rc ? rc : -EINVAL;
+
 		if (rc)
 			pr_err("%s: Bus bandwidth vote failed\n", __func__);
 	}
@@ -4692,32 +4775,57 @@ static int mdss_mdp_parse_dt_bus_scale(struct platform_device *pdev)
 	struct device_node *node;
 	struct mdss_data_type *mdata = platform_get_drvdata(pdev);
 
+	mdata->bus_icc_path = devm_of_icc_get(&pdev->dev, "disp0-ddr");
+	if (IS_ERR(mdata->bus_icc_path))
+		mdata->bus_icc_path = devm_of_icc_get(&pdev->dev, NULL);
+	if (IS_ERR(mdata->bus_icc_path))
+		mdata->bus_icc_path = NULL;
+
+	mdata->reg_bus_icc_path = devm_of_icc_get(&pdev->dev, "disp-cfg");
+	if (IS_ERR(mdata->reg_bus_icc_path))
+		mdata->reg_bus_icc_path = NULL;
+
+	mdata->hw_rt_bus_icc_path = devm_of_icc_get(&pdev->dev, "disp-cfg");
+	if (IS_ERR(mdata->hw_rt_bus_icc_path))
+		mdata->hw_rt_bus_icc_path = NULL;
+
 	rc = of_property_read_u32(pdev->dev.of_node,
 			"qcom,msm-bus,num-paths", &paths);
 	if (rc) {
-		pr_err("Error. qcom,msm-bus,num-paths prop not found.rc=%d\n",
-			rc);
-		return rc;
+		if (!mdata->bus_icc_path) {
+			pr_err("Error. qcom,msm-bus,num-paths prop not found.rc=%d\n",
+				rc);
+			return rc;
+		}
+		paths = 0;
 	}
 	mdss_res->axi_port_cnt = paths;
 
 	rc = of_property_read_u32(pdev->dev.of_node,
 			"qcom,mdss-num-nrt-paths", &mdata->nrt_axi_port_cnt);
-	if (rc && mdata->has_fixed_qos_arbiter_enabled) {
+	if (rc && mdata->has_fixed_qos_arbiter_enabled && !mdata->bus_icc_path) {
 		pr_err("Error. qcom,mdss-num-nrt-paths prop not found.rc=%d\n",
 			rc);
 		return rc;
 	}
 	rc = 0;
+
 	mdata->bus_scale_table = msm_bus_cl_get_pdata(pdev);
 	if (IS_ERR_OR_NULL(mdata->bus_scale_table)) {
 		rc = PTR_ERR(mdata->bus_scale_table);
 		if (!rc)
 			rc = -EINVAL;
-		pr_err("msm_bus_cl_get_pdata failed. rc=%d\n", rc);
+		if (!mdata->bus_icc_path) {
+			pr_err("msm_bus_cl_get_pdata failed. rc=%d\n", rc);
+			mdata->bus_scale_table = NULL;
+			return rc;
+		}
 		mdata->bus_scale_table = NULL;
-		return rc;
+		return 0;
 	}
+
+	if (!mdata->bus_scale_table)
+		return 0;
 
 	/*
 	 * if mdss-reg-bus is not found then default table is picked

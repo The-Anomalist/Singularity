@@ -10,6 +10,7 @@
 #include <linux/msm-bus.h>
 #include <linux/delay.h>
 #include <linux/spi/spi.h>
+#include <linux/interconnect.h>
 
 #include "mdss.h"
 #include "mdss_panel.h"
@@ -145,9 +146,17 @@ static int mdss_rgb_bus_scale_init(struct platform_device *pdev,
 {
 	int rc = 0;
 
+	rgb_data->icc_path = devm_of_icc_get(&pdev->dev, "disp0-ddr");
+	if (IS_ERR(rgb_data->icc_path))
+		rgb_data->icc_path = devm_of_icc_get(&pdev->dev, NULL);
+	if (IS_ERR(rgb_data->icc_path))
+		rgb_data->icc_path = NULL;
+
 	rgb_data->bus_scale_table = msm_bus_cl_get_pdata(pdev);
 	if (IS_ERR_OR_NULL(rgb_data->bus_scale_table)) {
 		rc = PTR_ERR(rgb_data->bus_scale_table);
+		if (rgb_data->icc_path)
+			return 0;
 		pr_err("%s: msm_bus_cl_get_pdata() failed, rc=%d\n", __func__,
 				rc);
 		rgb_data->bus_scale_table = NULL;
@@ -157,7 +166,7 @@ static int mdss_rgb_bus_scale_init(struct platform_device *pdev,
 	rgb_data->bus_handle =
 		msm_bus_scale_register_client(rgb_data->bus_scale_table);
 
-	if (!rgb_data->bus_handle) {
+	if (!rgb_data->bus_handle && !rgb_data->icc_path) {
 		rc = -EINVAL;
 		pr_err("%sbus_client register failed\n", __func__);
 	}
@@ -168,6 +177,9 @@ static int mdss_rgb_bus_scale_init(struct platform_device *pdev,
 
 static void mdss_rgb_bus_scale_deinit(struct mdss_rgb_data *sdata)
 {
+	if (sdata->icc_path)
+		icc_set_bw(sdata->icc_path, 0, 0);
+
 	if (sdata->bus_handle) {
 		if (sdata->bus_refcount)
 			msm_bus_scale_client_update_request(sdata->bus_handle,

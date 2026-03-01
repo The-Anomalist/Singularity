@@ -23,6 +23,8 @@
 
 #include "mdss_panel.h"
 
+struct icc_path;
+
 #define MAX_DRV_SUP_MMB_BLKS	44
 #define MAX_DRV_SUP_PIPES 10
 #define MAX_CLIENT_NAME_LEN 20
@@ -408,6 +410,9 @@ struct mdss_data_type {
 	struct msm_bus_scale_pdata *bus_scale_table;
 	struct msm_bus_scale_pdata *reg_bus_scale_table;
 	struct msm_bus_scale_pdata *hw_rt_bus_scale_table;
+	struct icc_path *bus_icc_path;
+	struct icc_path *reg_bus_icc_path;
+	struct icc_path *hw_rt_bus_icc_path;
 	u32 max_bw_low;
 	u32 max_bw_high;
 	u32 max_bw_per_pipe;

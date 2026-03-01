@@ -17,6 +17,8 @@
 #include "mdss_dsi_cmd.h"
 #include "mdss_dsi_clk.h"
 
+struct icc_path;
+
 #define MMSS_SERDES_BASE_PHY 0x04f01000 /* mmss (De)Serializer CFG */
 
 #define MIPI_OUTP(addr, data) writel_relaxed((data), (addr))
@@ -292,6 +294,7 @@ struct dsi_shared_data {
 	struct msm_bus_scale_pdata *bus_scale_table;
 	u32 bus_handle;
 	u32 bus_refcount;
+	struct icc_path *icc_path;
 
 	/* Shared mutex for pm_qos ref count */
 	struct mutex pm_qos_lock;

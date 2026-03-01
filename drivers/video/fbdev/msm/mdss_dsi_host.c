@@ -9,6 +9,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
 #include <linux/iopoll.h>
+#include <linux/interconnect.h>
 #include <linux/kthread.h>
 #include <linux/sched.h>
 #include <uapi/linux/sched/types.h>
@@ -2520,6 +2521,32 @@ static int mdss_dsi_bus_bandwidth_vote(struct dsi_shared_data *sdata, bool on)
 	}
 
 	if (changed) {
+		if (sdata->icc_path) {
+			u64 avg = 0, peak = 0;
+			u32 avg_bw, peak_bw;
+			int i;
+
+			if (on && sdata->bus_scale_table &&
+			    sdata->bus_scale_table->num_usecases > 1) {
+				for (i = 0; i < sdata->bus_scale_table->usecase[1].num_paths; i++) {
+					avg += sdata->bus_scale_table->usecase[1].vectors[i].ab;
+					peak += sdata->bus_scale_table->usecase[1].vectors[i].ib;
+				}
+			}
+
+			avg_bw = on ? max_t(u32, 1, min_t(u64, avg, U32_MAX)) : 0;
+			peak_bw = on ? max_t(u32, 1, min_t(u64, peak, U32_MAX)) : 0;
+
+			rc = icc_set_bw(sdata->icc_path, avg_bw, peak_bw);
+			if (!rc)
+				return 0;
+			pr_debug("%s: ICC vote failed rc=%d, using msm_bus fallback\n",
+				__func__, rc);
+		}
+
+		if (!sdata->bus_handle)
+			return rc ? rc : -EINVAL;
+
 		rc = msm_bus_scale_client_update_request(sdata->bus_handle,
 							 on ? 1 : 0);
 		if (rc)

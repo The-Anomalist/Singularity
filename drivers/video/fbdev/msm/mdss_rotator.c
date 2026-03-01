@@ -12,6 +12,7 @@
 #include <linux/clk.h>
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
+#include <linux/interconnect.h>
 #include <linux/regulator/consumer.h>
 #include <linux/sync_file.h>
 #include <linux/sched/clock.h>
@@ -112,6 +113,14 @@ static int mdss_rotator_bus_scale_set_quota(struct mdss_rot_bus_data_type *bus,
 	pr_debug("uc_idx=%d quota=%llu\n", new_uc_idx, quota);
 	MDSS_XLOG(new_uc_idx, ((quota >> 32) & 0xFFFFFFFF),
 		(quota & 0xFFFFFFFF));
+	if (bus->icc_path) {
+		ret = icc_set_bw(bus->icc_path, min_t(u64, quota, U32_MAX),
+			min_t(u64, quota, U32_MAX));
+		if (!ret)
+			return 0;
+		pr_debug("ICC data vote failed rc=%d, using msm_bus fallback\n", ret);
+	}
+
 	ATRACE_BEGIN("msm_bus_scale_req_rot");
 	ret = msm_bus_scale_client_update_request(bus->bus_hdl,
 		new_uc_idx);
@@ -139,6 +148,28 @@ static int mdss_rotator_enable_reg_bus(struct mdss_rot_mgr *mgr, u64 quota)
 		quota ? "Enable":"Disable");
 
 	if (changed) {
+		if (mgr->reg_bus.icc_path) {
+			u64 avg = 0, peak = 0;
+			u32 avg_bw, peak_bw;
+			int i;
+
+			if (quota && mgr->reg_bus.bus_scale_pdata &&
+			    usecase_ndx < mgr->reg_bus.bus_scale_pdata->num_usecases) {
+				for (i = 0; i < mgr->reg_bus.bus_scale_pdata->usecase[usecase_ndx].num_paths; i++) {
+					avg += mgr->reg_bus.bus_scale_pdata->usecase[usecase_ndx].vectors[i].ab;
+					peak += mgr->reg_bus.bus_scale_pdata->usecase[usecase_ndx].vectors[i].ib;
+				}
+			}
+
+			avg_bw = quota ? max_t(u32, 1, min_t(u64, avg, U32_MAX)) : 0;
+			peak_bw = quota ? max_t(u32, 1, min_t(u64, peak, U32_MAX)) : 0;
+
+			ret = icc_set_bw(mgr->reg_bus.icc_path, avg_bw, peak_bw);
+			if (!ret)
+				return 0;
+			pr_debug("ICC reg vote failed rc=%d, using msm_bus fallback\n", ret);
+		}
+
 		ATRACE_BEGIN("msm_bus_scale_req_rot_reg");
 		ret = msm_bus_scale_client_update_request(mgr->reg_bus.bus_hdl,
 			usecase_ndx);
@@ -2611,15 +2642,28 @@ static int mdss_rotator_parse_dt_bus(struct mdss_rot_mgr *mgr,
 	bool register_bus_needed;
 	int usecases;
 
+	mgr->data_bus.icc_path = devm_of_icc_get(&dev->dev, "rot-ddr");
+	if (IS_ERR(mgr->data_bus.icc_path))
+		mgr->data_bus.icc_path = devm_of_icc_get(&dev->dev, "disp0-ddr");
+	if (IS_ERR(mgr->data_bus.icc_path))
+		mgr->data_bus.icc_path = devm_of_icc_get(&dev->dev, NULL);
+	if (IS_ERR(mgr->data_bus.icc_path))
+		mgr->data_bus.icc_path = NULL;
+
 	mgr->data_bus.bus_scale_pdata = msm_bus_cl_get_pdata(dev);
 	if (IS_ERR_OR_NULL(mgr->data_bus.bus_scale_pdata)) {
 		ret = PTR_ERR(mgr->data_bus.bus_scale_pdata);
 		if (!ret) {
 			ret = -EINVAL;
-			pr_err("msm_bus_cl_get_pdata failed. ret=%d\n", ret);
+			if (!mgr->data_bus.icc_path)
+				pr_err("msm_bus_cl_get_pdata failed. ret=%d\n", ret);
 			mgr->data_bus.bus_scale_pdata = NULL;
 		}
 	}
+
+	mgr->reg_bus.icc_path = devm_of_icc_get(&dev->dev, "disp-cfg");
+	if (IS_ERR(mgr->reg_bus.icc_path))
+		mgr->reg_bus.icc_path = NULL;
 
 	register_bus_needed = of_property_read_bool(dev->dev.of_node,
 		"qcom,mdss-has-reg-bus");
@@ -2756,6 +2800,12 @@ static void mdss_rotator_bus_scale_unregister(struct mdss_rot_mgr *mgr)
 	pr_debug("unregister bus_hdl=%x, reg_bus_hdl=%x\n",
 		mgr->data_bus.bus_hdl, mgr->reg_bus.bus_hdl);
 
+	if (mgr->data_bus.icc_path)
+		icc_set_bw(mgr->data_bus.icc_path, 0, 0);
+
+	if (mgr->reg_bus.icc_path)
+		icc_set_bw(mgr->reg_bus.icc_path, 0, 0);
+
 	if (mgr->data_bus.bus_hdl)
 		msm_bus_scale_unregister_client(mgr->data_bus.bus_hdl);
 
@@ -2765,10 +2815,13 @@ static void mdss_rotator_bus_scale_unregister(struct mdss_rot_mgr *mgr)
 
 static int mdss_rotator_bus_scale_register(struct mdss_rot_mgr *mgr)
 {
-	if (!mgr->data_bus.bus_scale_pdata) {
+	if (!mgr->data_bus.bus_scale_pdata && !mgr->data_bus.icc_path) {
 		pr_err("Scale table is NULL\n");
 		return -EINVAL;
 	}
+
+	if (!mgr->data_bus.bus_scale_pdata)
+		return 0;
 
 	mgr->data_bus.bus_hdl =
 		msm_bus_scale_register_client(

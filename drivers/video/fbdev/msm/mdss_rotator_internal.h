@@ -13,6 +13,8 @@
 
 #include  "mdss_mdp.h"
 
+struct icc_path;
+
 /*
  * Defining characteristics about rotation work, that has corresponding
  * fmt and roi checks in open session
@@ -126,6 +128,7 @@ struct mdss_rot_bus_data_type {
 	u32 bus_hdl;
 	u32 curr_bw_uc_idx;
 	u64 curr_quota_val;
+	struct icc_path *icc_path;
 };
 
 struct mdss_rot_mgr {
