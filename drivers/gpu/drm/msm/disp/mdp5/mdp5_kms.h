@@ -28,6 +28,8 @@
 #include "mdp5_ctl.h"
 #include "mdp5_smp.h"
 
+struct icc_path;
+
 struct mdp5_kms {
 	struct mdp_kms base;
 
@@ -172,6 +174,9 @@ struct mdp5_encoder {
 	spinlock_t intf_lock;	/* protect REG_MDP5_INTF_* registers */
 	bool enabled;
 	uint32_t bsc;
+	bool icc_enabled;
+	struct icc_path *icc_mem_path;
+	struct icc_path *icc_cfg_path;
 
 	struct mdp5_interface *intf;
 	struct mdp5_ctl *ctl;

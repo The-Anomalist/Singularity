@@ -19,6 +19,8 @@
 #include <drm/drm_crtc.h>
 #include <drm/drm_crtc_helper.h>
 
+#include <linux/interconnect.h>
+
 #include "mdp5_kms.h"
 
 static struct mdp5_kms *get_kms(struct drm_encoder *encoder)
@@ -35,8 +37,8 @@ static struct mdp5_kms *get_kms(struct drm_encoder *encoder)
 	{						\
 		.src = MSM_BUS_MASTER_MDP_PORT0,	\
 		.dst = MSM_BUS_SLAVE_EBI_CH0,		\
-		.ab = (ab_val),				\
-		.ib = (ib_val),				\
+		.ab = (ab_val),			\
+		.ib = (ib_val),			\
 	}
 
 static struct msm_bus_vectors mdp_bus_vectors[] = {
@@ -55,24 +57,79 @@ static struct msm_bus_scale_pdata mdp_bus_scale_table = {
 	.num_usecases = ARRAY_SIZE(mdp_bus_usecases),
 	.name = "mdss_mdp",
 };
+#endif
+
+static struct icc_path *bs_get_icc_path(struct device *dev,
+					const char * const *names,
+					int n_names)
+{
+	struct icc_path *path;
+	int i;
+
+	for (i = 0; i < n_names; i++) {
+		path = devm_of_icc_get(dev, names[i]);
+		if (!IS_ERR(path))
+			return path;
+	}
+
+	return NULL;
+}
 
 static void bs_init(struct mdp5_encoder *mdp5_encoder)
 {
-	mdp5_encoder->bsc = msm_bus_scale_register_client(
-			&mdp_bus_scale_table);
+	static const char * const mem_path_names[] = {
+		"mdp0-mem", "mdp-mem", "disp0-ddr", NULL,
+	};
+	static const char * const cfg_path_names[] = {
+		"cpu-cfg", "mdp-cfg", "disp-cfg",
+	};
+	struct device *dev = mdp5_encoder->base.dev->dev;
+
+	mdp5_encoder->icc_mem_path =
+		bs_get_icc_path(dev, mem_path_names, ARRAY_SIZE(mem_path_names));
+	mdp5_encoder->icc_cfg_path =
+		bs_get_icc_path(dev, cfg_path_names, ARRAY_SIZE(cfg_path_names));
+
+	if (mdp5_encoder->icc_mem_path || mdp5_encoder->icc_cfg_path) {
+		mdp5_encoder->icc_enabled = true;
+		return;
+	}
+
+#ifdef DOWNSTREAM_CONFIG_MSM_BUS_SCALING
+	mdp5_encoder->bsc = msm_bus_scale_register_client(&mdp_bus_scale_table);
 	DBG("bus scale client: %08x", mdp5_encoder->bsc);
+#endif
 }
 
 static void bs_fini(struct mdp5_encoder *mdp5_encoder)
 {
+	if (mdp5_encoder->icc_enabled) {
+		if (mdp5_encoder->icc_mem_path)
+			icc_set_bw(mdp5_encoder->icc_mem_path, 0, 0);
+		if (mdp5_encoder->icc_cfg_path)
+			icc_set_bw(mdp5_encoder->icc_cfg_path, 0, 1000);
+		return;
+	}
+
+#ifdef DOWNSTREAM_CONFIG_MSM_BUS_SCALING
 	if (mdp5_encoder->bsc) {
 		msm_bus_scale_unregister_client(mdp5_encoder->bsc);
 		mdp5_encoder->bsc = 0;
 	}
+#endif
 }
 
 static void bs_set(struct mdp5_encoder *mdp5_encoder, int idx)
 {
+	if (mdp5_encoder->icc_enabled) {
+		if (mdp5_encoder->icc_mem_path)
+			icc_set_bw(mdp5_encoder->icc_mem_path, 0, idx ? 2000000 : 0);
+		if (mdp5_encoder->icc_cfg_path)
+			icc_set_bw(mdp5_encoder->icc_cfg_path, 0, 1000);
+		return;
+	}
+
+#ifdef DOWNSTREAM_CONFIG_MSM_BUS_SCALING
 	if (mdp5_encoder->bsc) {
 		DBG("set bus scaling: %d", idx);
 		/* HACK: scaling down, and then immediately back up
@@ -82,12 +139,8 @@ static void bs_set(struct mdp5_encoder *mdp5_encoder, int idx)
 		idx = 1;
 		msm_bus_scale_client_update_request(mdp5_encoder->bsc, idx);
 	}
-}
-#else
-static void bs_init(struct mdp5_encoder *mdp5_encoder) {}
-static void bs_fini(struct mdp5_encoder *mdp5_encoder) {}
-static void bs_set(struct mdp5_encoder *mdp5_encoder, int idx) {}
 #endif
+}
 
 static void mdp5_encoder_destroy(struct drm_encoder *encoder)
 {

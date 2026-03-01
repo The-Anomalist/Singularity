@@ -13,6 +13,7 @@
 
 #include <drm/drm_crtc.h>
 #include <drm/drm_crtc_helper.h>
+#include <linux/interconnect.h>
 
 #include "mdp5_kms.h"
 
@@ -29,6 +30,14 @@ static struct mdp5_kms *get_kms(struct drm_encoder *encoder)
 
 static void bs_set(struct mdp5_encoder *mdp5_cmd_enc, int idx)
 {
+	if (mdp5_cmd_enc->icc_enabled) {
+		if (mdp5_cmd_enc->icc_mem_path)
+			icc_set_bw(mdp5_cmd_enc->icc_mem_path, 0, idx ? 2000000 : 0);
+		if (mdp5_cmd_enc->icc_cfg_path)
+			icc_set_bw(mdp5_cmd_enc->icc_cfg_path, 0, 1000);
+		return;
+	}
+
 	if (mdp5_cmd_enc->bsc) {
 		DBG("set bus scaling: %d", idx);
 		/* HACK: scaling down, and then immediately back up
@@ -40,7 +49,15 @@ static void bs_set(struct mdp5_encoder *mdp5_cmd_enc, int idx)
 	}
 }
 #else
-static void bs_set(struct mdp5_encoder *mdp5_cmd_enc, int idx) {}
+static void bs_set(struct mdp5_encoder *mdp5_cmd_enc, int idx)
+{
+	if (mdp5_cmd_enc->icc_enabled) {
+		if (mdp5_cmd_enc->icc_mem_path)
+			icc_set_bw(mdp5_cmd_enc->icc_mem_path, 0, idx ? 2000000 : 0);
+		if (mdp5_cmd_enc->icc_cfg_path)
+			icc_set_bw(mdp5_cmd_enc->icc_cfg_path, 0, 1000);
+	}
+}
 #endif
 
 #define VSYNC_CLK_RATE 19200000

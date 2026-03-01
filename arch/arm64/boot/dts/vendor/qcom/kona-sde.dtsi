@@ -311,7 +311,7 @@
 			qcom,msm-bus,num-cases = <4>;
 			qcom,msm-bus,num-paths = <1>;
 			qcom,msm-bus,vectors-KBps =
-				<1 590 0 0>,
+				<1 590 0 1>,
 				<1 590 0 76800>,
 				<1 590 0 150000>,
 				<1 590 0 300000>;
@@ -514,7 +514,7 @@
 			qcom,msm-bus,num-cases = <4>;
 			qcom,msm-bus,num-paths = <1>;
 			qcom,msm-bus,vectors-KBps =
-				<1 590 0 0>,
+				<1 590 0 1>,
 				<1 590 0 76800>,
 				<1 590 0 150000>,
 				<1 590 0 300000>;
@@ -584,7 +584,7 @@
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,num-paths = <1>;
 			qcom,msm-bus,vectors-KBps =
-				<1 590 0 0>,
+				<1 590 0 1>,
 				<1 590 0 76800>;
 		};
 
