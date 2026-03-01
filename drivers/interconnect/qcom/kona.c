@@ -65,6 +65,9 @@ struct kona_icc_provider {
 	unsigned long resume_jiffies;
 	u8 resume_phase;
 	struct delayed_work retry_work;
+	atomic_t deferred_votes;
+	atomic_t replay_runs;
+	atomic_t display_replay_skips;
 	struct device **sysfs_nodes;
 	struct class *icc_class;
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
@@ -117,6 +120,16 @@ static unsigned int kona_display_resume_hold_ms = 15000;
 module_param_named(kona_display_resume_hold_ms, kona_display_resume_hold_ms, uint, 0644);
 MODULE_PARM_DESC(kona_display_resume_hold_ms,
 	"Hold a small DISPLAY non-zero vote for N ms after resume to avoid early collapse");
+
+static bool kona_display_bootstrap_floor_enable = true;
+module_param_named(kona_display_bootstrap_floor_enable, kona_display_bootstrap_floor_enable, bool, 0644);
+MODULE_PARM_DESC(kona_display_bootstrap_floor_enable,
+	"Allow one-shot DISPLAY floor during phase-0 replay when no saved/requested vote exists");
+
+static bool kona_display_topology_strict;
+module_param_named(kona_display_topology_strict, kona_display_topology_strict, bool, 0644);
+MODULE_PARM_DESC(kona_display_topology_strict,
+	"Fail probe if DISPLAY-critical ICC nodes are missing or not tagged DISPLAY");
 
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
@@ -833,6 +846,56 @@ static const struct kona_icc_data kona_data = {
 };
 
 static const struct kona_icc_node_desc *
+kona_find_desc(struct kona_icc_provider *qp, u32 id, unsigned int *index);
+
+static bool kona_icc_is_display_critical_id(u32 id)
+{
+	switch (id) {
+	case KONA_ICC_DISP0_TO_MEM:
+	case KONA_ICC_DISP1_TO_MEM:
+	case KONA_ICC_DISP_CFG:
+	case KONA_ICC_VIDEO_CFG:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static int kona_icc_validate_display_nodes(struct kona_icc_provider *qp)
+{
+	static const u32 required_ids[] = {
+		KONA_ICC_DISP0_TO_MEM,
+		KONA_ICC_DISP1_TO_MEM,
+		KONA_ICC_DISP_CFG,
+		KONA_ICC_VIDEO_CFG,
+	};
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(required_ids); i++) {
+		const struct kona_icc_node_desc *desc = kona_find_desc(qp, required_ids[i], NULL);
+
+		if (!desc) {
+			dev_warn(qp->provider.dev,
+				 "kona-icc: missing DISPLAY-critical node id=%u from provider table\n",
+				 required_ids[i]);
+			if (kona_display_topology_strict)
+				return -EINVAL;
+			continue;
+		}
+
+		if (desc->role != KONA_ROLE_DISPLAY) {
+			dev_warn(qp->provider.dev,
+				 "kona-icc: node %s(id=%u) must be DISPLAY role (got %u)\n",
+				 desc->name, required_ids[i], desc->role);
+			if (kona_display_topology_strict)
+				return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
+static const struct kona_icc_node_desc *
 kona_find_desc(struct kona_icc_provider *qp, u32 id, unsigned int *index)
 {
 	unsigned int i;
@@ -918,7 +981,7 @@ static int kona_icc_send_node_votes(struct kona_icc_provider *qp,
 				    bool *retry)
 {
 	int ret;
-	bool wait = (qp->nodes[index].role == KONA_ROLE_DISPLAY);
+	bool wait = false;
 
 	if (retry)
 		*retry = false;
@@ -961,6 +1024,40 @@ out_retry:
 		*retry = true;
 
 	return -EAGAIN;
+}
+
+static bool kona_icc_can_program(struct kona_icc_provider *qp, const char **reason)
+{
+	if (unlikely(READ_ONCE(qp->system_suspended))) {
+		if (reason)
+			*reason = "system-suspended";
+		return false;
+	}
+
+	if (unlikely(atomic_read(&qp->votes_paused))) {
+		if (reason)
+			*reason = "votes-paused";
+		return false;
+	}
+
+	if (reason)
+		*reason = "ready";
+
+	return true;
+}
+
+static void kona_icc_queue_replay(struct kona_icc_provider *qp, unsigned int delay_ms,
+				 const char *why)
+{
+	mod_delayed_work(system_wq, &qp->retry_work, msecs_to_jiffies(delay_ms));
+
+	if (kona_resume_debug)
+		dev_info_ratelimited(qp->provider.dev,
+			"kona-icc: replay queued (%s, %ums) deferred=%d replay=%d skips=%d\n",
+			why ?: "unknown", delay_ms,
+			atomic_read(&qp->deferred_votes),
+			atomic_read(&qp->replay_runs),
+			atomic_read(&qp->display_replay_skips));
 }
 
 
@@ -1018,16 +1115,33 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 		if (req_unset || req_zero) {
 			if (role != KONA_ROLE_DISPLAY || !apply_display_floor ||
 			    !qp->saved_ab || !qp->saved_ib ||
-			    qp->saved_ab[i] == U64_MAX || qp->saved_ib[i] == U64_MAX)
+			    qp->saved_ab[i] == U64_MAX || qp->saved_ib[i] == U64_MAX) {
+				if (role == KONA_ROLE_DISPLAY)
+					atomic_inc(&qp->display_replay_skips);
 				continue;
+			}
 
-			if (kona_resume_debug && req_zero)
-				dev_info_ratelimited(qp->provider.dev,
-					"kona-icc: replaying saved DISPLAY vote for %s during resume (req=0/0)\n",
-					qp->nodes[i].name);
+			if (qp->saved_ab && qp->saved_ib &&
+			    qp->saved_ab[i] != U64_MAX && qp->saved_ib[i] != U64_MAX) {
+				if (kona_resume_debug && req_zero)
+					dev_info_ratelimited(qp->provider.dev,
+						"kona-icc: replaying saved DISPLAY vote for %s during resume (req=0/0)\n",
+						qp->nodes[i].name);
 
-			ab = qp->saved_ab[i];
-			ib = qp->saved_ib[i];
+				ab = qp->saved_ab[i];
+				ib = qp->saved_ib[i];
+			} else if (kona_display_bootstrap_floor_enable && qp->resume_phase == 0 &&
+				   kona_icc_is_display_critical_id(qp->nodes[i].id)) {
+				ab = (u64)kona_display_resume_floor_ab_kBps;
+				ib = (u64)kona_display_resume_floor_ib_kBps;
+				if (kona_resume_debug)
+					dev_info_ratelimited(qp->provider.dev,
+						"kona-icc: bootstrap DISPLAY floor for %s (missing saved/requested vote) ab=%llu ib=%llu\n",
+						qp->nodes[i].name, ab, ib);
+			} else {
+				atomic_inc(&qp->display_replay_skips);
+				continue;
+			}
 		} else {
 			if (ab == U64_MAX)
 				ab = 0;
@@ -1111,6 +1225,7 @@ static void kona_icc_retry_workfn(struct work_struct *work)
 						    struct kona_icc_provider,
 						    retry_work);
 	bool need_retry = false;
+	const char *reason;
 
 	if (!qp->req_ab || !qp->req_ib)
 		return;
@@ -1123,19 +1238,17 @@ static void kona_icc_retry_workfn(struct work_struct *work)
 	 * permanently drop the replay. Reschedule and try again once resume()
 	 * unpauses voting.
 	 */
-	if (unlikely(READ_ONCE(qp->system_suspended)))
-		return;
-	if (unlikely(atomic_read(&qp->votes_paused))) {
+	if (!kona_icc_can_program(qp, &reason)) {
 		if (qp->req_ab && qp->req_ib)
-			schedule_delayed_work(&qp->retry_work, msecs_to_jiffies(50));
+			kona_icc_queue_replay(qp, 50, reason);
 		return;
 	}
 
+	atomic_inc(&qp->replay_runs);
 	need_retry = kona_icc_replay_req_votes_phased(qp);
 
 	if (need_retry)
-		schedule_delayed_work(&qp->retry_work,
-				     msecs_to_jiffies(KONA_RETRY_DELAY_MS));
+		kona_icc_queue_replay(qp, KONA_RETRY_DELAY_MS, "provider-not-ready");
 }
 
 static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
@@ -1263,28 +1376,35 @@ skip_perf_floor:
 	 * vote to be active before continuing; fully deferring votes can cause
 	 * black-screen / stuck-resume symptoms when the fabric stays at 0/0.
 	 */
-	if (unlikely(READ_ONCE(qp->system_suspended) || atomic_read(&qp->votes_paused))) {
-		/*
-		 * During suspend/resume windows RPMh ACTIVE_ONLY writes may be unsafe or
-		 * transiently blocked. Keep cached requests updated and replay later, but
-		 * do not fail consumers (e.g. devbw/SDE) on transient -EAGAIN windows.
-		 */
-		if (!READ_ONCE(qp->system_suspended) && (ab || ib))
-			schedule_delayed_work(&qp->retry_work, 0);
+	{
+		const char *reason;
 
-		if (kona_resume_debug && (ab || ib))
-			dev_info_ratelimited(qp->provider.dev,
-				"kona-icc: defer %s vote while paused/suspended: ab=%llu ib=%llu\n",
-				qp->nodes[index].name, ab, ib);
+		if (!kona_icc_can_program(qp, &reason)) {
+			/*
+			 * During suspend/resume windows RPMh ACTIVE_ONLY writes may be unsafe or
+			 * transiently blocked. Keep cached requests updated and replay later, but
+			 * do not fail consumers (e.g. devbw/SDE) on transient -EAGAIN windows.
+			 */
+			if (!READ_ONCE(qp->system_suspended) && (ab || ib))
+				kona_icc_queue_replay(qp, 0, reason);
 
-		return 0;
-	} else {
+			atomic_inc(&qp->deferred_votes);
+
+			if (kona_resume_debug && (ab || ib))
+				dev_info_ratelimited(qp->provider.dev,
+					"kona-icc: deferred vote node=%s reason=%s ab=%llu ib=%llu\n",
+					qp->nodes[index].name, reason, ab, ib);
+
+			return 0;
+		}
+	}
+
+	{
 		bool retry = false;
 		int ret = kona_icc_send_node_votes(qp, index, ab, ib, &retry);
 
 		if (ret == -EAGAIN || retry)
-			schedule_delayed_work(&qp->retry_work,
-					      msecs_to_jiffies(KONA_RETRY_DELAY_MS));
+			kona_icc_queue_replay(qp, KONA_RETRY_DELAY_MS, "send-eagain");
 		else if (ret)
 			return ret;
 	}
@@ -1449,7 +1569,7 @@ static void kona_icc_invalidate_cache(struct kona_icc_provider *qp)
 		atomic_set(&qp->votes_paused, 1);
 	/* Ensure no stale vote replays fire during suspend_noirq. */
 	if (qp)
-		cancel_delayed_work_sync(&qp->retry_work);
+		cancel_delayed_work(&qp->retry_work);
 
 	if (kona_resume_debug && qp)
 		dev_info(dev, "kona-icc: votes paused (suspend_noirq)\n");
@@ -1467,6 +1587,8 @@ static int kona_icc_resume_noirq(struct device *dev)
 	 */
 	if (qp)
 		atomic_set(&qp->votes_paused, 1);
+	if (qp)
+		cancel_delayed_work(&qp->retry_work);
 
 	if (kona_resume_debug && qp)
 		dev_info(dev, "kona-icc: resume_noirq (still paused)\n");
@@ -1519,8 +1641,7 @@ static int kona_icc_resume(struct device *dev)
 	if (qp) {
 		qp->resume_jiffies = jiffies;
 		qp->resume_phase = 0;
-		schedule_delayed_work(&qp->retry_work,
-				      msecs_to_jiffies(KONA_RESUME_PHASE0_DELAY_MS));
+		kona_icc_queue_replay(qp, KONA_RESUME_PHASE0_DELAY_MS, "resume-phase0");
 	}
 
 	return 0;
@@ -1596,6 +1717,9 @@ static int kona_icc_probe(struct platform_device *pdev)
 
 
 	INIT_DELAYED_WORK(&qp->retry_work, kona_icc_retry_workfn);
+	atomic_set(&qp->deferred_votes, 0);
+	atomic_set(&qp->replay_runs, 0);
+	atomic_set(&qp->display_replay_skips, 0);
 
 	for (i = 0; i < qp->num_nodes; i++) {
 		qp->last_ab[i] = U64_MAX;
@@ -1613,6 +1737,10 @@ static int kona_icc_probe(struct platform_device *pdev)
         qp->provider.release = kona_icc_release;
 
 	platform_set_drvdata(pdev, qp);
+
+	ret = kona_icc_validate_display_nodes(qp);
+	if (ret)
+		return ret;
 
 	ret = icc_provider_register(&qp->provider);
         if (ret)
