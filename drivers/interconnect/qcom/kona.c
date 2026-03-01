@@ -121,6 +121,31 @@ module_param_named(kona_display_resume_hold_ms, kona_display_resume_hold_ms, uin
 MODULE_PARM_DESC(kona_display_resume_hold_ms,
 	"Hold a small DISPLAY non-zero vote for N ms after resume to avoid early collapse");
 
+static bool kona_display_nonzero_floor_enable = true;
+module_param_named(kona_display_nonzero_floor_enable, kona_display_nonzero_floor_enable, bool, 0644);
+MODULE_PARM_DESC(kona_display_nonzero_floor_enable,
+	"Force non-zero fallback floor for DISPLAY paths when clients request 0/0");
+
+static unsigned int kona_display_nonzero_floor_ab_kBps = 80000; /* 80 MB/s */
+module_param_named(kona_display_nonzero_floor_ab_kBps, kona_display_nonzero_floor_ab_kBps, uint, 0644);
+MODULE_PARM_DESC(kona_display_nonzero_floor_ab_kBps,
+	"Fallback DISPLAY floor average BW (kB/s) when a 0/0 vote is requested");
+
+static unsigned int kona_display_nonzero_floor_ib_kBps = 160000; /* 160 MB/s */
+module_param_named(kona_display_nonzero_floor_ib_kBps, kona_display_nonzero_floor_ib_kBps, uint, 0644);
+MODULE_PARM_DESC(kona_display_nonzero_floor_ib_kBps,
+	"Fallback DISPLAY floor peak BW (kB/s) when a 0/0 vote is requested");
+
+static unsigned int kona_display_cfg_nonzero_floor_ab_kBps = 120000; /* 120 MB/s */
+module_param_named(kona_display_cfg_nonzero_floor_ab_kBps, kona_display_cfg_nonzero_floor_ab_kBps, uint, 0644);
+MODULE_PARM_DESC(kona_display_cfg_nonzero_floor_ab_kBps,
+	"Fallback DISPLAY config-path floor average BW (kB/s) for 0/0 votes");
+
+static unsigned int kona_display_cfg_nonzero_floor_ib_kBps = 240000; /* 240 MB/s */
+module_param_named(kona_display_cfg_nonzero_floor_ib_kBps, kona_display_cfg_nonzero_floor_ib_kBps, uint, 0644);
+MODULE_PARM_DESC(kona_display_cfg_nonzero_floor_ib_kBps,
+	"Fallback DISPLAY config-path floor peak BW (kB/s) for 0/0 votes");
+
 static bool kona_display_bootstrap_floor_enable = true;
 module_param_named(kona_display_bootstrap_floor_enable, kona_display_bootstrap_floor_enable, bool, 0644);
 MODULE_PARM_DESC(kona_display_bootstrap_floor_enable,
@@ -867,6 +892,39 @@ static bool kona_icc_is_display_critical_id(u32 id)
 	}
 }
 
+static bool kona_icc_is_display_cfg_id(u32 id)
+{
+	switch (id) {
+	case KONA_ICC_DISP_CFG:
+	case KONA_ICC_VIDEO_CFG:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static void kona_icc_get_display_nonzero_floor(u32 id, u64 *ab, u64 *ib)
+{
+	u64 floor_ab, floor_ib;
+
+	if (kona_icc_is_display_cfg_id(id)) {
+		floor_ab = (u64)kona_display_cfg_nonzero_floor_ab_kBps;
+		floor_ib = (u64)kona_display_cfg_nonzero_floor_ib_kBps;
+	} else {
+		floor_ab = (u64)kona_display_nonzero_floor_ab_kBps;
+		floor_ib = (u64)kona_display_nonzero_floor_ib_kBps;
+	}
+
+	/* Keep IB at least 2x AB to avoid cnoc/config-path bring-up stalls. */
+	if (floor_ab && !floor_ib)
+		floor_ib = floor_ab * 2;
+	else if (floor_ab && floor_ib < floor_ab * 2)
+		floor_ib = floor_ab * 2;
+
+	*ab = floor_ab;
+	*ib = floor_ib;
+}
+
 static int kona_icc_validate_display_nodes(struct kona_icc_provider *qp)
 {
 	static const u32 required_ids[] = {
@@ -1119,15 +1177,30 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 		 * For DISPLAY resume, prefer the last known non-zero vote if we have one.
 		 */
 		if (req_unset || req_zero) {
+			bool used_fallback_floor = false;
+
 			if (role != KONA_ROLE_DISPLAY || !apply_display_floor ||
 			    !qp->saved_ab || !qp->saved_ib ||
 			    qp->saved_ab[i] == U64_MAX || qp->saved_ib[i] == U64_MAX) {
-				if (role == KONA_ROLE_DISPLAY)
-					atomic_inc(&qp->display_replay_skips);
-				continue;
+				if (role == KONA_ROLE_DISPLAY && apply_display_floor &&
+				    kona_display_nonzero_floor_enable) {
+					kona_icc_get_display_nonzero_floor(qp->nodes[i].id,
+								   &ab, &ib);
+					used_fallback_floor = true;
+					if (kona_resume_debug)
+						dev_info_ratelimited(qp->provider.dev,
+							"kona-icc: replaying fallback DISPLAY floor for %s (req=%s) ab=%llu ib=%llu\n",
+							qp->nodes[i].name,
+							req_unset ? "unset" : "0/0",
+							ab, ib);
+				} else {
+					if (role == KONA_ROLE_DISPLAY)
+						atomic_inc(&qp->display_replay_skips);
+					continue;
+				}
 			}
 
-			if (qp->saved_ab && qp->saved_ib &&
+			if (!used_fallback_floor && qp->saved_ab && qp->saved_ib &&
 			    qp->saved_ab[i] != U64_MAX && qp->saved_ib[i] != U64_MAX) {
 				if (kona_resume_debug && req_zero)
 					dev_info_ratelimited(qp->provider.dev,
@@ -1136,7 +1209,8 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 
 				ab = qp->saved_ab[i];
 				ib = qp->saved_ib[i];
-			} else if (kona_display_bootstrap_floor_enable && qp->resume_phase == 0 &&
+			} else if (!used_fallback_floor && kona_display_bootstrap_floor_enable &&
+				   qp->resume_phase == 0 &&
 				   kona_icc_is_display_critical_id(qp->nodes[i].id)) {
 				ab = (u64)kona_display_resume_floor_ab_kBps;
 				ib = (u64)kona_display_resume_floor_ib_kBps;
@@ -1144,7 +1218,7 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 					dev_info_ratelimited(qp->provider.dev,
 						"kona-icc: bootstrap DISPLAY floor for %s (missing saved/requested vote) ab=%llu ib=%llu\n",
 						qp->nodes[i].name, ab, ib);
-			} else {
+			} else if (!used_fallback_floor) {
 				atomic_inc(&qp->display_replay_skips);
 				continue;
 			}
@@ -1354,6 +1428,19 @@ skip_perf_floor:
 		if (kona_resume_debug)
 			dev_info_ratelimited(qp->provider.dev,
 				"kona-icc: hold DISPLAY vote for %s during resume grace: ab=%llu ib=%llu\n",
+				qp->nodes[index].name, ab, ib);
+	}
+
+	/*
+	 * Hard non-zero fallback for DISPLAY paths: avoid 0/0 collapse on ddr and
+	 * config-path links where panel/SDE/dispcc sequences can stall.
+	 */
+	if (qp->nodes[index].role == KONA_ROLE_DISPLAY && !ab && !ib &&
+	    kona_display_nonzero_floor_enable && !READ_ONCE(qp->system_suspended)) {
+		kona_icc_get_display_nonzero_floor(qp->nodes[index].id, &ab, &ib);
+		if (kona_resume_debug)
+			dev_info_ratelimited(qp->provider.dev,
+				"kona-icc: fallback non-zero DISPLAY floor for %s: ab=%llu ib=%llu\n",
 				qp->nodes[index].name, ab, ib);
 	}
 
