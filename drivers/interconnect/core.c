@@ -277,6 +277,15 @@ int icc_set_bw(struct icc_path *path, u32 avg_bw, u32 peak_bw)
         if (!need_reapply && prev_avg == avg_bw && prev_peak == peak_bw)
                 return 0;
 
+        /*
+         * Keep zero-bandwidth paths in the fast path after resume. There is
+         * no vote to restore, so avoid an unnecessary provider callback.
+         */
+        if (need_reapply && !avg_bw && !peak_bw && !prev_avg && !prev_peak) {
+                path->resume_seq = seq;
+                return 0;
+        }
+
         path->avg_bw = avg_bw;
         path->peak_bw = peak_bw;
         path->resume_seq = seq;
