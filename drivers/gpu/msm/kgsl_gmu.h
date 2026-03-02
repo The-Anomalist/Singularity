@@ -164,6 +164,9 @@ struct kgsl_mailbox {
  * @num_cnocbwlevel: number CNOC BW levels
  * @icc_paths: optional ICC paths used for early GMU bootstrap votes
  * @num_icc_paths: number of valid ICC paths in @icc_paths
+ * @num_icc_bwlevels: entries available in GMU ICC BW level tables
+ * @icc_ab_mbytes: optional AB vote table (MB/s) for GMU ICC levels
+ * @icc_ib_mbytes: optional IB vote table (MB/s) for GMU ICC levels
  * @gpu_bus_scale_table: msm_bus table used to map legacy indices to bw
  * @rpmh_votes: RPMh TCS command set for GPU, GMU voltage and bw scaling
  * @cx_gdsc: CX headswitch that controls power of GMU and
@@ -203,6 +206,9 @@ struct gmu_device {
 	unsigned int num_cnocbwlevels;
 	struct icc_path *icc_paths[2];
 	unsigned int num_icc_paths;
+	unsigned int num_icc_bwlevels;
+	u32 *icc_ab_mbytes;
+	u32 *icc_ib_mbytes;
 	struct msm_bus_scale_pdata *gpu_bus_scale_table;
 	struct rpmh_votes_t rpmh_votes;
 	struct regulator *cx_gdsc;

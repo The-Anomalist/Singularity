@@ -79,6 +79,59 @@ static unsigned int next_uncached_user_alloc;
 static void gmu_snapshot(struct kgsl_device *device);
 static void gmu_remove(struct kgsl_device *device);
 
+static int gmu_icc_bw_table_init(struct gmu_device *gmu,
+			 const char *ab_prop, const char *ib_prop)
+{
+	struct device *dev = &gmu->pdev->dev;
+	int ab_count, ib_count;
+	u32 *ab, *ib;
+	int ret;
+	unsigned int i;
+
+	gmu->num_icc_bwlevels = 0;
+	gmu->icc_ab_mbytes = NULL;
+	gmu->icc_ib_mbytes = NULL;
+
+	ab_count = of_property_count_u32_elems(dev->of_node, ab_prop);
+	ib_count = of_property_count_u32_elems(dev->of_node, ib_prop);
+	if (ab_count <= 0 && ib_count <= 0)
+		return 0;
+
+	if (ab_count <= 0 || ib_count <= 0 || ab_count != ib_count) {
+		dev_warn(dev,
+			"Mismatched GMU ICC BW table properties (%s=%d, %s=%d), ignoring DT table\n",
+			ab_prop, ab_count, ib_prop, ib_count);
+		return -EINVAL;
+	}
+
+	ab = devm_kcalloc(dev, ab_count, sizeof(*ab), GFP_KERNEL);
+	ib = devm_kcalloc(dev, ib_count, sizeof(*ib), GFP_KERNEL);
+	if (!ab || !ib)
+		return -ENOMEM;
+
+	ret = of_property_read_u32_array(dev->of_node, ab_prop, ab, ab_count);
+	if (ret)
+		return ret;
+
+	ret = of_property_read_u32_array(dev->of_node, ib_prop, ib, ib_count);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < ab_count; i++) {
+		ab[i] = div_u64((u64)ab[i], 1000ULL);
+		ib[i] = div_u64((u64)ib[i], 1000ULL);
+	}
+
+	gmu->icc_ab_mbytes = ab;
+	gmu->icc_ib_mbytes = ib;
+	gmu->num_icc_bwlevels = ab_count;
+
+	dev_info(dev, "Loaded %u GMU ICC BW levels from DT (%s/%s)\n",
+		gmu->num_icc_bwlevels, ab_prop, ib_prop);
+
+	return 0;
+}
+
 unsigned int gmu_get_memtype_base(struct gmu_device *gmu,
 		enum gmu_mem_type type)
 {
@@ -848,6 +901,22 @@ static int gmu_icc_set_vote(struct gmu_device *gmu, unsigned int level)
 	if (!gmu->num_icc_paths)
 		return 0;
 
+	if (gmu->num_icc_bwlevels) {
+		unsigned int idx = min_t(unsigned int, level,
+				gmu->num_icc_bwlevels - 1);
+
+		avg_bw = gmu->icc_ab_mbytes[idx];
+		peak_bw = gmu->icc_ib_mbytes[idx];
+
+		for (i = 0; i < gmu->num_icc_paths; i++) {
+			ret = icc_set_bw(gmu->icc_paths[i], avg_bw, peak_bw);
+			if (ret)
+				return ret;
+		}
+
+		return 0;
+	}
+
 	if (!gmu->gpu_bus_scale_table ||
 		level >= gmu->gpu_bus_scale_table->num_usecases)
 		return -EINVAL;
@@ -980,6 +1049,13 @@ static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
 	struct rpmh_votes_t *votes = &gmu->rpmh_votes;
 	unsigned int max_usecases;
 	int ret;
+	struct device *dev = &gmu->pdev->dev;
+
+	if (!gmu->pcl) {
+		dev_err(dev,
+			"GPU msm_bus client missing - cannot build GMU RPMh BW tables\n");
+		return -ENODEV;
+	}
 
 	max_usecases = max(gmu->num_bwlevels, gmu->num_cnocbwlevels);
 	usecases  = kcalloc(max_usecases, sizeof(*usecases), GFP_KERNEL);
@@ -1181,14 +1257,18 @@ static int gmu_gpu_bw_probe(struct kgsl_device *device, struct gmu_device *gmu)
 			"Failed probing GMU ICC paths (%d), using msm_bus fallback\n",
 			ret);
 
+	ret = gmu_icc_bw_table_init(gmu,
+		"qcom,gmu-icc-bw-avg-kbps",
+		"qcom,gmu-icc-bw-peak-kbps");
+	if (ret == -ENOMEM)
+		return ret;
+
+	if (gmu->num_icc_bwlevels && !gmu->num_icc_paths)
+		dev_warn(&gmu->pdev->dev,
+			"Ignoring GMU ICC BW table because no ICC paths were attached\n");
+
 	gmu->pcl = msm_bus_scale_register_client(bus_scale_table);
 	if (!gmu->pcl) {
-		if (gmu->num_icc_paths) {
-			dev_warn(&gmu->pdev->dev,
-				"dt: cannot register bus client, continuing with ICC votes only\n");
-			return 0;
-		}
-
 		dev_err(&gmu->pdev->dev, "dt: cannot register bus client\n");
 		return -ENODEV;
 	}

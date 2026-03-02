@@ -70,6 +70,60 @@ static void kgsl_pwrctrl_set_state(struct kgsl_device *device,
 static void kgsl_pwrctrl_request_state(struct kgsl_device *device,
 				unsigned int state);
 static int _isense_clk_set_rate(struct kgsl_pwrctrl *pwr, int level);
+
+static int kgsl_icc_bw_table_init(struct device *dev,
+			 const char *ab_prop, const char *ib_prop,
+			 u32 **ab_tbl, u32 **ib_tbl, unsigned int *num_levels)
+{
+	int ab_count, ib_count;
+	u32 *ab, *ib;
+	int ret;
+	unsigned int i;
+
+	*num_levels = 0;
+	*ab_tbl = NULL;
+	*ib_tbl = NULL;
+
+	ab_count = of_property_count_u32_elems(dev->of_node, ab_prop);
+	ib_count = of_property_count_u32_elems(dev->of_node, ib_prop);
+	if (ab_count <= 0 && ib_count <= 0)
+		return 0;
+
+	if (ab_count <= 0 || ib_count <= 0 || ab_count != ib_count) {
+		dev_warn(dev,
+			"Mismatched ICC BW table properties (%s=%d, %s=%d), ignoring DT table\n",
+			ab_prop, ab_count, ib_prop, ib_count);
+		return -EINVAL;
+	}
+
+	ab = devm_kcalloc(dev, ab_count, sizeof(*ab), GFP_KERNEL);
+	ib = devm_kcalloc(dev, ib_count, sizeof(*ib), GFP_KERNEL);
+	if (!ab || !ib)
+		return -ENOMEM;
+
+	ret = of_property_read_u32_array(dev->of_node, ab_prop, ab, ab_count);
+	if (ret)
+		return ret;
+
+	ret = of_property_read_u32_array(dev->of_node, ib_prop, ib, ib_count);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < ab_count; i++) {
+		ab[i] = div_u64((u64)ab[i], 1000ULL);
+		ib[i] = div_u64((u64)ib[i], 1000ULL);
+	}
+
+	*ab_tbl = ab;
+	*ib_tbl = ib;
+	*num_levels = ab_count;
+
+	dev_info(dev, "Loaded %u ICC BW levels from DT (%s/%s)\n",
+		*num_levels, ab_prop, ib_prop);
+
+	return 0;
+}
+
 static int kgsl_pwrctrl_clk_set_rate(struct clk *grp_clk, unsigned int freq,
 				const char *name);
 static void _gpu_clk_prepare_enable(struct kgsl_device *device,
@@ -253,19 +307,30 @@ int kgsl_pwrctrl_gpu_cfg_set(struct kgsl_device *device, unsigned int buslevel)
 	u32 avg_bw, peak_bw;
 	int ret;
 
-	if (pwr->gpu_cfg_icc_path && pwr->gpu_cfg_bus_scale_table) {
-		if (buslevel >= pwr->gpu_cfg_bus_scale_table->num_usecases)
-			ret = -EINVAL;
-		else {
-			usecase = &pwr->gpu_cfg_bus_scale_table->usecase[buslevel];
-			vector = usecase->vectors;
-			if (!vector || !usecase->num_paths)
+	if (pwr->gpu_cfg_icc_path) {
+		if (pwr->num_gpu_cfg_icc_bw_levels) {
+			unsigned int idx = min_t(unsigned int, buslevel,
+				pwr->num_gpu_cfg_icc_bw_levels - 1);
+
+			avg_bw = pwr->gpu_cfg_icc_ab_mbytes[idx];
+			peak_bw = pwr->gpu_cfg_icc_ib_mbytes[idx];
+			ret = icc_set_bw(pwr->gpu_cfg_icc_path, avg_bw, peak_bw);
+		} else if (pwr->gpu_cfg_bus_scale_table) {
+			if (buslevel >= pwr->gpu_cfg_bus_scale_table->num_usecases)
 				ret = -EINVAL;
 			else {
-				avg_bw = div_u64((u64)vector[0].ab, 1000ULL);
-				peak_bw = div_u64((u64)vector[0].ib, 1000ULL);
-				ret = icc_set_bw(pwr->gpu_cfg_icc_path, avg_bw, peak_bw);
+				usecase = &pwr->gpu_cfg_bus_scale_table->usecase[buslevel];
+				vector = usecase->vectors;
+				if (!vector || !usecase->num_paths)
+					ret = -EINVAL;
+				else {
+					avg_bw = div_u64((u64)vector[0].ab, 1000ULL);
+					peak_bw = div_u64((u64)vector[0].ib, 1000ULL);
+					ret = icc_set_bw(pwr->gpu_cfg_icc_path, avg_bw, peak_bw);
+				}
 			}
+		} else {
+			ret = -EINVAL;
 		}
 
 		if (!ret)
@@ -300,25 +365,38 @@ static int kgsl_bus_scale_request(struct kgsl_device *device,
 	/* GMU scales BW */
 	if (gmu_core_scales_bandwidth(device))
 		ret = gmu_core_dcvs_set(device, INVALID_DCVS_IDX, buslevel);
-	else if (pwr->num_icc_paths && pwr->bus_scale_table) {
-		if (buslevel >= pwr->bus_scale_table->num_usecases)
-			ret = -EINVAL;
-		else {
-			usecase = &pwr->bus_scale_table->usecase[buslevel];
-			vectors = usecase->vectors;
+	else if (pwr->num_icc_paths) {
+		if (pwr->num_icc_bw_levels) {
+			unsigned int idx = min_t(unsigned int, buslevel,
+				pwr->num_icc_bw_levels - 1);
 
-			if (!vectors || !usecase->num_paths)
+			avg_bw = pwr->icc_ab_mbytes[idx];
+			peak_bw = pwr->icc_ib_mbytes[idx];
+
+			for (i = 0; !ret && i < pwr->num_icc_paths; i++)
+				ret = icc_set_bw(pwr->icc_paths[i], avg_bw, peak_bw);
+		} else if (pwr->bus_scale_table) {
+			if (buslevel >= pwr->bus_scale_table->num_usecases)
 				ret = -EINVAL;
-		}
+			else {
+				usecase = &pwr->bus_scale_table->usecase[buslevel];
+				vectors = usecase->vectors;
 
-		for (i = 0; !ret && i < pwr->num_icc_paths; i++) {
-			unsigned int vec_idx = min_t(unsigned int, i,
-						    usecase->num_paths - 1);
+				if (!vectors || !usecase->num_paths)
+					ret = -EINVAL;
+			}
 
-			avg_bw = div_u64((u64)vectors[vec_idx].ab, 1000ULL);
-			peak_bw = div_u64((u64)vectors[vec_idx].ib, 1000ULL);
+			for (i = 0; !ret && i < pwr->num_icc_paths; i++) {
+				unsigned int vec_idx = min_t(unsigned int, i,
+							    usecase->num_paths - 1);
 
-			ret = icc_set_bw(pwr->icc_paths[i], avg_bw, peak_bw);
+				avg_bw = div_u64((u64)vectors[vec_idx].ab, 1000ULL);
+				peak_bw = div_u64((u64)vectors[vec_idx].ib, 1000ULL);
+
+				ret = icc_set_bw(pwr->icc_paths[i], avg_bw, peak_bw);
+			}
+		} else {
+			ret = -EINVAL;
 		}
 
 		if (ret)
@@ -2496,6 +2574,24 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 	pm_runtime_enable(&pdev->dev);
 
 	kgsl_pwrctrl_icc_init(device);
+
+	result = kgsl_icc_bw_table_init(device->dev,
+			"qcom,gpu-icc-bw-avg-kbps",
+			"qcom,gpu-icc-bw-peak-kbps",
+			&pwr->icc_ab_mbytes,
+			&pwr->icc_ib_mbytes,
+			&pwr->num_icc_bw_levels);
+	if (result == -ENOMEM)
+		goto error_disable_pm;
+
+	result = kgsl_icc_bw_table_init(device->dev,
+			"qcom,gpu-cfg-icc-bw-avg-kbps",
+			"qcom,gpu-cfg-icc-bw-peak-kbps",
+			&pwr->gpu_cfg_icc_ab_mbytes,
+			&pwr->gpu_cfg_icc_ib_mbytes,
+			&pwr->num_gpu_cfg_icc_bw_levels);
+	if (result == -ENOMEM)
+		goto error_disable_pm;
 
 	pwr->gpu_cfg_icc_path = devm_of_icc_get(device->dev, "cpu-gpu-cfg");
 	if (IS_ERR(pwr->gpu_cfg_icc_path)) {

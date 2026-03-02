@@ -154,9 +154,15 @@ struct gpu_cx_ipeak_client {
  * @pcl - bus scale identifier
  * @gpu_cfg - CPU to GPU AHB path bus scale identifier
  * @gpu_cfg_icc_path - optional ICC path for CPU to GPU AHB votes
+ * @num_gpu_cfg_icc_bw_levels - entries available in gpu cfg ICC BW tables
+ * @gpu_cfg_icc_ab_mbytes - optional AB votes (MB/s) for gpu cfg ICC levels
+ * @gpu_cfg_icc_ib_mbytes - optional IB votes (MB/s) for gpu cfg ICC levels
  * @gpu_cfg_bus_scale_table - msm_bus table used to map cfg vote indices to bw
  * @icc_paths - optional ICC paths used for bus bandwidth votes
  * @num_icc_paths - number of valid ICC paths in @icc_paths
+ * @num_icc_bw_levels - entries available in main GPU ICC BW tables
+ * @icc_ab_mbytes - optional AB votes (MB/s) for main GPU ICC levels
+ * @icc_ib_mbytes - optional IB votes (MB/s) for main GPU ICC levels
  * @bus_scale_table - msm_bus table used to map legacy indices to bw
  * @irq_name - resource name for the IRQ
  * @clk_stats - structure of clock statistics
@@ -219,9 +225,15 @@ struct kgsl_pwrctrl {
 	uint32_t pcl;
 	uint32_t gpu_cfg;
 	struct icc_path *gpu_cfg_icc_path;
+	unsigned int num_gpu_cfg_icc_bw_levels;
+	u32 *gpu_cfg_icc_ab_mbytes;
+	u32 *gpu_cfg_icc_ib_mbytes;
 	struct msm_bus_scale_pdata *gpu_cfg_bus_scale_table;
 	struct icc_path *icc_paths[2];
 	unsigned int num_icc_paths;
+	unsigned int num_icc_bw_levels;
+	u32 *icc_ab_mbytes;
+	u32 *icc_ib_mbytes;
 	struct msm_bus_scale_pdata *bus_scale_table;
 	const char *irq_name;
 	struct kgsl_clk_stats clk_stats;
