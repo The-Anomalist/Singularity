@@ -68,6 +68,7 @@ struct kona_icc_provider {
 	atomic_t deferred_votes;
 	atomic_t replay_runs;
 	atomic_t display_replay_skips;
+	unsigned long *last_active_jiffies;
 	struct device **sysfs_nodes;
 	struct class *icc_class;
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
@@ -249,6 +250,9 @@ static unsigned long kona_npu_keepalive_ib_kb = 500000;   /* 500 MB/s */
 static bool kona_disp_keepalive_enable = true;
 static unsigned long kona_disp_keepalive_ab_kb = 200000;   /* 200 MB/s */
 static unsigned long kona_disp_keepalive_ib_kb = 400000;   /* 400 MB/s */
+static bool kona_keepalive_decay_enable = true;
+static unsigned int kona_keepalive_decay_window_ms = 300;
+static unsigned int kona_keepalive_decay_min_percent = 20;
 static unsigned int kona_gpu_ib_boost_percent = 145;
 static unsigned int kona_gpu_ib_min_ratio_percent = 180;
 static bool kona_gpu_llcc_turbo_enable = true;
@@ -292,6 +296,15 @@ MODULE_PARM_DESC(kona_disp_keepalive_ab_kb,
 module_param(kona_disp_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_disp_keepalive_ib_kb,
 	"display keepalive IB floor in KB/s (default: 400000)");
+module_param(kona_keepalive_decay_enable, bool, 0644);
+MODULE_PARM_DESC(kona_keepalive_decay_enable,
+	"linearly decay keepalive votes after the last active request (default: on)");
+module_param(kona_keepalive_decay_window_ms, uint, 0644);
+MODULE_PARM_DESC(kona_keepalive_decay_window_ms,
+	"keepalive decay window in ms before allowing full collapse (default: 300)");
+module_param(kona_keepalive_decay_min_percent, uint, 0644);
+MODULE_PARM_DESC(kona_keepalive_decay_min_percent,
+	"minimum keepalive strength percent while inside decay window (default: 20)");
 
 module_param(kona_gpu_ib_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_ib_boost_percent,
@@ -357,8 +370,12 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 	bool keepalive = false;
 	const struct kona_icc_node_desc *desc;
 	u64 keepalive_ab = 0, keepalive_ib = 0;
+	unsigned int decay_percent = 100;
 
 	if (!qp->last_ab || !qp->last_ib || *ab || *ib)
+		return false;
+
+	if (qp->last_ab[index] == U64_MAX || qp->last_ib[index] == U64_MAX)
 		return false;
 
 	if (!qp->last_ab[index] && !qp->last_ib[index])
@@ -403,6 +420,33 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 
 	if (!keepalive)
 		return false;
+
+	if (kona_keepalive_decay_enable && qp->last_active_jiffies) {
+		unsigned long active_j = READ_ONCE(qp->last_active_jiffies[index]);
+		u32 elapsed;
+		unsigned int floor_percent;
+
+		if (!active_j || !kona_keepalive_decay_window_ms)
+			return false;
+
+		/* Unsigned jiffies delta is wrap-safe for elapsed-time checks. */
+		elapsed = jiffies_to_msecs(jiffies - active_j);
+		if (elapsed >= kona_keepalive_decay_window_ms)
+			return false;
+
+		decay_percent = 100 -
+			mul_u64_u32_div((u64)elapsed, 100,
+					kona_keepalive_decay_window_ms);
+		floor_percent = min_t(unsigned int, kona_keepalive_decay_min_percent,
+				     100);
+		decay_percent = max(decay_percent, floor_percent);
+
+		keepalive_ab = mul_u64_u32_div(keepalive_ab, decay_percent, 100);
+		keepalive_ib = mul_u64_u32_div(keepalive_ib, decay_percent, 100);
+
+		if (!keepalive_ab && !keepalive_ib)
+			return false;
+	}
 
 	/*
 	 * Keepalive should be a bounded floor, not sticky reuse of the previous
@@ -1452,6 +1496,8 @@ skip_perf_floor:
 		qp->req_ab[index] = (u64)avg_bw;
 	if (qp->req_ib)
 		qp->req_ib[index] = (u64)peak_bw;
+	if (qp->last_active_jiffies && (avg_bw || peak_bw))
+		qp->last_active_jiffies[index] = jiffies;
 
 	/*
 	 * Track last-known non-zero DISPLAY votes so resume can re-assert
@@ -1816,6 +1862,11 @@ static int kona_icc_probe(struct platform_device *pdev)
 	qp->saved_ib = devm_kcalloc(&pdev->dev, qp->num_nodes, sizeof(u64),
 				  GFP_KERNEL);
 	if (!qp->saved_ib)
+		return -ENOMEM;
+
+	qp->last_active_jiffies = devm_kcalloc(&pdev->dev, qp->num_nodes,
+					      sizeof(unsigned long), GFP_KERNEL);
+	if (!qp->last_active_jiffies)
 		return -ENOMEM;
 
 
