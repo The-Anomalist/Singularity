@@ -30,6 +30,60 @@
 #include "reset.h"
 #include "vdd-level.h"
 
+/*
+ * Kona clock controllers may provide multiple interconnect specifiers.
+ * Historically we used devm_of_icc_get(dev, NULL) which returns the *first*
+ * specifier; after adding cfg-style clients, that ordering can change.
+ *
+ * Try common interconnect-names first so we bind to the intended path, and
+ * fall back to the first unnamed specifier (or msm_bus) if unavailable.
+ */
+static struct icc_path *kona_cc_get_icc_path(struct device *dev, const char *who)
+{
+	static const char * const try_names[] = {
+		"camcc",
+		"dispcc",
+		"videocc",
+		"cfg",
+		"cam-cfg",
+		"disp-cfg",
+		"video-cfg",
+		NULL, /* sentinel */
+	};
+	struct icc_path *path;
+	int i;
+
+	for (i = 0; try_names[i]; i++) {
+		path = devm_of_icc_get(dev, try_names[i]);
+		if (!IS_ERR(path))
+			return path;
+
+		/* If provider isn't ready yet, keep msm_bus fallback. */
+		if (PTR_ERR(path) == -EPROBE_DEFER) {
+			dev_dbg(dev,
+				"%s: %s ICC provider not ready (%s), using msm_bus fallback\n",
+				who, who, try_names[i]);
+			return NULL;
+		}
+	}
+
+	/* Fallback to the first specifier (legacy behavior). */
+	path = devm_of_icc_get(dev, NULL);
+	if (IS_ERR(path)) {
+		if (PTR_ERR(path) == -EPROBE_DEFER)
+			dev_dbg(dev,
+				"%s: ICC provider not ready (unnamed), using msm_bus fallback\n",
+				who);
+		else
+			dev_dbg(dev,
+				"%s: ICC unavailable (%ld), using msm_bus fallback\n",
+				who, PTR_ERR(path));
+		return NULL;
+	}
+
+	return path;
+}
+
 #define MSM_BUS_VECTOR(_src, _dst, _ab, _ib)	\
 {						\
 	.src = _src,				\
@@ -2774,15 +2828,15 @@ static int cam_cc_kona_probe(struct platform_device *pdev)
 		return PTR_ERR(vdd_mm.regulator[0]);
 	}
 
-	icc_path = devm_of_icc_get(&pdev->dev, NULL);
-	if (IS_ERR(icc_path)) {
-		icc_path = NULL;
-		camcc_bus_id = msm_bus_scale_register_client(&clk_debugfs_scale_table);
-		if (!camcc_bus_id) {
-			dev_err(&pdev->dev, "Unable to register for bw voting\n");
-			return -EPROBE_DEFER;
-		}
-	}
+	/* Always register msm_bus client as a fallback for bandwidth voting */
+	camcc_bus_id = msm_bus_scale_register_client(&clk_debugfs_scale_table);
+	if (!camcc_bus_id)
+		dev_warn(&pdev->dev, "msm_bus fallback bw voting unavailable\n");
+
+	icc_path = kona_cc_get_icc_path(&pdev->dev, "camcc");
+	if (icc_path && camcc_bus_id)
+		dev_info(&pdev->dev,
+			 "camcc: ICC path attached; msm_bus fallback kept for transient ICC deferrals\n");
 
 	for (i = 0; i < ARRAY_SIZE(cam_cc_kona_clocks); i++)
 		if (cam_cc_kona_clocks[i]) {

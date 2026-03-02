@@ -2572,6 +2572,8 @@
 		reg-names = "cc_base";
 		vdd_mx-supply = <&VDD_MX_LEVEL>;
 		vdd_mm-supply = <&VDD_MMCX_LEVEL>;
+		interconnects = <&kona_icc KONA_ICC_CAM_CFG>;
+		interconnect-names = "cam-cfg";
 		clock-names = "cfg_ahb_clk";
 		clocks = <&clock_gcc GCC_CAMERA_AHB_CLK>;
 		#clock-cells = <1>;
