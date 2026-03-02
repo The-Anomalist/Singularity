@@ -20,8 +20,8 @@
 		interconnects = <&kona_icc KONA_ICC_GPU_TO_LLCC>,
 				<&kona_icc KONA_ICC_GPU_TO_MEM>;
 		interconnect-names = "gpu-llcc", "gpu-ddr";
-		qcom,icc-min-avg-kbps = <1720000>;
-		qcom,icc-min-peak-kbps = <3440000>;
+		qcom,icc-min-avg-kbps = <2288000>;
+		qcom,icc-min-peak-kbps = <4576000>;
 		qcom,src-dst-ports = <26 512>;
 		operating-points-v2 = <&suspendable_ddr_bw_opp_table>;
 	};

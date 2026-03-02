@@ -783,3 +783,8 @@
 			<&kona_icc KONA_ICC_GMU_TO_MEM>;
 	interconnect-names = "gmu-llcc", "gmu-ddr";
 };
+
+&gpubw {
+	qcom,icc-min-avg-kbps = <2288000>;
+	qcom,icc-min-peak-kbps = <4576000>;
+};
