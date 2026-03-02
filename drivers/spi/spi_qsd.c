@@ -45,6 +45,7 @@
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
 #include <linux/ipc_logging.h>
+#include <linux/interconnect.h>
 #include "spi_qsd.h"
 
 #define SPI_MAX_BYTES_PER_WORD			(4)
@@ -301,11 +302,21 @@ static void msm_spi_clock_set(struct msm_spi *dd, int speed)
 
 static void msm_spi_clk_path_vote(struct msm_spi *dd, u32 rate)
 {
-	if (dd->bus_cl_hdl) {
-		u64 ib = rate * dd->pdata->bus_width;
+	u64 ib = rate * dd->pdata->bus_width;
+	int ret;
 
-		msm_bus_scale_update_bw(dd->bus_cl_hdl, 0, ib);
+	if (dd->use_icc && dd->icc_path) {
+		ret = icc_set_bw(dd->icc_path, 0, ib);
+		if (!ret)
+			return;
+
+		dev_warn(dd->dev,
+			 "ICC vote failed (%d), using msm_bus fallback\n",
+			 ret);
 	}
+
+	if (dd->bus_cl_hdl)
+		msm_bus_scale_update_bw(dd->bus_cl_hdl, 0, ib);
 }
 
 static void msm_spi_clk_path_teardown(struct msm_spi *dd)
@@ -349,6 +360,12 @@ static int msm_spi_clk_path_postponed_register(struct msm_spi *dd)
 
 static void msm_spi_clk_path_init(struct msm_spi *dd)
 {
+	/*
+	 * If ICC is available, prefer it and keep msm_bus as runtime fallback.
+	 */
+	if (dd->use_icc && dd->icc_path)
+		return;
+
 	/*
 	 * bail out if path voting is diabled (master_id == 0) or if it is
 	 * already registered (client_hdl != 0)
@@ -2530,6 +2547,30 @@ err_clk_get:
 	return rc;
 }
 
+static struct icc_path *msm_spi_get_icc_path(struct device *dev)
+{
+	static const char * const icc_names[] = {
+		"qup-ddr",
+		NULL,
+	};
+	struct icc_path *path;
+	int i;
+
+	for (i = 0; icc_names[i]; i++) {
+		path = devm_of_icc_get(dev, icc_names[i]);
+		if (!IS_ERR(path))
+			return path;
+		if (PTR_ERR(path) == -EPROBE_DEFER)
+			return ERR_PTR(-EPROBE_DEFER);
+	}
+
+	path = devm_of_icc_get(dev, NULL);
+	if (!IS_ERR(path))
+		return path;
+
+	return ERR_CAST(path);
+}
+
 static int msm_spi_probe(struct platform_device *pdev)
 {
 	struct spi_master      *master;
@@ -2606,6 +2647,21 @@ static int msm_spi_probe(struct platform_device *pdev)
 	dd->mem_phys_addr = resource->start;
 	dd->mem_size = resource_size(resource);
 	dd->dev = &pdev->dev;
+
+	dd->icc_path = msm_spi_get_icc_path(&pdev->dev);
+	if (!IS_ERR(dd->icc_path)) {
+		dd->use_icc = true;
+		dev_info(dd->dev, "Using ICC qup-ddr path for SPI/QUP voting\n");
+	} else {
+		rc = PTR_ERR(dd->icc_path);
+		dd->icc_path = NULL;
+		if (rc == -EPROBE_DEFER)
+			goto err_probe_res;
+		if (rc != -ENODATA && rc != -ENOENT)
+			dev_warn(dd->dev,
+				 "Failed to get ICC path: %d, using msm_bus fallback\n",
+				 rc);
+	}
 
 	if (pdata) {
 		master->rt = pdata->rt_priority;

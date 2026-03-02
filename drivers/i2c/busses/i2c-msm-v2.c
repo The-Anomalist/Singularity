@@ -30,6 +30,7 @@
 #include <linux/msm-sps.h>
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
+#include <linux/interconnect.h>
 #include <linux/i2c-msm-v2.h>
 
 #ifdef DEBUG
@@ -1554,7 +1555,23 @@ poll_active_end:
 
 static void i2c_msm_clk_path_vote(struct i2c_msm_ctrl *ctrl)
 {
+	u32 avg_bw = I2C_MSM_CLK_PATH_AVRG_BW(ctrl);
+	u32 peak_bw = I2C_MSM_CLK_PATH_BRST_BW(ctrl);
+
 	i2c_msm_clk_path_init(ctrl);
+
+	if (ctrl->rsrcs.clk_path_vote.use_icc &&
+	    ctrl->rsrcs.clk_path_vote.icc_path) {
+		int ret = icc_set_bw(ctrl->rsrcs.clk_path_vote.icc_path,
+				     avg_bw, peak_bw);
+
+		if (ret)
+			dev_warn(ctrl->dev,
+				 "ICC vote failed (%d), using msm_bus fallback\n",
+				 ret);
+		else
+			return;
+	}
 
 	if (ctrl->rsrcs.clk_path_vote.client_hdl)
 		msm_bus_scale_client_update_request(
@@ -1564,6 +1581,18 @@ static void i2c_msm_clk_path_vote(struct i2c_msm_ctrl *ctrl)
 
 static void i2c_msm_clk_path_unvote(struct i2c_msm_ctrl *ctrl)
 {
+	if (ctrl->rsrcs.clk_path_vote.use_icc &&
+	    ctrl->rsrcs.clk_path_vote.icc_path) {
+		int ret = icc_set_bw(ctrl->rsrcs.clk_path_vote.icc_path, 0, 0);
+
+		if (ret)
+			dev_warn(ctrl->dev,
+				 "ICC unvote failed (%d), using msm_bus fallback\n",
+				 ret);
+		else
+			return;
+	}
+
 	if (ctrl->rsrcs.clk_path_vote.client_hdl)
 		msm_bus_scale_client_update_request(
 					ctrl->rsrcs.clk_path_vote.client_hdl,
@@ -1687,6 +1716,38 @@ static int i2c_msm_clk_path_postponed_register(struct i2c_msm_ctrl *ctrl)
 
 static void i2c_msm_clk_path_init(struct i2c_msm_ctrl *ctrl)
 {
+	if (!ctrl->rsrcs.clk_path_vote.use_icc &&
+	    !ctrl->rsrcs.clk_path_vote.icc_path) {
+		ctrl->rsrcs.clk_path_vote.icc_path =
+			devm_of_icc_get(ctrl->dev, "qup-ddr");
+		if (!IS_ERR(ctrl->rsrcs.clk_path_vote.icc_path)) {
+			ctrl->rsrcs.clk_path_vote.use_icc = true;
+			dev_dbg(ctrl->dev,
+				"Using ICC qup-ddr path for clock path voting\n");
+			return;
+		}
+
+		if (PTR_ERR(ctrl->rsrcs.clk_path_vote.icc_path) == -EPROBE_DEFER) {
+			ctrl->rsrcs.clk_path_vote.icc_path = NULL;
+			return;
+		}
+
+		ctrl->rsrcs.clk_path_vote.icc_path = devm_of_icc_get(ctrl->dev, NULL);
+		if (!IS_ERR(ctrl->rsrcs.clk_path_vote.icc_path)) {
+			ctrl->rsrcs.clk_path_vote.use_icc = true;
+			dev_dbg(ctrl->dev,
+				"Using unnamed ICC path for clock path voting\n");
+			return;
+		}
+
+		if (PTR_ERR(ctrl->rsrcs.clk_path_vote.icc_path) == -EPROBE_DEFER) {
+			ctrl->rsrcs.clk_path_vote.icc_path = NULL;
+			return;
+		}
+
+		ctrl->rsrcs.clk_path_vote.icc_path = NULL;
+	}
+
 	/*
 	 * bail out if path voting is diabled (master_id == 0) or if it is
 	 * already registered (client_hdl != 0)

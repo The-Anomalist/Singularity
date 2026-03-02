@@ -16,6 +16,8 @@
 #define _SPI_QSD_H
 
 #include <linux/pinctrl/consumer.h>
+
+struct icc_path;
 #define SPI_DRV_NAME                  "spi_qsd"
 
 #if IS_ENABLED(CONFIG_SPI_QSD) || IS_ENABLED(CONFIG_SPI_QSD_MODULE)
@@ -303,6 +305,8 @@ struct msm_spi {
 	struct clk              *clk;    /* core clock */
 	struct clk              *pclk;   /* interface clock */
 	struct msm_bus_client_handle *bus_cl_hdl;
+	struct icc_path		*icc_path;
+	bool			 use_icc;
 	unsigned long            mem_phys_addr;
 	size_t                   mem_size;
 	void			*ipc_logs; /* ipc logs handler */

@@ -13,6 +13,8 @@
 #include <linux/bitops.h>
 #include <linux/dmaengine.h>
 
+struct icc_path;
+
 enum msm_i2_debug_level {
 	MSM_ERR,	/* Error messages only. Always on */
 	MSM_PROF,	/* High level events. Use for profiling */
@@ -437,6 +439,8 @@ struct i2c_msm_dbgfs {
 struct qup_i2c_clk_path_vote {
 	u32                         mstr_id;
 	u32                         client_hdl;
+	struct icc_path             *icc_path;
+	bool                        use_icc;
 	struct msm_bus_scale_pdata *pdata;
 	bool                        reg_err;
 	bool                        actv_only;

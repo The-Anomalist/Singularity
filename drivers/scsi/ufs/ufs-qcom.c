@@ -1269,7 +1269,8 @@ static int ufs_qcom_bus_register(struct ufs_qcom_host *host)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct device_node *np = dev->of_node;
 	int num_icc_paths, i;
-	static const char * const icc_names[UFS_QCOM_MAX_ICC_PATHS] = {
+	const char *icc_name;
+	static const char * const fallback_icc_names[UFS_QCOM_MAX_ICC_PATHS] = {
 		"ufs-llcc", "ufs-ddr"
 	};
 
@@ -1284,15 +1285,31 @@ static int ufs_qcom_bus_register(struct ufs_qcom_host *host)
 			host->num_icc_paths = num_icc_paths;
 			host->use_icc = true;
 			for (i = 0; i < num_icc_paths; i++) {
-				host->icc_paths[i] = devm_of_icc_get(dev,
-						num_icc_paths > 1 ? icc_names[i] : NULL);
+				icc_name = NULL;
+				if (of_find_property(np, "interconnect-names", NULL) &&
+				    !of_property_read_string_index(np,
+				    "interconnect-names", i, &icc_name))
+					host->icc_paths[i] = devm_of_icc_get(dev, icc_name);
+				else if (num_icc_paths > 1)
+					host->icc_paths[i] = devm_of_icc_get(dev,
+						fallback_icc_names[i]);
+				else
+					host->icc_paths[i] = devm_of_icc_get(dev,
+						fallback_icc_names[1]);
+
 				if (IS_ERR(host->icc_paths[i])) {
 					err = PTR_ERR(host->icc_paths[i]);
+					if (num_icc_paths == 1 && !icc_name)
+						host->icc_paths[i] = devm_of_icc_get(dev, NULL);
+
+					if (!IS_ERR(host->icc_paths[i]))
+						continue;
+
 					host->icc_paths[i] = NULL;
 					host->use_icc = false;
 					host->num_icc_paths = 0;
 					dev_warn(dev,
-						 "Failed to get UFS ICC path %d (%d), using msm_bus fallback\n",
+					 "Failed to get UFS ICC path %d (%d), using msm_bus fallback\n",
 						 i, err);
 					break;
 				}

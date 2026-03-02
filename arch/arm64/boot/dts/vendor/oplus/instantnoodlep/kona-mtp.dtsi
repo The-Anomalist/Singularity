@@ -1,5 +1,6 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
+#include <dt-bindings/interconnect/qcom,kona.h>
 
 #include "kona-pmic-overlay.dtsi"
 #include "kona-sde-display.dtsi"
@@ -81,6 +82,10 @@
 };
 
 &ufshc_mem {
+	interconnects = <&kona_icc KONA_ICC_UFS_TO_LLCC>,
+			<&kona_icc KONA_ICC_UFS_TO_MEM>;
+	interconnect-names = "ufs-llcc", "ufs-ddr";
+
 	vdd-hba-supply = <&ufs_phy_gdsc>;
 	vdd-hba-fixed-regulator;
 	vcc-supply = <&pm8150_l17>;
