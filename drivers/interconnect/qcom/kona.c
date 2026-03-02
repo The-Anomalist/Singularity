@@ -97,10 +97,10 @@ static bool kona_resume_debug;
 module_param_named(kona_resume_debug, kona_resume_debug, bool, 0644);
 MODULE_PARM_DESC(kona_resume_debug, "Enable Kona ICC suspend/resume deferral debug");
 
-static bool kona_perf_floor_enable;
+static bool kona_perf_floor_enable = true;
 module_param(kona_perf_floor_enable, bool, 0644);
 MODULE_PARM_DESC(kona_perf_floor_enable,
-	"Enable aggressive hard bandwidth floors (default: off)");
+	"Enable aggressive hard bandwidth floors (default: on)");
 
 static bool kona_display_resume_floor_enable = true;
 module_param_named(kona_display_resume_floor_enable, kona_display_resume_floor_enable, bool, 0644);
