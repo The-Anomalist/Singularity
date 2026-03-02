@@ -237,15 +237,15 @@ MODULE_PARM_DESC(kona_perf_turbo_kb,
  * a responsive corner instead of repeatedly collapsing to idle.
  * ib_*:        bias and floor IB over AB so command bursts hit DDR quickly.
  */
-static bool kona_gpu_keepalive_enable = true;
-static unsigned long kona_gpu_keepalive_ab_kb = 800000;   /* 800 MB/s */
-static unsigned long kona_gpu_keepalive_ib_kb = 1800000;  /* 1.8 GB/s */
-static bool kona_cpu_keepalive_enable = true;
-static unsigned long kona_cpu_keepalive_ab_kb = 1400000;  /* 1.4 GB/s */
-static unsigned long kona_cpu_keepalive_ib_kb = 2600000;  /* 2.6 GB/s */
-static bool kona_npu_keepalive_enable = true;
-static unsigned long kona_npu_keepalive_ab_kb = 1000000;  /* 1.0 GB/s */
-static unsigned long kona_npu_keepalive_ib_kb = 2000000;  /* 2.0 GB/s */
+static bool kona_gpu_keepalive_enable;
+static unsigned long kona_gpu_keepalive_ab_kb = 200000;   /* 200 MB/s */
+static unsigned long kona_gpu_keepalive_ib_kb = 500000;   /* 500 MB/s */
+static bool kona_cpu_keepalive_enable;
+static unsigned long kona_cpu_keepalive_ab_kb = 300000;   /* 300 MB/s */
+static unsigned long kona_cpu_keepalive_ib_kb = 600000;   /* 600 MB/s */
+static bool kona_npu_keepalive_enable;
+static unsigned long kona_npu_keepalive_ab_kb = 250000;   /* 250 MB/s */
+static unsigned long kona_npu_keepalive_ib_kb = 500000;   /* 500 MB/s */
 static bool kona_disp_keepalive_enable = true;
 static unsigned long kona_disp_keepalive_ab_kb = 200000;   /* 200 MB/s */
 static unsigned long kona_disp_keepalive_ib_kb = 400000;   /* 400 MB/s */
@@ -261,28 +261,28 @@ MODULE_PARM_DESC(kona_gpu_keepalive_enable,
         "Keep non-zero floor for gpu-ddr AB/IB between short idle gaps");
 module_param(kona_gpu_keepalive_ab_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_gpu_keepalive_ab_kb,
-        "gpu-ddr keepalive AB floor in KB/s (default: 800000)");
+        "gpu-ddr keepalive AB floor in KB/s (default: 200000)");
 module_param(kona_gpu_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_gpu_keepalive_ib_kb,
-        "gpu-ddr keepalive IB floor in KB/s (default: 1800000)");
+        "gpu-ddr keepalive IB floor in KB/s (default: 500000)");
 module_param(kona_cpu_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_cpu_keepalive_enable,
         "Keep non-zero floor for cpu-ddr/cpu-llcc AB/IB between short idle gaps");
 module_param(kona_cpu_keepalive_ab_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_cpu_keepalive_ab_kb,
-        "cpu keepalive AB floor in KB/s (default: 1400000)");
+        "cpu keepalive AB floor in KB/s (default: 300000)");
 module_param(kona_cpu_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_cpu_keepalive_ib_kb,
-        "cpu keepalive IB floor in KB/s (default: 2600000)");
+        "cpu keepalive IB floor in KB/s (default: 600000)");
 module_param(kona_npu_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_npu_keepalive_enable,
         "Keep non-zero floor for npu-ddr/npu-llcc AB/IB between short idle gaps");
 module_param(kona_npu_keepalive_ab_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_npu_keepalive_ab_kb,
-        "npu keepalive AB floor in KB/s (default: 1000000)");
+        "npu keepalive AB floor in KB/s (default: 250000)");
 module_param(kona_npu_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_npu_keepalive_ib_kb,
-        "npu keepalive IB floor in KB/s (default: 2000000)");
+        "npu keepalive IB floor in KB/s (default: 500000)");
 module_param(kona_disp_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_disp_keepalive_enable,
 	"Keep non-zero floor for disp0/disp1 DDR AB/IB between idle/off transitions");
@@ -1444,17 +1444,25 @@ skip_perf_floor:
 				qp->nodes[index].name, ab, ib);
 	}
 
-	/* Cache requested AB/IB first. */
+	/*
+	 * Cache the client-requested AB/IB (pre-floor/keepalive adjustments).
+	 * Resume replay logic relies on detecting explicit 0/0 requests.
+	 */
 	if (qp->req_ab)
-		qp->req_ab[index] = ab;
+		qp->req_ab[index] = (u64)avg_bw;
 	if (qp->req_ib)
-		qp->req_ib[index] = ib;
+		qp->req_ib[index] = (u64)peak_bw;
 
 	/*
 	 * Track last-known non-zero DISPLAY votes so resume can re-assert
 	 * fabric bandwidth before dispcc/panel bring-up sequences.
+	 *
+	 * Preserve the remembered vote when a client requests 0/0 and we
+	 * synthesize a temporary fallback floor; otherwise a transient 0/0
+	 * would overwrite the remembered active vote with the tiny fallback.
 	 */
-	if (qp->nodes[index].role == KONA_ROLE_DISPLAY && (ab || ib)) {
+	if (qp->nodes[index].role == KONA_ROLE_DISPLAY && (ab || ib) &&
+	    (avg_bw || peak_bw)) {
 		qp->saved_ab[index] = ab;
 		qp->saved_ib[index] = ib;
 	}
