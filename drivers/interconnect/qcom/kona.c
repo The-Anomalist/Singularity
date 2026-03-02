@@ -191,6 +191,8 @@ MODULE_PARM_DESC(kona_display_topology_strict,
 #define KONA_NPU_DDR_IB_FLOOR_KB	(19000000ULL) /* ~19 GB/s */
 #define KONA_NPU_LLCC_AB_FLOOR_KB	(8000000ULL)  /* ~8 GB/s */
 #define KONA_NPU_LLCC_IB_FLOOR_KB	(14000000ULL) /* ~14 GB/s */
+#define KONA_UX_DDR_AB_FLOOR_KB	(9000000ULL)  /* ~9 GB/s */
+#define KONA_UX_DDR_IB_FLOOR_KB	(16000000ULL) /* ~16 GB/s */
 
 /*
  * Global minimum floors for any non-zero bandwidth vote. This protects
@@ -566,6 +568,9 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 	switch (desc->id) {
 	case KONA_ICC_CPU_TO_MEM:
 	case KONA_ICC_CPU_TO_GPU_CFG:
+	case KONA_ICC_UFS_TO_MEM:
+	case KONA_ICC_QUP_TO_MEM:
+	case KONA_ICC_CAM_CFG:
 	case KONA_ICC_CPU0_TO_MEM:
 	case KONA_ICC_CPU1_TO_MEM:
 	case KONA_ICC_CPU2_TO_MEM:
@@ -578,7 +583,19 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		if (*ib && *ib < KONA_CPU_DDR_IB_FLOOR_KB)
 			*ib = KONA_CPU_DDR_IB_FLOOR_KB;
 		break;
+	case KONA_ICC_DISP_CFG:
+	case KONA_ICC_VIDEO_CFG:
+		/*
+		 * UX-sensitive config paths share CPU_* BCMs but often vote low.
+		 * Keep moderate floors so register/config bursts don't collapse DDR.
+		 */
+		if (*ab && *ab < KONA_UX_DDR_AB_FLOOR_KB)
+			*ab = KONA_UX_DDR_AB_FLOOR_KB;
+		if (*ib && *ib < KONA_UX_DDR_IB_FLOOR_KB)
+			*ib = KONA_UX_DDR_IB_FLOOR_KB;
+		break;
 	case KONA_ICC_CPU_TO_LLCC:
+	case KONA_ICC_UFS_TO_LLCC:
 	case KONA_ICC_CPU0_TO_LLCC:
 	case KONA_ICC_CPU1_TO_LLCC:
 	case KONA_ICC_CPU2_TO_LLCC:
@@ -590,6 +607,13 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 			*ab = KONA_CPU_LLCC_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_CPU_LLCC_IB_FLOOR_KB)
 			*ib = KONA_CPU_LLCC_IB_FLOOR_KB;
+		break;
+	case KONA_ICC_DISP0_TO_MEM:
+	case KONA_ICC_DISP1_TO_MEM:
+		if (*ab && *ab < KONA_UX_DDR_AB_FLOOR_KB)
+			*ab = KONA_UX_DDR_AB_FLOOR_KB;
+		if (*ib && *ib < KONA_UX_DDR_IB_FLOOR_KB)
+			*ib = KONA_UX_DDR_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_CPU7_TO_MEM:
 		if (*ab && *ab < KONA_CPU_PRIME_DDR_AB_FLOOR_KB)
@@ -946,28 +970,28 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.name = "qup-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_CPU,
 	},
 	{
 		.id = KONA_ICC_UFS_TO_LLCC,
 		.name = "ufs-llcc",
 		.ab = "CPU_LLCC_AB",
 		.ib = "CPU_LLCC_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_CPU,
 	},
 	{
 		.id = KONA_ICC_UFS_TO_MEM,
 		.name = "ufs-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_CPU,
 	},
 	{
 		.id = KONA_ICC_CAM_CFG,
 		.name = "cam-cfg",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_CPU,
 	},
 	{
 		.id = KONA_ICC_DISP_CFG,
