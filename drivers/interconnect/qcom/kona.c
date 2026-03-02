@@ -238,9 +238,9 @@ MODULE_PARM_DESC(kona_perf_turbo_kb,
  * a responsive corner instead of repeatedly collapsing to idle.
  * ib_*:        bias and floor IB over AB so command bursts hit DDR quickly.
  */
-static bool kona_gpu_keepalive_enable;
-static unsigned long kona_gpu_keepalive_ab_kb = 200000;   /* 200 MB/s */
-static unsigned long kona_gpu_keepalive_ib_kb = 500000;   /* 500 MB/s */
+static bool kona_gpu_keepalive_enable = true;
+static unsigned long kona_gpu_keepalive_ab_kb = 600000;   /* 600 MB/s */
+static unsigned long kona_gpu_keepalive_ib_kb = 1600000;  /* 1.6 GB/s */
 static bool kona_cpu_keepalive_enable;
 static unsigned long kona_cpu_keepalive_ab_kb = 300000;   /* 300 MB/s */
 static unsigned long kona_cpu_keepalive_ib_kb = 600000;   /* 600 MB/s */
@@ -255,6 +255,11 @@ static unsigned int kona_keepalive_decay_window_ms = 300;
 static unsigned int kona_keepalive_decay_min_percent = 20;
 static unsigned int kona_gpu_ib_boost_percent = 145;
 static unsigned int kona_gpu_ib_min_ratio_percent = 180;
+static bool kona_gpu_bimc_pinning_enable = true;
+static bool kona_gpu_bimc_no_hyst_enable = true;
+static unsigned long kona_gpu_bimc_floor_ab_kb = 16000000; /* 16 GB/s */
+static unsigned long kona_gpu_bimc_floor_ib_kb = 32000000; /* 32 GB/s */
+static unsigned int kona_gpu_bimc_min_ratio_percent = 220;
 static bool kona_gpu_llcc_turbo_enable = true;
 static unsigned long kona_gpu_llcc_turbo_enter_ib_kb = 12000000; /* 12 GB/s */
 static unsigned long kona_gpu_llcc_turbo_exit_ib_kb = 9000000;   /* 9 GB/s */
@@ -312,6 +317,21 @@ MODULE_PARM_DESC(kona_gpu_ib_boost_percent,
 module_param(kona_gpu_ib_min_ratio_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_ib_min_ratio_percent,
         "Minimum gpu-ddr IB as percent of AB (default: 180)");
+module_param(kona_gpu_bimc_pinning_enable, bool, 0644);
+MODULE_PARM_DESC(kona_gpu_bimc_pinning_enable,
+        "Force aggressive gpu-ddr BIMC AB/IB floor to avoid starvation at high GPU clocks");
+module_param(kona_gpu_bimc_no_hyst_enable, bool, 0644);
+MODULE_PARM_DESC(kona_gpu_bimc_no_hyst_enable,
+        "Disable downvote hysteresis for gpu-ddr votes to remove ramp-down/ramp-up lag");
+module_param(kona_gpu_bimc_floor_ab_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_gpu_bimc_floor_ab_kb,
+        "Pinned gpu-ddr BIMC AB floor in KB/s (default: 16000000)");
+module_param(kona_gpu_bimc_floor_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_gpu_bimc_floor_ib_kb,
+        "Pinned gpu-ddr BIMC IB floor in KB/s (default: 32000000)");
+module_param(kona_gpu_bimc_min_ratio_percent, uint, 0644);
+MODULE_PARM_DESC(kona_gpu_bimc_min_ratio_percent,
+        "Minimum gpu-ddr BIMC IB as percent of AB when pinning is active (default: 220)");
 module_param(kona_gpu_llcc_turbo_enable, bool, 0644);
 MODULE_PARM_DESC(kona_gpu_llcc_turbo_enable,
         "Force high gpu-llcc vote while gpu-ddr IB remains above threshold");
@@ -501,6 +521,10 @@ static void kona_icc_apply_hysteresis(struct kona_icc_provider *qp,
 	prev_ab = qp->last_ab[index];
 	prev_ib = qp->last_ib[index];
 
+	if (kona_gpu_bimc_no_hyst_enable &&
+	    (desc->id == KONA_ICC_GPU_TO_MEM || desc->id == KONA_ICC_GMU_TO_MEM))
+		return;
+
 	/* Only suppress very small downvotes; keep upscales and big drops. */
 	if (prev_ab && *ab && *ab < prev_ab) {
 		ab_drop = prev_ab - *ab;
@@ -584,6 +608,13 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		break;
 	case KONA_ICC_GPU_TO_MEM:
 	case KONA_ICC_GMU_TO_MEM:
+		if (kona_gpu_bimc_pinning_enable) {
+			if (*ab && *ab < kona_gpu_bimc_floor_ab_kb)
+				*ab = kona_gpu_bimc_floor_ab_kb;
+			if (*ib && *ib < kona_gpu_bimc_floor_ib_kb)
+				*ib = kona_gpu_bimc_floor_ib_kb;
+		}
+
 		if (*ab && *ab < KONA_GPU_DDR_AB_FLOOR_KB)
 			*ab = KONA_GPU_DDR_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_GPU_DDR_IB_FLOOR_KB)
@@ -596,6 +627,11 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 						kona_gpu_ib_min_ratio_percent, 100))
 			*ib = mul_u64_u32_div(*ab,
 				     kona_gpu_ib_min_ratio_percent, 100);
+
+		if (kona_gpu_bimc_pinning_enable && *ab && *ib <
+		    mul_u64_u32_div(*ab, kona_gpu_bimc_min_ratio_percent, 100))
+			*ib = mul_u64_u32_div(*ab,
+				     kona_gpu_bimc_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_GPU_TO_LLCC:
 	case KONA_ICC_GMU_TO_LLCC:
