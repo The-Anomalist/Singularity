@@ -1243,14 +1243,6 @@ static int gmu_gpu_bw_probe(struct kgsl_device *device, struct gmu_device *gmu)
 		kgsl_get_bus_scale_table(device);
 	int ret;
 
-	if (bus_scale_table == NULL) {
-		dev_err(&gmu->pdev->dev, "dt: cannot get bus table\n");
-		return -ENODEV;
-	}
-
-	gmu->gpu_bus_scale_table = bus_scale_table;
-	gmu->num_bwlevels = bus_scale_table->num_usecases;
-
 	ret = gmu_icc_probe(gmu);
 	if (ret)
 		dev_warn(&gmu->pdev->dev,
@@ -1267,8 +1259,28 @@ static int gmu_gpu_bw_probe(struct kgsl_device *device, struct gmu_device *gmu)
 		dev_warn(&gmu->pdev->dev,
 			"Ignoring GMU ICC BW table because no ICC paths were attached\n");
 
+	if (bus_scale_table == NULL) {
+		if (gmu->num_icc_paths) {
+			dev_warn(&gmu->pdev->dev,
+				"dt: legacy GMU msm_bus table missing, keeping ICC as primary path\n");
+			return 0;
+		}
+
+		dev_err(&gmu->pdev->dev, "dt: cannot get bus table\n");
+		return -ENODEV;
+	}
+
+	gmu->gpu_bus_scale_table = bus_scale_table;
+	gmu->num_bwlevels = bus_scale_table->num_usecases;
+
 	gmu->pcl = msm_bus_scale_register_client(bus_scale_table);
 	if (!gmu->pcl) {
+		if (gmu->num_icc_paths) {
+			dev_warn(&gmu->pdev->dev,
+				"dt: cannot register GMU msm_bus client, using ICC-first mode\n");
+			return 0;
+		}
+
 		dev_err(&gmu->pdev->dev, "dt: cannot register bus client\n");
 		return -ENODEV;
 	}
