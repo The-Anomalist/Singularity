@@ -5,6 +5,7 @@
  */
 
 #include <linux/devfreq_cooling.h>
+#include <linux/moduleparam.h>
 #include <linux/slab.h>
 #include <linux/msm_kgsl.h>
 
@@ -52,6 +53,21 @@ static void do_devfreq_notify(struct work_struct *work);
  */
 static struct xstats last_xstats;
 static struct devfreq_dev_status last_status = { .private_data = &last_xstats };
+
+static bool force_high_power = true;
+module_param(force_high_power, bool, 0644);
+MODULE_PARM_DESC(force_high_power,
+	"Force KGSL devfreq to hold max power level while active");
+
+static uint force_bus_min_mod = 1;
+module_param(force_bus_min_mod, uint, 0644);
+MODULE_PARM_DESC(force_bus_min_mod,
+	"Minimum bus modifier for KGSL busmon when force_high_power is set");
+
+static uint force_bus_percent_ab = 90;
+module_param(force_bus_percent_ab, uint, 0644);
+MODULE_PARM_DESC(force_bus_percent_ab,
+	"Minimum AB percentage for KGSL bus vote when force_high_power is set");
 
 /*
  * kgsl_pwrscale_sleep - notify governor that device is going off
@@ -550,6 +566,15 @@ int kgsl_devfreq_target(struct device *dev, unsigned long *freq, u32 flags)
 	level = pwr->active_pwrlevel;
 	pwr_level = &pwr->pwrlevels[level];
 
+	if (force_high_power) {
+		level = pwr->max_pwrlevel;
+		if (level != pwr->active_pwrlevel)
+			kgsl_pwrctrl_pwrlevel_change(device, level);
+		*freq = kgsl_pwrctrl_active_freq(pwr);
+		mutex_unlock(&device->mutex);
+		return 0;
+	}
+
 	/* If the governor recommends a new frequency, update it here */
 	if (rec_freq != cur_freq) {
 		level = pwr->max_pwrlevel;
@@ -821,6 +846,9 @@ int kgsl_busmon_target(struct device *dev, unsigned long *freq, u32 flags)
 	}
 
 	b = pwr->bus_mod;
+	if (force_high_power)
+		pwr->bus_mod = max_t(int, pwr->bus_mod, (int) force_bus_min_mod);
+
 	if (_check_fast_hint(bus_flag))
 		pwr->bus_mod++;
 	else if (_check_slow_hint(bus_flag))
@@ -835,6 +863,9 @@ int kgsl_busmon_target(struct device *dev, unsigned long *freq, u32 flags)
 	/* Update bus vote if AB or IB is modified */
 	if ((pwr->bus_mod != b) || (pwr->bus_ab_mbytes != ab_mbytes)) {
 		pwr->bus_percent_ab = device->pwrscale.bus_profile.percent_ab;
+		if (force_high_power)
+			pwr->bus_percent_ab = max_t(unsigned int,
+				pwr->bus_percent_ab, force_bus_percent_ab);
 		pwr->bus_ab_mbytes = ab_mbytes;
 		kgsl_pwrctrl_buslevel_update(device, true);
 	}

@@ -13,6 +13,7 @@
 #include <linux/ion.h>
 #include <linux/mman.h>
 #include <linux/module.h>
+#include <linux/sched/topology.h>
 #include <linux/msm-bus.h>
 #include <linux/of.h>
 #include <linux/of_fdt.h>
@@ -45,6 +46,41 @@
 #define KGSL_DMA_BIT_MASK	DMA_BIT_MASK(64)
 #else
 #define KGSL_DMA_BIT_MASK	DMA_BIT_MASK(32)
+#endif
+
+
+#ifdef CONFIG_SMP
+static bool kgsl_bind_worker_to_big_cores = true;
+module_param(kgsl_bind_worker_to_big_cores, bool, 0644);
+MODULE_PARM_DESC(kgsl_bind_worker_to_big_cores,
+	"Bind kgsl_worker_thread to highest capacity CPU cores");
+
+static void kgsl_bind_worker_to_perf_cores(struct task_struct *task)
+{
+	cpumask_t perf_mask;
+	unsigned long max_capacity = 0;
+	int cpu;
+
+	if (!kgsl_bind_worker_to_big_cores || IS_ERR_OR_NULL(task))
+		return;
+
+	cpumask_clear(&perf_mask);
+	for_each_possible_cpu(cpu)
+		max_capacity = max_t(unsigned long, max_capacity,
+			arch_scale_cpu_capacity(NULL, cpu));
+
+	for_each_online_cpu(cpu) {
+		if (arch_scale_cpu_capacity(NULL, cpu) == max_capacity)
+			cpumask_set_cpu(cpu, &perf_mask);
+	}
+
+	if (!cpumask_empty(&perf_mask))
+		set_cpus_allowed_ptr(task, &perf_mask);
+}
+#else
+static inline void kgsl_bind_worker_to_perf_cores(struct task_struct *task)
+{
+}
 #endif
 
 /* Mutex used for the IOMMU sync quirk */
@@ -5585,6 +5621,8 @@ static int __init kgsl_core_init(void)
 
 	kgsl_driver.worker_thread = kthread_run(kthread_worker_fn,
 		&kgsl_driver.worker, "kgsl_worker_thread");
+
+	kgsl_bind_worker_to_perf_cores(kgsl_driver.worker_thread);
 
 	if (IS_ERR(kgsl_driver.worker_thread)) {
 		pr_err("kgsl: unable to start kgsl thread\n");
