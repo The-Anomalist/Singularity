@@ -177,6 +177,16 @@ MODULE_PARM_DESC(kona_display_topology_strict,
 #define KONA_GPU_DDR_IB_FLOOR_KB	(28000000ULL) /* ~28 GB/s */
 #define KONA_GPU_LLCC_AB_FLOOR_KB	(12000000ULL) /* ~12 GB/s */
 #define KONA_GPU_LLCC_IB_FLOOR_KB	(20000000ULL) /* ~20 GB/s */
+/*
+ * Keep GMU floors at least as high as GPU by default.
+ *
+ * GMU traffic can be bursty around perf-level transitions, so leave explicit
+ * constants in place to allow easy tuning above GPU floors if needed later.
+ */
+#define KONA_GMU_DDR_AB_FLOOR_KB	KONA_GPU_DDR_AB_FLOOR_KB
+#define KONA_GMU_DDR_IB_FLOOR_KB	KONA_GPU_DDR_IB_FLOOR_KB
+#define KONA_GMU_LLCC_AB_FLOOR_KB	KONA_GPU_LLCC_AB_FLOOR_KB
+#define KONA_GMU_LLCC_IB_FLOOR_KB	KONA_GPU_LLCC_IB_FLOOR_KB
 #define KONA_NPU_DDR_AB_FLOOR_KB	(11000000ULL) /* ~11 GB/s */
 #define KONA_NPU_DDR_IB_FLOOR_KB	(19000000ULL) /* ~19 GB/s */
 #define KONA_NPU_LLCC_AB_FLOOR_KB	(8000000ULL)  /* ~8 GB/s */
@@ -607,7 +617,6 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 			*ib = KONA_NPU_LLCC_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_GPU_TO_MEM:
-	case KONA_ICC_GMU_TO_MEM:
 		if (kona_gpu_bimc_pinning_enable) {
 			if (*ab && *ab < kona_gpu_bimc_floor_ab_kb)
 				*ab = kona_gpu_bimc_floor_ab_kb;
@@ -633,12 +642,46 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 			*ib = mul_u64_u32_div(*ab,
 				     kona_gpu_bimc_min_ratio_percent, 100);
 		break;
+	case KONA_ICC_GMU_TO_MEM:
+		/*
+		 * GMU follows GPU QoS policy; keep the same or higher floor so GMU
+		 * transitions never under-vote compared to regular GPU traffic.
+		 */
+		if (kona_gpu_bimc_pinning_enable) {
+			if (*ab && *ab < kona_gpu_bimc_floor_ab_kb)
+				*ab = kona_gpu_bimc_floor_ab_kb;
+			if (*ib && *ib < kona_gpu_bimc_floor_ib_kb)
+				*ib = kona_gpu_bimc_floor_ib_kb;
+		}
+
+		if (*ab && *ab < KONA_GMU_DDR_AB_FLOOR_KB)
+			*ab = KONA_GMU_DDR_AB_FLOOR_KB;
+		if (*ib && *ib < KONA_GMU_DDR_IB_FLOOR_KB)
+			*ib = KONA_GMU_DDR_IB_FLOOR_KB;
+
+		if (*ib)
+			*ib = kona_icc_add_headroom(*ib, kona_gpu_ib_boost_percent);
+		if (*ab && *ib < mul_u64_u32_div(*ab,
+						kona_gpu_ib_min_ratio_percent, 100))
+			*ib = mul_u64_u32_div(*ab,
+				     kona_gpu_ib_min_ratio_percent, 100);
+
+		if (kona_gpu_bimc_pinning_enable && *ab && *ib <
+		    mul_u64_u32_div(*ab, kona_gpu_bimc_min_ratio_percent, 100))
+			*ib = mul_u64_u32_div(*ab,
+				     kona_gpu_bimc_min_ratio_percent, 100);
+		break;
 	case KONA_ICC_GPU_TO_LLCC:
-	case KONA_ICC_GMU_TO_LLCC:
 		if (*ab && *ab < KONA_GPU_LLCC_AB_FLOOR_KB)
 			*ab = KONA_GPU_LLCC_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_GPU_LLCC_IB_FLOOR_KB)
 			*ib = KONA_GPU_LLCC_IB_FLOOR_KB;
+		break;
+	case KONA_ICC_GMU_TO_LLCC:
+		if (*ab && *ab < KONA_GMU_LLCC_AB_FLOOR_KB)
+			*ab = KONA_GMU_LLCC_AB_FLOOR_KB;
+		if (*ib && *ib < KONA_GMU_LLCC_IB_FLOOR_KB)
+			*ib = KONA_GMU_LLCC_IB_FLOOR_KB;
 		break;
 	default:
 		break;
