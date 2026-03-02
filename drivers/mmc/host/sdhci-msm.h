@@ -12,6 +12,8 @@
 #include <linux/reset.h>
 #include "sdhci-pltfm.h"
 
+struct icc_path;
+
 /* check IP CATALOG version */
 #define SDCC_IP_CATALOG 0x328
 
@@ -218,9 +220,12 @@ struct sdhci_msm_pltfm_data {
 struct sdhci_msm_bus_vote {
 	uint32_t client_handle;
 	uint32_t curr_vote;
+	u64 curr_bw;
 	int min_bw_vote;
 	int max_bw_vote;
 	bool is_max_bw_needed;
+	bool use_icc;
+	struct icc_path *icc_path;
 	struct device_attribute max_bus_bw;
 };
 

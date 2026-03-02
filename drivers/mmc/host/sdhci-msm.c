@@ -30,6 +30,7 @@
 #include <linux/pinctrl/consumer.h>
 #include <linux/iopoll.h>
 #include <linux/msm-bus.h>
+#include <linux/interconnect.h>
 #include <linux/pm_runtime.h>
 #include <trace/events/mmc.h>
 #include <linux/clk/qcom.h>
@@ -2453,13 +2454,35 @@ static int sdhci_msm_bus_get_vote_for_bw(struct sdhci_msm_host *host,
  * handle is not null.
  */
 static inline int sdhci_msm_bus_set_vote(struct sdhci_msm_host *msm_host,
-					     int vote,
+					     int vote, unsigned int bw,
 					     unsigned long *flags)
 {
 	struct sdhci_host *host =  platform_get_drvdata(msm_host->pdev);
+	u64 peak_bw;
 	int rc = 0;
 
 	WARN_ON(!flags);
+
+	if (msm_host->msm_bus_vote.use_icc) {
+		if (msm_host->msm_bus_vote.curr_bw == bw)
+			return 0;
+
+		peak_bw = DIV_ROUND_UP_ULL((u64)bw, 1000);
+		if (msm_host->msm_bus_vote.is_max_bw_needed && bw)
+			peak_bw = UINT_MAX;
+
+		spin_unlock_irqrestore(&host->lock, *flags);
+		rc = icc_set_bw(msm_host->msm_bus_vote.icc_path, 0, peak_bw);
+		spin_lock_irqsave(&host->lock, *flags);
+		if (rc) {
+			pr_err("%s: icc_set_bw() failed: bw=%u, err=%d\n",
+				mmc_hostname(host->mmc), bw, rc);
+			return rc;
+		}
+
+		msm_host->msm_bus_vote.curr_bw = bw;
+		return 0;
+	}
 
 	if (vote != msm_host->msm_bus_vote.curr_vote) {
 		spin_unlock_irqrestore(&host->lock, *flags);
@@ -2665,7 +2688,7 @@ static void sdhci_msm_bus_get_and_set_vote(struct sdhci_host *host,
 
 	spin_lock_irqsave(&host->lock, flags);
 	vote = sdhci_msm_bus_get_vote_for_bw(msm_host, bw);
-	sdhci_msm_bus_set_vote(msm_host, vote, &flags);
+	sdhci_msm_bus_set_vote(msm_host, vote, bw, &flags);
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
@@ -2677,6 +2700,32 @@ static int sdhci_msm_bus_register(struct sdhci_msm_host *host,
 
 	struct sdhci_msm_bus_voting_data *data;
 	struct device *dev = &pdev->dev;
+
+	int num_icc_paths;
+	const char *icc_name;
+
+	num_icc_paths = of_count_phandle_with_args(dev->of_node,
+					   "interconnects", "#interconnect-cells");
+	if (num_icc_paths > 0) {
+		if (!of_property_read_string_index(dev->of_node,
+						   "interconnect-names", 0, &icc_name))
+			host->msm_bus_vote.icc_path = devm_of_icc_get(dev, icc_name);
+		else if (num_icc_paths == 1)
+			host->msm_bus_vote.icc_path = devm_of_icc_get(dev, NULL);
+
+		if (!IS_ERR_OR_NULL(host->msm_bus_vote.icc_path)) {
+			host->msm_bus_vote.use_icc = true;
+			host->msm_bus_vote.curr_bw = UINT_MAX;
+			dev_info(dev, "Using ICC for SDHCI bus voting\n");
+			return 0;
+		}
+
+		if (IS_ERR(host->msm_bus_vote.icc_path))
+			dev_info(dev,
+				 "ICC unavailable (%ld), using msm_bus fallback\n",
+				 PTR_ERR(host->msm_bus_vote.icc_path));
+		host->msm_bus_vote.icc_path = NULL;
+	}
 
 	data = devm_kzalloc(dev,
 		sizeof(struct sdhci_msm_bus_voting_data), GFP_KERNEL);
@@ -2724,6 +2773,13 @@ out:
 
 static void sdhci_msm_bus_unregister(struct sdhci_msm_host *host)
 {
+	if (host->msm_bus_vote.use_icc && host->msm_bus_vote.icc_path) {
+		icc_set_bw(host->msm_bus_vote.icc_path, 0, 0);
+		host->msm_bus_vote.icc_path = NULL;
+		host->msm_bus_vote.use_icc = false;
+		return;
+	}
+
 	if (host->msm_bus_vote.client_handle)
 		msm_bus_scale_unregister_client(
 			host->msm_bus_vote.client_handle);
@@ -2736,7 +2792,8 @@ static void sdhci_msm_bus_voting(struct sdhci_host *host, u32 enable)
 	struct mmc_ios *ios = &host->mmc->ios;
 	unsigned int bw;
 
-	if (!msm_host->msm_bus_vote.client_handle)
+	if (!msm_host->msm_bus_vote.use_icc &&
+	    !msm_host->msm_bus_vote.client_handle)
 		return;
 
 	if (enable) {
