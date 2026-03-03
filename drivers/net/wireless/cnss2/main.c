@@ -3,6 +3,7 @@
 
 #include <linux/delay.h>
 #include <linux/jiffies.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
@@ -166,12 +167,13 @@ int cnss_request_bus_bandwidth(struct device *dev, int bandwidth)
 	int ret = 0;
 	struct cnss_plat_data *plat_priv = cnss_bus_dev_to_plat_priv(dev);
 	struct cnss_bus_bw_info *bus_bw_info;
+	u32 peak_bw;
 
 	if (!plat_priv)
 		return -ENODEV;
 
 	bus_bw_info = &plat_priv->bus_bw_info;
-	if (!bus_bw_info->bus_client)
+	if (!bus_bw_info->use_icc && !bus_bw_info->bus_client)
 		return -EINVAL;
 
 	switch (bandwidth) {
@@ -182,8 +184,18 @@ int cnss_request_bus_bandwidth(struct device *dev, int bandwidth)
 	case CNSS_BUS_WIDTH_HIGH:
 	case CNSS_BUS_WIDTH_VERY_HIGH:
 	case CNSS_BUS_WIDTH_LOW_LATENCY:
-		ret = msm_bus_scale_client_update_request
-			(bus_bw_info->bus_client, bandwidth);
+		if (bus_bw_info->use_icc) {
+			if (bandwidth < 0 || bandwidth >= bus_bw_info->bw_vectors_num)
+				return -EINVAL;
+
+			peak_bw = DIV_ROUND_UP_ULL((u64)bus_bw_info->bw_vectors[bandwidth],
+						   1000);
+			ret = icc_set_bw(bus_bw_info->icc_path, 0, peak_bw);
+		} else {
+			ret = msm_bus_scale_client_update_request
+				(bus_bw_info->bus_client, bandwidth);
+		}
+
 		if (!ret)
 			bus_bw_info->current_bw_vote = bandwidth;
 		else
@@ -2302,9 +2314,59 @@ int cnss_minidump_remove_region(struct cnss_plat_data *plat_priv,
 static int cnss_register_bus_scale(struct cnss_plat_data *plat_priv)
 {
 	int ret = 0;
+	int num_icc_paths;
+	int bw_vectors_num;
+	const char *icc_name;
+	struct device *dev;
 	struct cnss_bus_bw_info *bus_bw_info;
 
 	bus_bw_info = &plat_priv->bus_bw_info;
+	dev = &plat_priv->plat_dev->dev;
+
+	num_icc_paths = of_count_phandle_with_args(dev->of_node,
+						   "interconnects",
+						   "#interconnect-cells");
+	if (num_icc_paths > 0) {
+		if (!of_property_read_string_index(dev->of_node,
+						   "interconnect-names", 0,
+						   &icc_name))
+			bus_bw_info->icc_path = devm_of_icc_get(dev, icc_name);
+		else if (num_icc_paths == 1)
+			bus_bw_info->icc_path = devm_of_icc_get(dev, NULL);
+
+		if (!IS_ERR_OR_NULL(bus_bw_info->icc_path)) {
+			bw_vectors_num = of_property_count_u32_elems(dev->of_node,
+							     "qcom,bus-bw-vectors-bps");
+			if (bw_vectors_num > 0) {
+				bus_bw_info->bw_vectors = devm_kcalloc(dev,
+							       bw_vectors_num,
+							       sizeof(*bus_bw_info->bw_vectors),
+							       GFP_KERNEL);
+				if (!bus_bw_info->bw_vectors)
+					return -ENOMEM;
+
+				ret = of_property_read_u32_array(dev->of_node,
+							 "qcom,bus-bw-vectors-bps",
+							 bus_bw_info->bw_vectors,
+							 bw_vectors_num);
+				if (ret) {
+					cnss_pr_err("Failed to read bus bw vectors, err = %d\n",
+						    ret);
+					return ret;
+				}
+
+				bus_bw_info->bw_vectors_num = bw_vectors_num;
+				bus_bw_info->use_icc = true;
+				return 0;
+			}
+
+			cnss_pr_info("Missing qcom,bus-bw-vectors-bps, using msm_bus fallback\n");
+		} else if (IS_ERR(bus_bw_info->icc_path)) {
+			cnss_pr_info("ICC unavailable (%ld), using msm_bus fallback\n",
+				     PTR_ERR(bus_bw_info->icc_path));
+			bus_bw_info->icc_path = NULL;
+		}
+	}
 
 	bus_bw_info->bus_scale_table =
 		msm_bus_cl_get_pdata(plat_priv->plat_dev);
@@ -2329,6 +2391,12 @@ static void cnss_unregister_bus_scale(struct cnss_plat_data *plat_priv)
 	struct cnss_bus_bw_info *bus_bw_info;
 
 	bus_bw_info = &plat_priv->bus_bw_info;
+	if (bus_bw_info->use_icc && bus_bw_info->icc_path) {
+		icc_set_bw(bus_bw_info->icc_path, 0, 0);
+		bus_bw_info->use_icc = false;
+		bus_bw_info->icc_path = NULL;
+		return;
+	}
 
 	if (bus_bw_info->bus_client)
 		msm_bus_scale_unregister_client(bus_bw_info->bus_client);

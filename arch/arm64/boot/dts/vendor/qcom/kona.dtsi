@@ -4873,6 +4873,12 @@
 		/* low (latency critical): 18 - 60 Mbps, ddr freq: 547.2 MHz */
 		<MSM_BUS_MASTER_PCIE MSM_BUS_SLAVE_FIRST 7500 2188800>;
 
+		/* Prefer ICC voting with msm_bus fallback for legacy targets */
+		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+		interconnect-names = "wifi-ddr";
+		qcom,bus-bw-vectors-bps = <0 1600000000 1600000000 1804800000
+					1804800000 6220800000 2188800000>;
+
 		vdd-wlan-aon-supply = <&pm8150_s6>;
 		qcom,vdd-wlan-aon-config = <950000 950000 0 0 1>;
 		vdd-wlan-dig-supply = <&pm8009_s2>;
