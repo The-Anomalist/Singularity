@@ -54,6 +54,7 @@
 #include <linux/msm-sps.h>
 #include <linux/platform_data/msm_serial_hs.h>
 #include <linux/msm-bus.h>
+#include <linux/interconnect.h>
 
 #include "msm_serial_hs_hwreg.h"
 #define UART_SPS_CONS_PERIPHERAL 0
@@ -229,6 +230,8 @@ struct msm_hs_port {
 	u32 bus_perf_client;
 	/* BLSP UART required BUS Scaling data */
 	struct msm_bus_scale_pdata *bus_scale_table;
+	bool use_icc;
+	struct icc_path *icc_path;
 	bool rx_bam_inprogress;
 	wait_queue_head_t bam_disconnect_wait;
 	bool use_pinctrl;
@@ -520,7 +523,17 @@ static inline bool is_use_low_power_wakeup(struct msm_hs_port *msm_uport)
 
 static void msm_hs_bus_voting(struct msm_hs_port *msm_uport, unsigned int vote)
 {
+	u32 peak_bw = vote ? BLSP_UART_CLK_FMAX : 0;
 	int ret;
+
+	if (msm_uport->use_icc && msm_uport->icc_path) {
+		ret = icc_set_bw(msm_uport->icc_path, 0, peak_bw);
+		if (!ret)
+			return;
+
+		MSM_HS_WARN("%s(): ICC vote failed (%d), using msm_bus fallback\n",
+				__func__, ret);
+	}
 
 	if (msm_uport->bus_perf_client) {
 		MSM_HS_DBG("Bus voting:%d\n", vote);
@@ -3435,8 +3448,29 @@ static int msm_hs_probe(struct platform_device *pdev)
 	pdata->wakeup_irq = wakeup_irqres;
 
 	msm_uport->bus_scale_table = msm_bus_cl_get_pdata(pdev);
+	msm_uport->icc_path = devm_of_icc_get(&pdev->dev, "qup-core");
+	if (IS_ERR(msm_uport->icc_path)) {
+		if (PTR_ERR(msm_uport->icc_path) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+
+		msm_uport->icc_path = devm_of_icc_get(&pdev->dev, NULL);
+		if (IS_ERR(msm_uport->icc_path)) {
+			if (PTR_ERR(msm_uport->icc_path) == -EPROBE_DEFER)
+				return -EPROBE_DEFER;
+
+			msm_uport->icc_path = NULL;
+		} else {
+			msm_uport->use_icc = true;
+		}
+	} else {
+		msm_uport->use_icc = true;
+	}
+
 	if (!msm_uport->bus_scale_table) {
-		MSM_HS_ERR("BLSP UART: Bus scaling is disabled\n");
+		if (msm_uport->use_icc)
+			MSM_HS_INFO("BLSP UART: using ICC path voting\n");
+		else
+			MSM_HS_ERR("BLSP UART: Bus scaling is disabled\n");
 	} else {
 		msm_uport->bus_perf_client =
 			msm_bus_scale_register_client
