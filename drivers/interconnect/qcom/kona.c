@@ -565,6 +565,13 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 	if (!kona_perf_floor_enable)
 		return;
 
+	/*
+	 * Keep low-bandwidth peripheral paths (e.g. RNG) unmodified so
+	 * small functional votes do not get inflated by performance floors.
+	 */
+	if (desc->id == KONA_ICC_CPU_TO_PRNG)
+		return;
+
 	switch (desc->id) {
 	case KONA_ICC_CPU_TO_MEM:
 	case KONA_ICC_CPU_TO_GPU_CFG:
@@ -719,28 +726,21 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		*ib = KONA_ICC_MIN_IB_FLOOR_KB;
 
 	/*
-	 * Keep low-bandwidth peripheral paths (e.g. RNG) unmodified so
-	 * small functional votes do not get inflated by performance floors.
+	 * Add configurable headroom to CPU/GPU/NPU/DDR/LLCC paths to avoid collapsing
+	 * performance when the SoC is under heavy load. Display paths stay closer
+	 * to the requested vote to keep power sane.
 	 */
-	if (desc->id == KONA_ICC_CPU_TO_PRNG)
-		return;
+	if (desc->role != KONA_ROLE_DISPLAY) {
+		unsigned int bias = kona_icc_pick_bias(desc, *ab, *ib);
 
-        /*
-         * Add configurable headroom to CPU/GPU/NPU/DDR/LLCC paths to avoid collapsing
-         * performance when the SoC is under heavy load. Display paths stay closer
-         * to the requested vote to keep power sane.
-         */
-        if (desc->role != KONA_ROLE_DISPLAY) {
-                unsigned int bias = kona_icc_pick_bias(desc, *ab, *ib);
+		if (*ab)
+			*ab = kona_icc_add_headroom(*ab, bias);
+		if (*ib)
+			*ib = kona_icc_add_headroom(*ib, bias);
+	}
 
-                if (*ab)
-                        *ab = kona_icc_add_headroom(*ab, bias);
-                if (*ib)
-                        *ib = kona_icc_add_headroom(*ib, bias);
-        }
-
-        pr_debug("kona-icc: vote for %s after floor/bias (ab=%llu KBps, ib=%llu KBps)\n",
-                 desc->name, *ab, *ib);
+	pr_debug("kona-icc: vote for %s after floor/bias (ab=%llu KBps, ib=%llu KBps)\n",
+		 desc->name, *ab, *ib);
 }
 #endif /* CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR */
 
