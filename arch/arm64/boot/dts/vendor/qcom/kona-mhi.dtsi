@@ -1,3 +1,5 @@
+#include <dt-bindings/interconnect/qcom,kona.h>
+
 &pcie2_rp {
 	#address-cells = <5>;
 	#size-cells = <0>;
@@ -9,18 +11,8 @@
 		qcom,iommu-group = <&mhi_0_iommu_group>;
 
 		/* controller ddr frequency scaling configuration */
-		qcom,msm-bus,name = "mhi0";
-		qcom,msm-bus,num-cases = <4>;
-		qcom,msm-bus,num-paths = <1>;
-		qcom,msm-bus,vectors-KBps =
-				<MSM_BUS_MASTER_PCIE_2 MSM_BUS_SLAVE_EBI_CH0
-				0 0>,
-				<MSM_BUS_MASTER_PCIE_2 MSM_BUS_SLAVE_EBI_CH0
-				0 0>,
-				<MSM_BUS_MASTER_PCIE_2 MSM_BUS_SLAVE_EBI_CH0
-				500000 0>, /* 4 Gbps */
-				<MSM_BUS_MASTER_PCIE_2 MSM_BUS_SLAVE_EBI_CH0
-				1000000 0>; /* 8 Gbps */
+		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+		interconnect-names = "mhi-ddr";
 
 		esoc-names = "mdm";
 		esoc-0 = <&mdm0>;

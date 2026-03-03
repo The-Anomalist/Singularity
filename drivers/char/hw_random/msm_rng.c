@@ -335,14 +335,16 @@ static int msm_rng_probe(struct platform_device *pdev)
 			}
 		}
 
-		/* Register bus client */
-		qrng_platform_support = msm_bus_cl_get_pdata(pdev);
-		msm_rng_dev->qrng_perf_client = msm_bus_scale_register_client(
-						qrng_platform_support);
-		msm_rng_device_info.qrng_perf_client =
-					msm_rng_dev->qrng_perf_client;
-		if (!msm_rng_dev->qrng_perf_client)
-			pr_err("Unable to register bus client\n");
+		if (!msm_rng_dev->icc_path) {
+			/* Register msm_bus client only as ICC fallback */
+			qrng_platform_support = msm_bus_cl_get_pdata(pdev);
+			msm_rng_dev->qrng_perf_client = msm_bus_scale_register_client(
+							qrng_platform_support);
+			msm_rng_device_info.qrng_perf_client =
+						msm_rng_dev->qrng_perf_client;
+			if (!msm_rng_dev->qrng_perf_client)
+				pr_err("Unable to register bus client\n");
+		}
 	}
 
 	/* Enable rng h/w for the targets which can access the entire
