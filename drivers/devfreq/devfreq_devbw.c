@@ -47,6 +47,8 @@ struct dev_data {
 	int cur_ib;
 	bool icc_supported;
 	bool use_icc;
+	bool icc_share_ab;
+	bool icc_share_peak;
 	u32 icc_min_avg_kbps;
 	u32 icc_min_peak_kbps;
 	long gov_ab;
@@ -82,6 +84,7 @@ static void devbw_log_icc_state(struct device *dev, struct dev_data *d)
 static int set_bw(struct device *dev, int new_ib, int new_ab)
 {
 	struct dev_data *d = dev_get_drvdata(dev);
+	u64 kbps;
 	int i, ret;
 
 	if (d->cur_ib == new_ib && d->cur_ab == new_ab)
@@ -104,10 +107,25 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 	if (d->use_icc) {
 		u32 avg_bw, peak_bw;
 
-		peak_bw = div_u64((u64)new_ib * MBYTE,
-				 d->num_icc_paths * 1000ULL);
-		avg_bw = div_u64((u64)new_ab * MBYTE,
-				d->num_icc_paths * 1000ULL);
+		/*
+		 * msm-bus programmed per-path peak votes at full requested IB while
+		 * average votes were split across paths. Keep AB behavior for legacy
+		 * tuning, but do not split IB unless DT explicitly asks for it.
+		 */
+		kbps = (u64)new_ib * MBYTE;
+		if (d->icc_share_peak)
+			kbps = div_u64(kbps, d->num_icc_paths);
+		peak_bw = div_u64(kbps, 1000ULL);
+
+		kbps = (u64)new_ab * MBYTE;
+		if (d->icc_share_ab)
+			kbps = div_u64(kbps, d->num_icc_paths);
+		avg_bw = div_u64(kbps, 1000ULL);
+
+		if (new_ib && !peak_bw)
+			peak_bw = 1;
+		if (new_ab && !avg_bw)
+			avg_bw = 1;
 
 		/*
 		 * Keep non-zero ICC requests above optional DT floors so critical
@@ -122,8 +140,9 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 			peak_bw = d->icc_min_peak_kbps;
 
 		dev_info_ratelimited(dev,
-			"ICC vote: dev=%s freq=%d avg=%u peak=%u paths=%d\n",
-			dev_name(dev), new_ib, avg_bw, peak_bw, d->num_icc_paths);
+			"ICC vote: dev=%s freq=%d avg=%u peak=%u paths=%d split_ab=%d split_peak=%d\n",
+			dev_name(dev), new_ib, avg_bw, peak_bw, d->num_icc_paths,
+			d->icc_share_ab, d->icc_share_peak);
 
 		for (i = 0; i < d->num_icc_paths; i++) {
 			ret = icc_set_bw(d->icc_paths[i], avg_bw, peak_bw);
@@ -247,6 +266,11 @@ int devfreq_add_devbw(struct device *dev)
 					  "interconnects",
 					  "#interconnect-cells");
 	d->icc_supported = of_find_property(dev->of_node, "interconnects", NULL);
+	d->icc_share_ab = true;
+	d->icc_share_peak = of_property_read_bool(dev->of_node,
+						 "qcom,icc-split-peak-kbps");
+	if (of_find_property(dev->of_node, "qcom,icc-no-split-ab-kbps", NULL))
+		d->icc_share_ab = false;
 	of_property_read_u32(dev->of_node, "qcom,icc-min-avg-kbps",
 			     &d->icc_min_avg_kbps);
 	of_property_read_u32(dev->of_node, "qcom,icc-min-peak-kbps",
