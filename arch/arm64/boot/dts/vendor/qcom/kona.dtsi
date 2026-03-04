@@ -3105,6 +3105,8 @@
 	ufs_ice: ufsice@1d90000 {
 		compatible = "qcom,ice";
 		reg = <0x1d90000 0x8000>;
+		interconnects = <&kona_icc KONA_ICC_UFS_TO_MEM>;
+		interconnect-names = "ufs-ddr";
 		qcom,enable-ice-clk;
 		clock-names = "ufs_core_clk", "bus_clk",
 				"iface_clk", "ice_core_clk";
