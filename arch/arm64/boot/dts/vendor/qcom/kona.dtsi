@@ -2452,6 +2452,12 @@
 		interconnect-names = "rng";
 		qcom,msm-rng-iface-clk;
 		qcom,no-qrng-config;
+		qcom,msm-bus,name = "msm-rng-noc";
+		qcom,msm-bus,num-cases = <2>;
+		qcom,msm-bus,num-paths = <1>;
+		qcom,msm-bus,vectors-KBps =
+			<1 618 0 0>,    /* No vote */
+			<1 618 0 300000>;  /* 75 MHz */
 		clocks = <&clock_gcc GCC_PRNG_AHB_CLK>;
 		clock-names = "iface_clk";
 	};
@@ -3264,8 +3270,6 @@
 
 		qcom,bus-width = <4>;
 		qcom,large-address-bus;
-		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
-		interconnect-names = "sdhc-ddr";
 
 		qcom,msm-bus,name = "sdhc2";
 		qcom,msm-bus,num-cases = <8>;
@@ -5004,6 +5008,8 @@
 		qcom,pcie-parent = <&pcie1>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&wil6210_refclk_en_pin>;
+		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+		interconnect-names = "wifi-ddr";
 		qcom,msm-bus,name = "wil6210";
 		qcom,msm-bus,num-cases = <3>;
 		qcom,msm-bus,num-paths = <1>;
