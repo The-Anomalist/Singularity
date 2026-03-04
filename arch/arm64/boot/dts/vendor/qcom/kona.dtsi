@@ -2433,6 +2433,8 @@
 		reg = <0x82400000 0x3A00000>;
 		reg-names = "secapp-region";
 		memory-region = <&qseecom_mem>;
+		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+		interconnect-names = "qsee-ddr";
 		qcom,hlos-num-ce-hw-instances = <1>;
 		qcom,hlos-ce-hw-instance = <0>;
 		qcom,qsee-ce-hw-instance = <0>;

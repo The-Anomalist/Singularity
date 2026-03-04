@@ -35,6 +35,7 @@
 #include <soc/qcom/socinfo.h>
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
+#include <linux/interconnect.h>
 #include <soc/qcom/qseecomi.h>
 #include <asm/cacheflush.h>
 #include "qseecom_kernel.h"
@@ -298,6 +299,8 @@ struct qseecom_control {
 	int qsee_sfpb_bw_count;
 
 	uint32_t qsee_perf_client;
+	struct icc_path *icc_path;
+	bool use_icc;
 	struct qseecom_clk qsee;
 	struct qseecom_clk ce_drv;
 
@@ -1776,6 +1779,7 @@ static int __qseecom_unregister_listener_kthread_func(void *data)
 static int __qseecom_set_msm_bus_request(uint32_t mode)
 {
 	int ret = 0;
+	u32 icc_ib = 0;
 	struct qseecom_clk *qclk;
 
 	qclk = &qseecom.qsee;
@@ -1791,8 +1795,33 @@ static int __qseecom_set_msm_bus_request(uint32_t mode)
 	}
 
 	if ((!ret) && (qseecom.current_mode != mode)) {
-		ret = msm_bus_scale_client_update_request(
-					qseecom.qsee_perf_client, mode);
+		switch (mode) {
+		case INACTIVE:
+			icc_ib = 0;
+			break;
+		case LOW:
+			icc_ib = 100000;
+			break;
+		case MEDIUM:
+			icc_ib = 300000;
+			break;
+		case HIGH:
+			icc_ib = 600000;
+			break;
+		default:
+			icc_ib = 0;
+			break;
+		}
+
+		if (qseecom.use_icc) {
+			ret = icc_set_bw(qseecom.icc_path, 0, icc_ib);
+			if (ret)
+				pr_debug("ICC vote failed (%d), using msm_bus fallback\n", ret);
+		}
+
+		if (ret || !qseecom.use_icc)
+			ret = msm_bus_scale_client_update_request(
+						qseecom.qsee_perf_client, mode);
 		if (ret) {
 			pr_err("Bandwidth req failed(%d) MODE (%d)\n",
 							ret, mode);
@@ -9267,6 +9296,8 @@ static void qseecom_deinit_clk(void)
 
 static int qseecom_init_bus(struct platform_device *pdev)
 {
+	int ret;
+
 	if (!qseecom.support_bus_scaling)
 		return 0;
 
@@ -9280,11 +9311,26 @@ static int qseecom_init_bus(struct platform_device *pdev)
 	INIT_WORK(&qseecom.bw_inactive_req_ws,
 				qseecom_bw_inactive_req_work);
 	qseecom.timer_running = false;
+
+	if (of_find_property(pdev->dev.of_node, "interconnects", NULL)) {
+		qseecom.icc_path = devm_of_icc_get(&pdev->dev, NULL);
+		if (IS_ERR(qseecom.icc_path)) {
+			ret = PTR_ERR(qseecom.icc_path);
+			qseecom.icc_path = NULL;
+			pr_warn("Unable to get ICC path (%d), using msm_bus fallback\n", ret);
+		} else {
+			qseecom.use_icc = true;
+		}
+	}
+
 	qseecom.qsee_perf_client = msm_bus_scale_register_client(
 					msm_bus_cl_get_pdata(pdev));
 	if (!qseecom.qsee_perf_client) {
-		pr_err("Unable to register bus client\n");
-		return -EINVAL;
+		if (!qseecom.use_icc) {
+			pr_err("Unable to register bus client\n");
+			return -EINVAL;
+		}
+		pr_warn("Unable to register msm_bus client, running on ICC only\n");
 	}
 	return 0;
 }
@@ -9293,8 +9339,12 @@ static void qseecom_deinit_bus(void)
 {
 	if (!qseecom.support_bus_scaling || qseecom.no_clock_support)
 		return;
-	msm_bus_scale_client_update_request(qseecom.qsee_perf_client, 0);
-	msm_bus_scale_unregister_client(qseecom.qsee_perf_client);
+	if (qseecom.use_icc)
+		icc_set_bw(qseecom.icc_path, 0, 0);
+	if (qseecom.qsee_perf_client) {
+		msm_bus_scale_client_update_request(qseecom.qsee_perf_client, 0);
+		msm_bus_scale_unregister_client(qseecom.qsee_perf_client);
+	}
 	cancel_work_sync(&qseecom.bw_inactive_req_ws);
 	del_timer_sync(&qseecom.bw_scale_down_timer);
 }
@@ -9758,12 +9808,9 @@ static int qseecom_suspend(struct platform_device *pdev, pm_message_t state)
 	mutex_lock(&clk_access_lock);
 
 	if (qseecom.current_mode != INACTIVE) {
-		ret = msm_bus_scale_client_update_request(
-			qseecom.qsee_perf_client, INACTIVE);
+		ret = __qseecom_set_msm_bus_request(INACTIVE);
 		if (ret)
 			pr_err("Fail to scale down bus\n");
-		else
-			qseecom.current_mode = INACTIVE;
 	}
 
 	if (qclk->clk_access_cnt) {
@@ -9804,12 +9851,9 @@ static int qseecom_resume(struct platform_device *pdev)
 		mode = qseecom.cumulative_mode;
 
 	if (qseecom.cumulative_mode != INACTIVE) {
-		ret = msm_bus_scale_client_update_request(
-			qseecom.qsee_perf_client, mode);
+		ret = __qseecom_set_msm_bus_request(mode);
 		if (ret)
 			pr_err("Fail to scale up bus to %d\n", mode);
-		else
-			qseecom.current_mode = mode;
 	}
 
 	if (qclk->clk_access_cnt) {
