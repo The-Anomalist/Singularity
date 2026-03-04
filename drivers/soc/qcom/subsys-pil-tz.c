@@ -13,6 +13,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
+#include <linux/interconnect.h>
 
 #include <linux/msm-bus-board.h>
 #include <linux/msm-bus.h>
@@ -99,6 +100,7 @@ struct pil_tz_data {
 	void *minidump_dev;
 	u32 pas_id;
 	u32 bus_client;
+	struct icc_path *bus_icc_path;
 	bool enable_bus_scaling;
 	bool keep_proxy_regs_on;
 	struct completion stop_ack;
@@ -166,6 +168,7 @@ static struct msm_bus_scale_pdata scm_pas_bus_pdata = {
 };
 
 static uint32_t scm_perf_client;
+static struct icc_path *scm_pas_icc_path;
 static int scm_pas_bw_count;
 static DEFINE_MUTEX(scm_pas_bw_mutex);
 
@@ -173,12 +176,15 @@ static int scm_pas_enable_bw(void)
 {
 	int ret = 0;
 
-	if (!scm_perf_client)
+	if (!scm_perf_client && !scm_pas_icc_path)
 		return -EINVAL;
 
 	mutex_lock(&scm_pas_bw_mutex);
 	if (!scm_pas_bw_count) {
-		ret = msm_bus_scale_client_update_request(scm_perf_client, 1);
+		if (scm_pas_icc_path)
+			ret = icc_set_bw(scm_pas_icc_path, 0, 1);
+		else
+			ret = msm_bus_scale_client_update_request(scm_perf_client, 1);
 		if (ret)
 			goto err_bus;
 		scm_pas_bw_count++;
@@ -189,7 +195,10 @@ static int scm_pas_enable_bw(void)
 
 err_bus:
 	pr_err("scm-pas; Bandwidth request failed (%d)\n", ret);
-	msm_bus_scale_client_update_request(scm_perf_client, 0);
+	if (scm_pas_icc_path)
+		icc_set_bw(scm_pas_icc_path, 0, 0);
+	else
+		msm_bus_scale_client_update_request(scm_perf_client, 0);
 
 	mutex_unlock(&scm_pas_bw_mutex);
 	return ret;
@@ -199,11 +208,14 @@ static void scm_pas_disable_bw(void)
 {
 	mutex_lock(&scm_pas_bw_mutex);
 	if (scm_pas_bw_count-- == 1)
-		msm_bus_scale_client_update_request(scm_perf_client, 0);
+		if (scm_pas_icc_path)
+			icc_set_bw(scm_pas_icc_path, 0, 0);
+		else
+			msm_bus_scale_client_update_request(scm_perf_client, 0);
 	mutex_unlock(&scm_pas_bw_mutex);
 }
 
-static void scm_pas_init(int id)
+static void scm_pas_init(struct device *dev, int id)
 {
 	static int is_inited;
 
@@ -212,9 +224,14 @@ static void scm_pas_init(int id)
 
 	scm_pas_bw_tbl[0].vectors[0].src = id;
 	scm_pas_bw_tbl[1].vectors[0].src = id;
+	scm_pas_icc_path = devm_of_icc_get(dev, "pas-ddr");
+	if (IS_ERR(scm_pas_icc_path))
+		scm_pas_icc_path = devm_of_icc_get(dev, NULL);
+	if (IS_ERR(scm_pas_icc_path))
+		scm_pas_icc_path = NULL;
 
 	scm_perf_client = msm_bus_scale_register_client(&scm_pas_bus_pdata);
-	if (!scm_perf_client)
+	if (!scm_perf_client && !scm_pas_icc_path)
 		pr_warn("scm-pas: Unable to register bus client\n");
 
 	is_inited = 1;
@@ -358,51 +375,60 @@ static int of_read_regs(struct device *dev, struct reg_info **regs_ref,
 	return reg_count;
 }
 
-#if defined(CONFIG_QCOM_BUS_SCALING)
 static int of_read_bus_pdata(struct platform_device *pdev,
 			     struct pil_tz_data *d)
 {
-	struct msm_bus_scale_pdata *pdata;
+	struct msm_bus_scale_pdata *pdata = NULL;
 
+	d->bus_icc_path = devm_of_icc_get(&pdev->dev, "pas-ddr");
+	if (IS_ERR(d->bus_icc_path))
+		d->bus_icc_path = devm_of_icc_get(&pdev->dev, NULL);
+	if (IS_ERR(d->bus_icc_path))
+		d->bus_icc_path = NULL;
+
+#if defined(CONFIG_QCOM_BUS_SCALING)
 	pdata = msm_bus_cl_get_pdata(pdev);
+	if (pdata)
+		d->bus_client = msm_bus_scale_register_client(pdata);
+#endif
 
-	if (!pdata)
-		return -EINVAL;
-
-	d->bus_client = msm_bus_scale_register_client(pdata);
-	if (!d->bus_client)
+	if (!d->bus_client && !d->bus_icc_path) {
 		pr_warn("%s: Unable to register bus client\n", __func__);
+		return -EINVAL;
+	}
 
 	return 0;
 }
+
 static int do_bus_scaling_request(struct pil_desc *pil, int enable)
 {
 	int rc;
 	struct pil_tz_data *d = desc_to_data(pil);
 
+	if (d->bus_icc_path) {
+		rc = icc_set_bw(d->bus_icc_path, 0, enable ? 1 : 0);
+		if (rc) {
+			dev_err(pil->dev, "ICC bandwidth request failed(rc:%d)\n", rc);
+			return rc;
+		}
+		return 0;
+	}
+
+#if defined(CONFIG_QCOM_BUS_SCALING)
 	if (d->bus_client) {
 		rc = msm_bus_scale_client_update_request(d->bus_client, enable);
 		if (rc) {
-			dev_err(pil->dev, "bandwidth request failed(rc:%d)\n",
-									rc);
+			dev_err(pil->dev, "bandwidth request failed(rc:%d)\n", rc);
 			return rc;
 		}
-	} else
-		WARN(d->enable_bus_scaling, "Bus scaling not set up for %s!\n",
-					d->subsys_desc.name);
-	return 0;
-}
-#else
-static int of_read_bus_pdata(struct platform_device *pdev,
-			     struct pil_tz_data *d)
-{
-	return 0;
-}
-static int do_bus_scaling_request(struct pil_desc *pil, int enable)
-{
-	return 0;
-}
+		return 0;
+	}
 #endif
+
+	WARN(d->enable_bus_scaling, "Bus scaling not set up for %s!\n",
+		d->subsys_desc.name);
+	return 0;
+}
 
 static int piltz_resc_init(struct platform_device *pdev, struct pil_tz_data *d)
 {
@@ -1138,7 +1164,7 @@ static int pil_tz_driver_probe(struct platform_device *pdev)
 				&crypto_id);
 		}
 		of_node_put(crypto_node);
-		scm_pas_init((int)crypto_id);
+		scm_pas_init(&pdev->dev, (int)crypto_id);
 	}
 
 	rc = pil_desc_init(&d->desc);
@@ -1279,8 +1305,10 @@ err_ramdump:
 	pil_desc_release(&d->desc);
 	platform_set_drvdata(pdev, NULL);
 err_deregister_bus:
+#if defined(CONFIG_QCOM_BUS_SCALING)
 	if (d->bus_client)
 		msm_bus_scale_unregister_client(d->bus_client);
+#endif
 
 	return rc;
 }
