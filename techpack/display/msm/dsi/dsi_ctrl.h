@@ -7,6 +7,7 @@
 #define _DSI_CTRL_H_
 
 #include <linux/debugfs.h>
+#include <linux/interconnect.h>
 
 #include "dsi_defs.h"
 #include "dsi_ctrl_hw.h"
@@ -144,6 +145,9 @@ struct dsi_ctrl_clk_info {
 struct dsi_ctrl_bus_scale_info {
 	struct msm_bus_scale_pdata *bus_scale_table;
 	u32 bus_handle;
+	struct icc_path *icc_path;
+	u32 ab_kbps;
+	u32 ib_kbps;
 };
 
 /**

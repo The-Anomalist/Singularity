@@ -7,6 +7,7 @@
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/msm-bus.h>
+#include <linux/interconnect.h>
 #include <linux/pm_runtime.h>
 #include "dsi_clk.h"
 #include "dsi_defs.h"
@@ -14,6 +15,9 @@
 struct dsi_core_clks {
 	struct dsi_core_clk_info clks;
 	u32 bus_handle;
+	struct icc_path *icc_path;
+	u32 ab_kbps;
+	u32 ib_kbps;
 };
 
 struct dsi_link_clks {
@@ -268,11 +272,27 @@ int dsi_core_clk_start(struct dsi_core_clks *c_clks)
 		}
 	}
 
+	if (c_clks->icc_path) {
+		rc = icc_set_bw(c_clks->icc_path, max_t(u32, c_clks->ab_kbps, 1),
+			max_t(u32, c_clks->ib_kbps, 1));
+		if (rc)
+			DSI_DEBUG("icc enable failed, rc=%d, trying msm_bus fallback\n",
+				rc);
+	}
+
 	if (c_clks->bus_handle) {
-		rc = msm_bus_scale_client_update_request(c_clks->bus_handle, 1);
-		if (rc) {
-			DSI_ERR("bus scale client enable failed, rc=%d\n", rc);
-			goto error_disable_mmss_clk;
+		int msm_bus_rc;
+
+		msm_bus_rc = msm_bus_scale_client_update_request(c_clks->bus_handle,
+				1);
+		if (msm_bus_rc) {
+			DSI_ERR("bus scale client enable failed, rc=%d\n", msm_bus_rc);
+			if (!c_clks->icc_path || rc) {
+				rc = msm_bus_rc;
+				goto error_disable_mmss_clk;
+			}
+		} else if (rc) {
+			rc = 0;
 		}
 	}
 
@@ -301,11 +321,24 @@ int dsi_core_clk_stop(struct dsi_core_clks *c_clks)
 {
 	int rc = 0;
 
+	if (c_clks->icc_path) {
+		rc = icc_set_bw(c_clks->icc_path, 0, 0);
+		if (rc)
+			DSI_DEBUG("icc disable failed, rc=%d, trying msm_bus fallback\n",
+				rc);
+	}
+
 	if (c_clks->bus_handle) {
-		rc = msm_bus_scale_client_update_request(c_clks->bus_handle, 0);
-		if (rc) {
-			DSI_ERR("bus scale client disable failed, rc=%d\n", rc);
-			return rc;
+		int msm_bus_rc;
+
+		msm_bus_rc = msm_bus_scale_client_update_request(c_clks->bus_handle,
+				0);
+		if (msm_bus_rc) {
+			DSI_ERR("bus scale client disable failed, rc=%d\n", msm_bus_rc);
+			if (!c_clks->icc_path || rc)
+				return msm_bus_rc;
+		} else if (rc) {
+			rc = 0;
 		}
 	}
 
@@ -1430,6 +1463,9 @@ void *dsi_display_clk_mngr_register(struct dsi_clk_info *info)
 		memcpy(&mngr->link_clks[i].lp_clks, &info->l_lp_clks[i],
 			sizeof(struct dsi_link_lp_clk_info));
 		mngr->core_clks[i].bus_handle = info->bus_handle[i];
+		mngr->core_clks[i].icc_path = info->icc_path[i];
+		mngr->core_clks[i].ab_kbps = info->ab_kbps[i];
+		mngr->core_clks[i].ib_kbps = info->ib_kbps[i];
 		mngr->ctrl_index[i] = info->ctrl_index[i];
 	}
 

@@ -5731,6 +5731,10 @@ static int dsi_display_bind(struct device *dev,
 		info.c_clks[i].drm = drm;
 		info.bus_handle[i] =
 			display_ctrl->ctrl->axi_bus_info.bus_handle;
+		info.icc_path[i] =
+			display_ctrl->ctrl->axi_bus_info.icc_path;
+		info.ab_kbps[i] = display_ctrl->ctrl->axi_bus_info.ab_kbps;
+		info.ib_kbps[i] = display_ctrl->ctrl->axi_bus_info.ib_kbps;
 		info.ctrl_index[i] = display_ctrl->ctrl->cell_index;
 	}
 

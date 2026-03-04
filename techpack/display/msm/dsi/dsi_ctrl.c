@@ -855,27 +855,56 @@ static int dsi_ctrl_axi_bus_client_init(struct platform_device *pdev,
 	int rc = 0;
 	struct dsi_ctrl_bus_scale_info *bus = &ctrl->axi_bus_info;
 
+	bus->icc_path = devm_of_icc_get(&pdev->dev, NULL);
+	if (IS_ERR(bus->icc_path)) {
+		DSI_CTRL_DEBUG(ctrl,
+			"Unable to get ICC path (%ld), using msm_bus fallback\n",
+			PTR_ERR(bus->icc_path));
+		bus->icc_path = NULL;
+	}
+
 	bus->bus_scale_table = msm_bus_cl_get_pdata(pdev);
 	if (IS_ERR_OR_NULL(bus->bus_scale_table)) {
 		rc = PTR_ERR(bus->bus_scale_table);
 		DSI_CTRL_DEBUG(ctrl, "msm_bus_cl_get_pdata() failed, rc = %d\n",
 				rc);
 		bus->bus_scale_table = NULL;
-		return rc;
+		if (!bus->icc_path)
+			return rc;
+		return 0;
+	}
+
+	if (bus->bus_scale_table->num_usecases) {
+		int usecase = min_t(int, 1, bus->bus_scale_table->num_usecases - 1);
+		struct msm_bus_paths *path =
+			&bus->bus_scale_table->usecase[usecase];
+		int i;
+
+		for (i = 0; i < path->num_paths; i++) {
+			bus->ab_kbps += path->vectors[i].ab;
+			bus->ib_kbps += path->vectors[i].ib;
+		}
 	}
 
 	bus->bus_handle = msm_bus_scale_register_client(bus->bus_scale_table);
 	if (!bus->bus_handle) {
 		rc = -EINVAL;
 		DSI_CTRL_ERR(ctrl, "failed to register axi bus client\n");
+		if (!bus->icc_path)
+			return rc;
 	}
 
-	return rc;
+	return 0;
 }
 
 static int dsi_ctrl_axi_bus_client_deinit(struct dsi_ctrl *ctrl)
 {
 	struct dsi_ctrl_bus_scale_info *bus = &ctrl->axi_bus_info;
+
+	if (bus->icc_path) {
+		icc_set_bw(bus->icc_path, 0, 0);
+		bus->icc_path = NULL;
+	}
 
 	if (bus->bus_handle) {
 		msm_bus_scale_unregister_client(bus->bus_handle);
