@@ -2710,111 +2710,123 @@
 		qcom,gds-timeout = <500>;
 	};
 
-	/* CAM_CC GDSCs */
-	bps_gdsc: qcom,gdsc@ad07004 {
-		compatible = "qcom,gdsc";
-		reg = <0xad07004 0x4>;
-		regulator-name = "bps_gdsc";
-		clock-names = "ahb_clk";
-		clocks = <&clock_gcc GCC_CAMERA_AHB_CLK>;
-		parent-supply = <&VDD_MMCX_LEVEL>;
-		vdd_parent-supply = <&VDD_MMCX_LEVEL>;
-		qcom,msm-bus,name = "bps_gdsc_ahb";
-		qcom,msm-bus,num-cases = <2>;
-		qcom,msm-bus,num-paths = <1>;
-		qcom,msm-bus,vectors-KBps =
-			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 0>,
-			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 1>;
-		qcom,support-hw-trigger;
-		qcom,retain-regs;
-	};
+		/* CAM_CC GDSCs */
+		bps_gdsc: qcom,gdsc@ad07004 {
+			compatible = "qcom,gdsc";
+			reg = <0xad07004 0x4>;
+			regulator-name = "bps_gdsc";
+			clock-names = "ahb_clk";
+			clocks = <&clock_gcc GCC_CAMERA_AHB_CLK>;
+			interconnects = <&kona_icc KONA_ICC_CAM_CFG>;
+			interconnect-names = "cam-cfg";
+			parent-supply = <&VDD_MMCX_LEVEL>;
+			vdd_parent-supply = <&VDD_MMCX_LEVEL>;
+			qcom,msm-bus,name = "bps_gdsc_ahb";
+			qcom,msm-bus,num-cases = <2>;
+			qcom,msm-bus,num-paths = <1>;
+			qcom,msm-bus,vectors-KBps =
+				<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 0>,
+				<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 1>;
+			qcom,support-hw-trigger;
+			qcom,retain-regs;
+		};
 
-	ife_0_gdsc: qcom,gdsc@ad0a004 {
-		compatible = "qcom,gdsc";
-		reg = <0xad0a004 0x4>;
-		regulator-name = "ife_0_gdsc";
-		clock-names = "ahb_clk";
-		clocks = <&clock_gcc GCC_CAMERA_AHB_CLK>;
-		parent-supply = <&VDD_MMCX_LEVEL>;
-		vdd_parent-supply = <&VDD_MMCX_LEVEL>;
-		qcom,msm-bus,name = "ife_0_gdsc_ahb";
-		qcom,msm-bus,num-cases = <2>;
-		qcom,msm-bus,num-paths = <1>;
-		qcom,msm-bus,vectors-KBps =
-			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 0>,
-			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 1>;
-		qcom,retain-regs;
-	};
+		ife_0_gdsc: qcom,gdsc@ad0a004 {
+			compatible = "qcom,gdsc";
+			reg = <0xad0a004 0x4>;
+			regulator-name = "ife_0_gdsc";
+			clock-names = "ahb_clk";
+			clocks = <&clock_gcc GCC_CAMERA_AHB_CLK>;
+			interconnects = <&kona_icc KONA_ICC_CAM_CFG>;
+			interconnect-names = "cam-cfg";
+			parent-supply = <&VDD_MMCX_LEVEL>;
+			vdd_parent-supply = <&VDD_MMCX_LEVEL>;
+			qcom,msm-bus,name = "ife_0_gdsc_ahb";
+			qcom,msm-bus,num-cases = <2>;
+			qcom,msm-bus,num-paths = <1>;
+			qcom,msm-bus,vectors-KBps =
+				<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 0>,
+				<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 1>;
+			qcom,retain-regs;
+		};
 
-	ife_1_gdsc: qcom,gdsc@ad0b004 {
-		compatible = "qcom,gdsc";
-		reg = <0xad0b004 0x4>;
-		regulator-name = "ife_1_gdsc";
-		clock-names = "ahb_clk";
-		clocks = <&clock_gcc GCC_CAMERA_AHB_CLK>;
-		parent-supply = <&VDD_MMCX_LEVEL>;
-		vdd_parent-supply = <&VDD_MMCX_LEVEL>;
-		qcom,msm-bus,name = "ife_1_gdsc_ahb";
-		qcom,msm-bus,num-cases = <2>;
-		qcom,msm-bus,num-paths = <1>;
-		qcom,msm-bus,vectors-KBps =
-			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 0>,
-			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 1>;
-		qcom,retain-regs;
-	};
+		ife_1_gdsc: qcom,gdsc@ad0b004 {
+			compatible = "qcom,gdsc";
+			reg = <0xad0b004 0x4>;
+			regulator-name = "ife_1_gdsc";
+			clock-names = "ahb_clk";
+			clocks = <&clock_gcc GCC_CAMERA_AHB_CLK>;
+			interconnects = <&kona_icc KONA_ICC_CAM_CFG>;
+			interconnect-names = "cam-cfg";
+			parent-supply = <&VDD_MMCX_LEVEL>;
+			vdd_parent-supply = <&VDD_MMCX_LEVEL>;
+			qcom,msm-bus,name = "ife_1_gdsc_ahb";
+			qcom,msm-bus,num-cases = <2>;
+			qcom,msm-bus,num-paths = <1>;
+			qcom,msm-bus,vectors-KBps =
+				<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 0>,
+				<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 1>;
+			qcom,retain-regs;
+		};
 
-	ipe_0_gdsc: qcom,gdsc@ad08004 {
-		compatible = "qcom,gdsc";
-		reg = <0xad08004 0x4>;
-		regulator-name = "ipe_0_gdsc";
-		clock-names = "ahb_clk";
-		clocks = <&clock_gcc GCC_CAMERA_AHB_CLK>;
-		parent-supply = <&VDD_MMCX_LEVEL>;
-		vdd_parent-supply = <&VDD_MMCX_LEVEL>;
-		qcom,msm-bus,name = "ipe_0_gdsc_ahb";
-		qcom,msm-bus,num-cases = <2>;
-		qcom,msm-bus,num-paths = <1>;
-		qcom,msm-bus,vectors-KBps =
-			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 0>,
-			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 1>;
-		qcom,support-hw-trigger;
-		qcom,retain-regs;
-	};
+		ipe_0_gdsc: qcom,gdsc@ad08004 {
+			compatible = "qcom,gdsc";
+			reg = <0xad08004 0x4>;
+			regulator-name = "ipe_0_gdsc";
+			clock-names = "ahb_clk";
+			clocks = <&clock_gcc GCC_CAMERA_AHB_CLK>;
+			interconnects = <&kona_icc KONA_ICC_CAM_CFG>;
+			interconnect-names = "cam-cfg";
+			parent-supply = <&VDD_MMCX_LEVEL>;
+			vdd_parent-supply = <&VDD_MMCX_LEVEL>;
+			qcom,msm-bus,name = "ipe_0_gdsc_ahb";
+			qcom,msm-bus,num-cases = <2>;
+			qcom,msm-bus,num-paths = <1>;
+			qcom,msm-bus,vectors-KBps =
+				<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 0>,
+				<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 1>;
+			qcom,support-hw-trigger;
+			qcom,retain-regs;
+		};
 
-	sbi_gdsc: qcom,gdsc@ad09004 {
-		compatible = "qcom,gdsc";
-		reg = <0xad09004 0x4>;
-		regulator-name = "sbi_gdsc";
-		clock-names = "ahb_clk";
-		clocks = <&clock_gcc GCC_CAMERA_AHB_CLK>;
-		parent-supply = <&VDD_MMCX_LEVEL>;
-		vdd_parent-supply = <&VDD_MMCX_LEVEL>;
-		qcom,msm-bus,name = "sbi_gdsc_ahb";
-		qcom,msm-bus,num-cases = <2>;
-		qcom,msm-bus,num-paths = <1>;
-		qcom,msm-bus,vectors-KBps =
-			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 0>,
-			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 1>;
-		qcom,retain-regs;
-	};
+		sbi_gdsc: qcom,gdsc@ad09004 {
+			compatible = "qcom,gdsc";
+			reg = <0xad09004 0x4>;
+			regulator-name = "sbi_gdsc";
+			clock-names = "ahb_clk";
+			clocks = <&clock_gcc GCC_CAMERA_AHB_CLK>;
+			interconnects = <&kona_icc KONA_ICC_CAM_CFG>;
+			interconnect-names = "cam-cfg";
+			parent-supply = <&VDD_MMCX_LEVEL>;
+			vdd_parent-supply = <&VDD_MMCX_LEVEL>;
+			qcom,msm-bus,name = "sbi_gdsc_ahb";
+			qcom,msm-bus,num-cases = <2>;
+			qcom,msm-bus,num-paths = <1>;
+			qcom,msm-bus,vectors-KBps =
+				<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 0>,
+				<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 1>;
+			qcom,retain-regs;
+		};
 
-	titan_top_gdsc: qcom,gdsc@ad0c144 {
-		compatible = "qcom,gdsc";
-		reg = <0xad0c144 0x4>;
-		regulator-name = "titan_top_gdsc";
-		clock-names = "ahb_clk";
-		clocks = <&clock_gcc GCC_CAMERA_AHB_CLK>;
-		parent-supply = <&VDD_MMCX_LEVEL>;
-		vdd_parent-supply = <&VDD_MMCX_LEVEL>;
-		qcom,msm-bus,name = "titan_top_gdsc_ahb";
-		qcom,msm-bus,num-cases = <2>;
-		qcom,msm-bus,num-paths = <1>;
-		qcom,msm-bus,vectors-KBps =
-			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 0>,
-			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 1>;
-		qcom,retain-regs;
-		qcom,gds-timeout = <500>;
-	};
+		titan_top_gdsc: qcom,gdsc@ad0c144 {
+			compatible = "qcom,gdsc";
+			reg = <0xad0c144 0x4>;
+			regulator-name = "titan_top_gdsc";
+			clock-names = "ahb_clk";
+			clocks = <&clock_gcc GCC_CAMERA_AHB_CLK>;
+			interconnects = <&kona_icc KONA_ICC_CAM_CFG>;
+			interconnect-names = "cam-cfg";
+			parent-supply = <&VDD_MMCX_LEVEL>;
+			vdd_parent-supply = <&VDD_MMCX_LEVEL>;
+			qcom,msm-bus,name = "titan_top_gdsc_ahb";
+			qcom,msm-bus,num-cases = <2>;
+			qcom,msm-bus,num-paths = <1>;
+			qcom,msm-bus,vectors-KBps =
+				<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 0>,
+				<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_CAMERA_CFG 0 1>;
+			qcom,retain-regs;
+			qcom,gds-timeout = <500>;
+		};
 
 	/* DISP_CC GDSC */
 	mdss_core_gdsc: qcom,gdsc@af03000 {
