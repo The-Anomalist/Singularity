@@ -19,6 +19,7 @@
 
 #include <linux/sde_io_util.h>
 #include <soc/qcom/cx_ipeak.h>
+#include <linux/interconnect.h>
 
 /* event will be triggered before power handler disable */
 #define SDE_POWER_EVENT_PRE_DISABLE	0x1
@@ -89,6 +90,7 @@ enum SDE_POWER_HANDLE_DBUS_ID {
 struct sde_power_data_bus_handle {
 	struct msm_bus_scale_pdata *data_bus_scale_table;
 	u32 data_bus_hdl;
+	struct icc_path *icc_path;
 	u32 data_paths_cnt;
 	u32 curr_bw_uc_idx;
 	u32 ao_bw_uc_idx;
@@ -138,6 +140,7 @@ struct sde_power_handle {
 	struct device *dev;
 	u32 current_usecase_ndx;
 	u32 reg_bus_hdl;
+	struct icc_path *reg_bus_icc_path;
 	struct sde_power_data_bus_handle data_bus_handle
 		[SDE_POWER_HANDLE_DBUS_ID_MAX];
 	struct list_head event_list;
