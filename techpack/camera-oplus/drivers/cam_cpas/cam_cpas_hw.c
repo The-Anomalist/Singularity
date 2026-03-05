@@ -7,6 +7,7 @@
 #include <linux/platform_device.h>
 #include <linux/of.h>
 #include <linux/msm-bus.h>
+#include <linux/interconnect.h>
 #include <linux/pm_opp.h>
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -17,6 +18,21 @@
 
 static uint cam_min_camnoc_ib_bw;
 module_param(cam_min_camnoc_ib_bw, uint, 0644);
+
+static int cam_cpas_util_set_icc_bw(struct cam_cpas_bus_client *bus_client,
+	u64 ab, u64 ib)
+{
+	int rc;
+
+	rc = icc_set_bw(bus_client->icc_path, min_t(u64, ab, U32_MAX),
+		min_t(u64, ib, U32_MAX));
+	if (rc)
+		CAM_ERR(CAM_CPAS,
+			"Bus client[%s]: ICC vote failed ab=%llu ib=%llu rc=%d",
+			bus_client->name, ab, ib, rc);
+
+	return rc;
+}
 
 
 int cam_cpas_util_reg_update(struct cam_hw_info *cpas_hw,
@@ -56,6 +72,10 @@ int cam_cpas_util_reg_update(struct cam_hw_info *cpas_hw,
 static int cam_cpas_util_vote_bus_client_level(
 	struct cam_cpas_bus_client *bus_client, unsigned int level)
 {
+	u64 ab;
+	u64 ib;
+	int rc = 0;
+
 	if (!bus_client->valid || (bus_client->dyn_vote == true)) {
 		CAM_ERR(CAM_CPAS, "Invalid params %d %d", bus_client->valid,
 			bus_client->dyn_vote);
@@ -73,10 +93,17 @@ static int cam_cpas_util_vote_bus_client_level(
 
 	CAM_DBG(CAM_CPAS, "Bus client=[%d][%s] index[%d]",
 		bus_client->client_id, bus_client->name, level);
-	msm_bus_scale_client_update_request(bus_client->client_id, level);
-	bus_client->curr_vote_level = level;
+	if (bus_client->icc_primary) {
+		ab = bus_client->pdata->usecase[level].vectors[0].ab;
+		ib = bus_client->pdata->usecase[level].vectors[0].ib;
+		rc = cam_cpas_util_set_icc_bw(bus_client, ab, ib);
+	} else {
+		msm_bus_scale_client_update_request(bus_client->client_id, level);
+	}
+	if (!rc)
+		bus_client->curr_vote_level = level;
 
-	return 0;
+	return rc;
 }
 
 static int cam_cpas_util_vote_bus_client_bw(
@@ -86,6 +113,7 @@ static int cam_cpas_util_vote_bus_client_bw(
 	struct msm_bus_paths *path;
 	struct msm_bus_scale_pdata *pdata;
 	int idx = 0;
+	int rc = 0;
 	uint64_t min_camnoc_ib_bw = CAM_CPAS_AXI_MIN_CAMNOC_IB_BW;
 
 	if (cam_min_camnoc_ib_bw > 0)
@@ -143,9 +171,12 @@ static int cam_cpas_util_vote_bus_client_bw(
 
 	CAM_DBG(CAM_CPAS, "Bus client=[%d][%s] :ab[%llu] ib[%llu], index[%d]",
 		bus_client->client_id, bus_client->name, ab, ib, idx);
-	msm_bus_scale_client_update_request(bus_client->client_id, idx);
+	if (bus_client->icc_primary)
+		rc = cam_cpas_util_set_icc_bw(bus_client, ab, ib);
+	else
+		msm_bus_scale_client_update_request(bus_client->client_id, idx);
 
-	return 0;
+	return rc;
 }
 
 static int cam_cpas_util_register_bus_client(
@@ -187,8 +218,6 @@ static int cam_cpas_util_register_bus_client(
 		goto fail_unregister_client;
 	}
 
-	msm_bus_scale_client_update_request(client_id, 0);
-
 	bus_client->src = pdata->usecase[0].vectors[0].src;
 	bus_client->dst = pdata->usecase[0].vectors[0].dst;
 	bus_client->pdata = pdata;
@@ -198,6 +227,25 @@ static int cam_cpas_util_register_bus_client(
 	bus_client->curr_vote_level = 0;
 	bus_client->valid = true;
 	bus_client->name = pdata->name;
+	bus_client->icc_primary = false;
+	bus_client->icc_path = devm_of_icc_get(&soc_info->pdev->dev,
+		bus_client->name);
+	if (IS_ERR(bus_client->icc_path)) {
+		CAM_DBG(CAM_CPAS,
+			"No ICC path for %s (%ld), using msm_bus fallback",
+			bus_client->name, PTR_ERR(bus_client->icc_path));
+		bus_client->icc_path = NULL;
+	}
+
+	if (bus_client->icc_path) {
+		rc = cam_cpas_util_set_icc_bw(bus_client, 0, 0);
+		if (!rc)
+			bus_client->icc_primary = true;
+	}
+
+	if (!bus_client->icc_primary)
+		msm_bus_scale_client_update_request(client_id, 0);
+
 	mutex_init(&bus_client->lock);
 
 	CAM_DBG(CAM_CPAS, "Bus Client=[%d][%s] : src=%d, dst=%d",
@@ -222,6 +270,9 @@ static int cam_cpas_util_unregister_bus_client(
 		cam_cpas_util_vote_bus_client_bw(bus_client, 0, 0, false);
 	else
 		cam_cpas_util_vote_bus_client_level(bus_client, 0);
+
+	if (bus_client->icc_primary)
+		cam_cpas_util_set_icc_bw(bus_client, 0, 0);
 
 	msm_bus_scale_unregister_client(bus_client->client_id);
 	bus_client->valid = false;

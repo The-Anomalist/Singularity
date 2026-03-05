@@ -36,6 +36,8 @@
 	((CAM_CPAS_CLIENT_REGISTERED(cpas_core, indx)) && \
 	(cpas_core->cpas_client[indx]->started))
 
+struct icc_path;
+
 /**
  * enum cam_cpas_access_type - Enum for Register access type
  */
@@ -133,6 +135,8 @@ struct cam_cpas_client {
 struct cam_cpas_bus_client {
 	int src;
 	int dst;
+	struct icc_path *icc_path;
+	bool icc_primary;
 	struct msm_bus_scale_pdata *pdata;
 	uint32_t client_id;
 	int num_usecases;
