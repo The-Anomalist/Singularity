@@ -24,6 +24,7 @@
 #include <linux/crypto.h>
 #include <linux/platform_data/qcom_crypto_device.h>
 #include <linux/msm-bus.h>
+#include <linux/interconnect.h>
 #include <linux/qcedev.h>
 
 #include <crypto/hash.h>
@@ -105,6 +106,30 @@ static uint32_t qcedev_get_block_size(enum qcedev_sha_alg_enum alg)
 	}
 }
 
+static int qcedev_bus_vote(struct qcedev_control *podev, bool enable)
+{
+	int ret;
+	int vote = enable ? 1 : 0;
+
+	if (podev->icc_path) {
+		ret = icc_set_bw(podev->icc_path, vote, vote);
+		if (!ret)
+			return 0;
+
+		dev_warn(&podev->pdev->dev,
+			"ICC vote failed (%d), using msm_bus fallback\n", ret);
+	}
+
+	if (!podev->bus_scale_handle)
+		return 0;
+
+	ret = msm_bus_scale_client_update_request(podev->bus_scale_handle, vote);
+	if (ret)
+		pr_err("%s Unable to set %s bw\n", __func__, vote ? "high" : "low");
+
+	return ret;
+}
+
 static int qcedev_control_clocks(struct qcedev_control *podev, bool enable)
 {
 	unsigned int control_flag;
@@ -129,8 +154,7 @@ static int qcedev_control_clocks(struct qcedev_control *podev, bool enable)
 			pr_err("%s Unable enable clk\n", __func__);
 			return ret;
 		}
-		ret = msm_bus_scale_client_update_request(
-				podev->bus_scale_handle, 1);
+		ret = qcedev_bus_vote(podev, true);
 		if (ret) {
 			pr_err("%s Unable to set high bw\n", __func__);
 			ret = qce_disable_clk(podev->qce);
@@ -140,8 +164,7 @@ static int qcedev_control_clocks(struct qcedev_control *podev, bool enable)
 		}
 		break;
 	case QCE_BW_REQUEST_FIRST:
-		ret = msm_bus_scale_client_update_request(
-				podev->bus_scale_handle, 1);
+		ret = qcedev_bus_vote(podev, true);
 		if (ret) {
 			pr_err("%s Unable to set high bw\n", __func__);
 			return ret;
@@ -149,8 +172,7 @@ static int qcedev_control_clocks(struct qcedev_control *podev, bool enable)
 		ret = qce_enable_clk(podev->qce);
 		if (ret) {
 			pr_err("%s Unable enable clk\n", __func__);
-			ret = msm_bus_scale_client_update_request(
-				podev->bus_scale_handle, 0);
+			ret = qcedev_bus_vote(podev, false);
 			if (ret)
 				pr_err("%s Unable to set low bw\n", __func__);
 			return ret;
@@ -162,8 +184,7 @@ static int qcedev_control_clocks(struct qcedev_control *podev, bool enable)
 			pr_err("%s Unable to disable clk\n", __func__);
 			return ret;
 		}
-		ret = msm_bus_scale_client_update_request(
-				podev->bus_scale_handle, 0);
+		ret = qcedev_bus_vote(podev, false);
 		if (ret) {
 			pr_err("%s Unable to set low bw\n", __func__);
 			ret = qce_enable_clk(podev->qce);
@@ -173,8 +194,7 @@ static int qcedev_control_clocks(struct qcedev_control *podev, bool enable)
 		}
 		break;
 	case QCE_BW_REQUEST_RESET_FIRST:
-		ret = msm_bus_scale_client_update_request(
-				podev->bus_scale_handle, 0);
+		ret = qcedev_bus_vote(podev, false);
 		if (ret) {
 			pr_err("%s Unable to set low bw\n", __func__);
 			return ret;
@@ -182,8 +202,7 @@ static int qcedev_control_clocks(struct qcedev_control *podev, bool enable)
 		ret = qce_disable_clk(podev->qce);
 		if (ret) {
 			pr_err("%s Unable to disable clk\n", __func__);
-			ret = msm_bus_scale_client_update_request(
-				podev->bus_scale_handle, 1);
+			ret = qcedev_bus_vote(podev, true);
 			if (ret)
 				pr_err("%s Unable to set high bw\n", __func__);
 			return ret;
@@ -2167,24 +2186,35 @@ static int qcedev_probe_device(struct platform_device *pdev)
 	spin_lock_init(&podev->lock);
 
 	tasklet_init(&podev->done_tasklet, req_done, (unsigned long)podev);
+	podev->pdev = pdev;
+
+	podev->icc_path = devm_of_icc_get(&pdev->dev, "crypto-ddr");
+	if (IS_ERR(podev->icc_path)) {
+		rc = PTR_ERR(podev->icc_path);
+		podev->icc_path = NULL;
+		if (rc == -EPROBE_DEFER)
+			dev_dbg(&pdev->dev,
+				"ICC provider not ready, keeping msm_bus fallback\n");
+		else
+			dev_dbg(&pdev->dev,
+				"ICC path unavailable (%d), keeping msm_bus fallback\n", rc);
+	}
 
 	podev->platform_support.bus_scale_table = (struct msm_bus_scale_pdata *)
 					msm_bus_cl_get_pdata(pdev);
-	if (!podev->platform_support.bus_scale_table) {
-		pr_err("bus_scale_table is NULL\n");
+	if (podev->platform_support.bus_scale_table) {
+		podev->bus_scale_handle = msm_bus_scale_register_client(
+				(struct msm_bus_scale_pdata *)
+				podev->platform_support.bus_scale_table);
+		if (!podev->bus_scale_handle)
+			pr_err("%s not able to get bus scale; ICC only mode\n", __func__);
+	} else if (!podev->icc_path) {
+		pr_err("no ICC path or bus_scale_table\n");
 		rc = -ENODATA;
 		goto exit_del_cdev;
 	}
-	podev->bus_scale_handle = msm_bus_scale_register_client(
-				(struct msm_bus_scale_pdata *)
-				podev->platform_support.bus_scale_table);
-	if (!podev->bus_scale_handle) {
-		pr_err("%s not able to get bus scale\n", __func__);
-		rc = -ENOMEM;
-		goto exit_del_cdev;
-	}
 
-	rc = msm_bus_scale_client_update_request(podev->bus_scale_handle, 1);
+	rc = qcedev_bus_vote(podev, true);
 	if (rc) {
 		pr_err("%s Unable to set to high bandwidth\n", __func__);
 		goto exit_unregister_bus_scale;
@@ -2194,14 +2224,13 @@ static int qcedev_probe_device(struct platform_device *pdev)
 		rc = -ENODEV;
 		goto exit_scale_busbandwidth;
 	}
-	rc = msm_bus_scale_client_update_request(podev->bus_scale_handle, 0);
+	rc = qcedev_bus_vote(podev, false);
 	if (rc) {
 		pr_err("%s Unable to set to low bandwidth\n", __func__);
 		goto exit_qce_close;
 	}
 
 	podev->qce = handle;
-	podev->pdev = pdev;
 	platform_set_drvdata(pdev, podev);
 
 	qce_hw_support(podev->qce, &podev->ce_support);
@@ -2247,9 +2276,9 @@ exit_qce_close:
 	if (handle)
 		qce_close(handle);
 exit_scale_busbandwidth:
-	msm_bus_scale_client_update_request(podev->bus_scale_handle, 0);
+	qcedev_bus_vote(podev, false);
 exit_unregister_bus_scale:
-	if (podev->platform_support.bus_scale_table != NULL)
+	if (podev->bus_scale_handle)
 		msm_bus_scale_unregister_client(podev->bus_scale_handle);
 exit_del_cdev:
 	cdev_del(&podev->cdev);
@@ -2292,7 +2321,7 @@ static int qcedev_remove(struct platform_device *pdev)
 		qce_close(podev->qce);
 	qcedev_ce_high_bw_req(podev, false);
 
-	if (podev->platform_support.bus_scale_table != NULL)
+	if (podev->bus_scale_handle)
 		msm_bus_scale_unregister_client(podev->bus_scale_handle);
 	tasklet_kill(&podev->done_tasklet);
 

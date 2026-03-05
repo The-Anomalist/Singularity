@@ -26,6 +26,7 @@ enum qcedev_crypto_oper_type {
 };
 
 struct qcedev_handle;
+struct icc_path;
 
 struct qcedev_cipher_req {
 	struct ablkcipher_request creq;
@@ -85,6 +86,7 @@ struct qcedev_control {
 	struct ce_hw_support ce_support;
 
 	uint32_t  bus_scale_handle;
+	struct icc_path *icc_path;
 
 	/* char device */
 	struct cdev cdev;
