@@ -14,6 +14,7 @@
 #include <linux/io.h>
 #include <linux/iommu.h>
 #include <linux/iopoll.h>
+#include <linux/interconnect.h>
 #include <linux/of.h>
 #include <linux/pm_qos.h>
 #include <linux/regulator/consumer.h>
@@ -1096,7 +1097,11 @@ static int __devfreq_target(struct device *devfreq_dev,
 
 	/* we expect governors to provide values in kBps form, convert to Bps */
 	ab = *freq * 1000;
-	rc = msm_bus_scale_update_bw(bus->client, ab, 0);
+	if (bus->use_icc && bus->icc_path)
+		rc = icc_set_bw(bus->icc_path, ab, 0);
+	else
+		rc = msm_bus_scale_update_bw(bus->client, ab, 0);
+	if (rc) {
 		dprintk(CVP_ERR, "Failed voting bus %s to ab %llu\n: %d",
 				bus->name, ab, rc);
 		goto err_unknown_device;
@@ -1164,7 +1169,10 @@ static int __unvote_buses(struct iris_hfi_device *device)
 		else
 			rc = __devfreq_target(bus->dev, &zero, 0);
 #else
-		rc = msm_bus_scale_update_bw(bus->client, 0, 0);
+		if (bus->use_icc && bus->icc_path)
+			rc = icc_set_bw(bus->icc_path, 0, 0);
+		else
+			rc = msm_bus_scale_update_bw(bus->client, 0, 0);
 #endif
 
 		if (rc) {
@@ -1220,8 +1228,12 @@ no_data_count:
 				}
 			}
 #else
-			rc = msm_bus_scale_update_bw(bus->client,
-				bus->range[1], 0);
+			if (bus->use_icc && bus->icc_path)
+				rc = icc_set_bw(bus->icc_path,
+					bus->range[1] * 1000, 0);
+			else
+				rc = msm_bus_scale_update_bw(bus->client,
+					bus->range[1], 0);
 			if (rc)
 				dprintk(CVP_ERR,
 				"Failed voting bus %s to ab %u\n",
@@ -3696,8 +3708,16 @@ static void __deinit_bus(struct iris_hfi_device *device)
 #endif
 		dev_set_drvdata(bus->dev, NULL);
 
-		msm_bus_scale_unregister(bus->client);
-		bus->client = NULL;
+		if (bus->use_icc && bus->icc_path) {
+			icc_set_bw(bus->icc_path, 0, 0);
+			bus->icc_path = NULL;
+			bus->use_icc = false;
+		}
+
+		if (bus->client) {
+			msm_bus_scale_unregister(bus->client);
+			bus->client = NULL;
+		}
 	}
 }
 
@@ -3738,14 +3758,27 @@ static int __init_bus(struct iris_hfi_device *device)
 				dev_name(bus->dev));
 		dev_set_drvdata(bus->dev, device);
 
-		bus->client = msm_bus_scale_register(bus->master, bus->slave,
-				bus->name, false);
-		if (IS_ERR_OR_NULL(bus->client)) {
-			rc = PTR_ERR(bus->client) ?: -EBADHANDLE;
-			dprintk(CVP_ERR, "Failed to register bus %s: %d\n",
+		bus->icc_path = devm_of_icc_get(bus->dev, NULL);
+		if (!IS_ERR_OR_NULL(bus->icc_path)) {
+			bus->use_icc = true;
+		} else {
+			if (IS_ERR(bus->icc_path))
+				dprintk(CVP_DBG,
+					"ICC unavailable for %s (%ld), using msm_bus fallback\n",
+					bus->name, PTR_ERR(bus->icc_path));
+
+			bus->icc_path = NULL;
+			bus->use_icc = false;
+			bus->client = msm_bus_scale_register(bus->master,
+					bus->slave, bus->name, false);
+			if (IS_ERR_OR_NULL(bus->client)) {
+				rc = PTR_ERR(bus->client) ?: -EBADHANDLE;
+				dprintk(CVP_ERR,
+					"Failed to register bus %s: %d\n",
 					bus->name, rc);
-			bus->client = NULL;
-			goto err_add_dev;
+				bus->client = NULL;
+				goto err_add_dev;
+			}
 		}
 
 #ifdef USE_DEVFREQ_SCALE_BUS
@@ -5044,4 +5077,3 @@ int cvp_iris_hfi_initialize(struct cvp_hfi_device *hdev, u32 device_id,
 err_iris_hfi_init:
 	return rc;
 }
-

@@ -7,6 +7,7 @@
 #define __MSM_CVP_RESOURCES_H__
 
 #include <linux/devfreq.h>
+#include <linux/interconnect.h>
 #include <linux/platform_device.h>
 #include "msm_cvp_core.h"
 #include <linux/soc/qcom/llcc-qcom.h>
@@ -74,7 +75,9 @@ struct bus_info {
 	struct device *dev;
 	struct devfreq_dev_profile devfreq_prof;
 	struct devfreq *devfreq;
+	struct icc_path *icc_path;
 	struct msm_bus_client_handle *client;
+	bool use_icc;
 	bool is_prfm_gov_used;
 };
 
@@ -173,4 +176,3 @@ static inline bool is_iommu_present(struct msm_cvp_platform_resources *res)
 }
 
 #endif
-
