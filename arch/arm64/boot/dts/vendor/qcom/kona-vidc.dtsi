@@ -55,6 +55,8 @@
 		venus_bus_ddr {
 			compatible = "qcom,msm-vidc,bus";
 			label = "venus-ddr";
+			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+			interconnect-names = "video-ddr";
 			qcom,bus-master = <MSM_BUS_MASTER_LLCC>;
 			qcom,bus-slave = <MSM_BUS_SLAVE_EBI_CH0>;
 			qcom,mode = "venus-ddr";
@@ -64,6 +66,8 @@
 		venus_bus_llcc {
 			compatible = "qcom,msm-vidc,bus";
 			label = "venus-llcc";
+			interconnects = <&kona_icc KONA_ICC_CPU_TO_LLCC>;
+			interconnect-names = "video-llcc";
 			qcom,bus-master = <MSM_BUS_MASTER_VIDEO_P0>;
 			qcom,bus-slave = <MSM_BUS_SLAVE_LLCC>;
 			qcom,mode = "venuc-llcc";
