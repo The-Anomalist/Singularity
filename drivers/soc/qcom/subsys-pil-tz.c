@@ -207,11 +207,12 @@ err_bus:
 static void scm_pas_disable_bw(void)
 {
 	mutex_lock(&scm_pas_bw_mutex);
-	if (scm_pas_bw_count-- == 1)
+	if (scm_pas_bw_count-- == 1) {
 		if (scm_pas_icc_path)
 			icc_set_bw(scm_pas_icc_path, 0, 0);
 		else
 			msm_bus_scale_client_update_request(scm_perf_client, 0);
+	}
 	mutex_unlock(&scm_pas_bw_mutex);
 }
 
