@@ -99,6 +99,15 @@ static int cam_cpas_util_vote_bus_client_level(
 		ab = bus_client->pdata->usecase[level].vectors[0].ab;
 		ib = bus_client->pdata->usecase[level].vectors[0].ib;
 		rc = cam_cpas_util_set_icc_bw(bus_client, ab, ib);
+		if (rc) {
+			CAM_WARN(CAM_CPAS,
+				"Bus client[%s]: ICC vote failed, fallback to msm_bus",
+				bus_client->name);
+			bus_client->icc_primary = false;
+			msm_bus_scale_client_update_request(bus_client->client_id,
+				level);
+			rc = 0;
+		}
 	} else {
 		msm_bus_scale_client_update_request(bus_client->client_id, level);
 	}
@@ -173,10 +182,20 @@ static int cam_cpas_util_vote_bus_client_bw(
 
 	CAM_DBG(CAM_CPAS, "Bus client=[%d][%s] :ab[%llu] ib[%llu], index[%d]",
 		bus_client->client_id, bus_client->name, ab, ib, idx);
-	if (bus_client->icc_primary)
+	if (bus_client->icc_primary) {
 		rc = cam_cpas_util_set_icc_bw(bus_client, ab, ib);
-	else
+		if (rc) {
+			CAM_WARN(CAM_CPAS,
+				"Bus client[%s]: ICC vote failed, fallback to msm_bus",
+				bus_client->name);
+			bus_client->icc_primary = false;
+			msm_bus_scale_client_update_request(bus_client->client_id,
+				idx);
+			rc = 0;
+		}
+	} else {
 		msm_bus_scale_client_update_request(bus_client->client_id, idx);
+	}
 	if (applied_ab)
 		*applied_ab = ab;
 	if (applied_ib)
