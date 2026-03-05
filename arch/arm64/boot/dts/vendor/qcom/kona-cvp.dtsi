@@ -1,4 +1,5 @@
 #include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interconnect/qcom,kona.h>
 #include <dt-bindings/msm/msm-bus-ids.h>
 #include <dt-bindings/clock/qcom,videocc-kona.h>
 
@@ -38,6 +39,8 @@
 		cvp_cnoc {
 			compatible = "qcom,msm-cvp,bus";
 			label = "cvp-cnoc";
+			interconnects = <&kona_icc KONA_ICC_VIDEO_CFG>;
+			interconnect-names = "video-cfg";
 			qcom,bus-master = <MSM_BUS_MASTER_AMPSS_M0>;
 			qcom,bus-slave = <MSM_BUS_SLAVE_VENUS_CFG>;
 			qcom,bus-governor = "performance";
