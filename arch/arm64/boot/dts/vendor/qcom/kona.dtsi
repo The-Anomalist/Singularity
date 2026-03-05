@@ -3287,6 +3287,9 @@
 		qcom,bus-width = <4>;
 		qcom,large-address-bus;
 
+		interconnects = <&kona_icc KONA_ICC_SDHC2_TO_MEM>;
+		interconnect-names = "sdhc2-ddr";
+
 		qcom,msm-bus,name = "sdhc2";
 		qcom,msm-bus,num-cases = <8>;
 		qcom,msm-bus,num-paths = <2>;
