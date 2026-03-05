@@ -1,3 +1,5 @@
+#include <dt-bindings/interconnect/qcom,kona.h>
+
 &pcie2_rp {
 	#address-cells = <5>;
 	#size-cells = <0>;
@@ -9,6 +11,9 @@
 		qcom,iommu-group = <&mhi_0_iommu_group>;
 
 		/* controller ddr frequency scaling configuration */
+		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+		interconnect-names = "mhi-ddr";
+
 		qcom,msm-bus,name = "mhi0";
 		qcom,msm-bus,num-cases = <4>;
 		qcom,msm-bus,num-paths = <1>;
