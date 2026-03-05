@@ -3226,7 +3226,6 @@ int cnss_auto_suspend(struct device *dev)
 	struct pci_dev *pci_dev = to_pci_dev(dev);
 	struct cnss_pci_data *pci_priv = cnss_get_pci_priv(pci_dev);
 	struct cnss_plat_data *plat_priv;
-	struct cnss_bus_bw_info *bus_bw_info;
 
 	if (!pci_priv)
 		return -ENODEV;
@@ -3247,9 +3246,7 @@ int cnss_auto_suspend(struct device *dev)
 
 	cnss_pci_set_monitor_wake_intr(pci_priv, true);
 
-	bus_bw_info = &plat_priv->bus_bw_info;
-	msm_bus_scale_client_update_request(bus_bw_info->bus_client,
-					    CNSS_BUS_WIDTH_NONE);
+	cnss_request_bus_bandwidth(dev, CNSS_BUS_WIDTH_NONE);
 
 	return 0;
 }
@@ -3281,8 +3278,7 @@ int cnss_auto_resume(struct device *dev)
 	mutex_unlock(&pci_priv->bus_lock);
 
 	bus_bw_info = &plat_priv->bus_bw_info;
-	msm_bus_scale_client_update_request(bus_bw_info->bus_client,
-					    bus_bw_info->current_bw_vote);
+	cnss_request_bus_bandwidth(dev, bus_bw_info->current_bw_vote);
 
 	return 0;
 }
