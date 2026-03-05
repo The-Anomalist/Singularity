@@ -1663,18 +1663,8 @@ static int DWC_ETH_QOS_configure_netdevice(struct platform_device *pdev)
 	hw_if = &pdata->hw_if;
 	desc_if = &pdata->desc_if;
 	pdata->res_data = &dwc_eth_qos_res_data;
-	pdata->icc_path = devm_of_icc_get(&pdev->dev, NULL);
-	if (!IS_ERR_OR_NULL(pdata->icc_path)) {
-		pdata->use_icc = true;
-	} else {
-		if (IS_ERR(pdata->icc_path))
-			EMACDBG("Unable to get ICC path, falling back to msm_bus (%ld)\n",
-				PTR_ERR(pdata->icc_path));
-		pdata->icc_path = NULL;
-		pdata->use_icc = false;
-	}
 
-	if (!pdata->use_icc && emac_bus_scale_vec) {
+	if (emac_bus_scale_vec) {
 		pdata->bus_scale_vec = emac_bus_scale_vec;
 		pdata->bus_hdl = msm_bus_scale_register_client(pdata->bus_scale_vec);
 		if (!pdata->bus_hdl) {
@@ -1927,12 +1917,7 @@ static int DWC_ETH_QOS_configure_netdevice(struct platform_device *pdev)
  err_out_q_alloc_failed:
 	platform_set_drvdata(pdev, NULL);
 
-	err_bus_reg_failed:
-	if (pdata->icc_path) {
-		icc_set_bw(pdata->icc_path, 0, 0);
-		pdata->icc_path = NULL;
-		pdata->use_icc = false;
-	}
+ err_bus_reg_failed:
 	if (pdata->bus_hdl) {
 		msm_bus_scale_unregister_client(pdata->bus_hdl);
 		emac_bus_scale_vec = NULL;
@@ -2277,12 +2262,6 @@ int DWC_ETH_QOS_remove(struct platform_device *pdev)
 	if (pdata->bus_hdl){
 		msm_bus_scale_unregister_client(pdata->bus_hdl);
 		pdata->bus_hdl = 0;
-	}
-
-	if (pdata->icc_path) {
-		icc_set_bw(pdata->icc_path, 0, 0);
-		pdata->icc_path = NULL;
-		pdata->use_icc = false;
 	}
 
 	free_netdev(dev);
