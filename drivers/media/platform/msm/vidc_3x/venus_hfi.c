@@ -20,6 +20,7 @@
 #include <linux/hash.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/interconnect.h>
 #include <linux/iommu.h>
 #include <linux/iopoll.h>
 #include <linux/of.h>
@@ -760,7 +761,10 @@ static int __vote_bandwidth(struct bus_info *bus,
 	/* Bus Driver expects values in Bps */
 	ab = *freq * 1000;
 	dprintk(VIDC_PROF, "Voting bus %s to ab %llu\n", bus->name, ab);
-	rc = msm_bus_scale_update_bw(bus->client, ab, 0);
+	if (bus->use_icc && bus->icc_path)
+		rc = icc_set_bw(bus->icc_path, ab, 0);
+	else
+		rc = msm_bus_scale_update_bw(bus->client, ab, 0);
 	if (rc)
 		dprintk(VIDC_ERR, "Failed voting bus %s to ab %llu, rc=%d\n",
 				bus->name, ab, rc);
@@ -3759,6 +3763,13 @@ static void __deinit_bus(struct venus_hfi_device *device)
 	device->bus_vote = DEFAULT_BUS_VOTE;
 
 	venus_hfi_for_each_bus_reverse(device, bus) {
+		if (bus->use_icc && bus->icc_path) {
+			icc_set_bw(bus->icc_path, 0, 0);
+			bus->icc_path = NULL;
+			bus->use_icc = false;
+			continue;
+		}
+
 		msm_bus_scale_unregister(bus->client);
 		bus->client = NULL;
 	}
@@ -3773,6 +3784,19 @@ static int __init_bus(struct venus_hfi_device *device)
 		return -EINVAL;
 
 	venus_hfi_for_each_bus(device, bus) {
+		bus->icc_path = devm_of_icc_get(bus->dev, NULL);
+		if (!IS_ERR_OR_NULL(bus->icc_path)) {
+			bus->use_icc = true;
+			continue;
+		}
+
+		if (IS_ERR(bus->icc_path))
+			dprintk(VIDC_DBG,
+				"ICC unavailable for %s (%ld), using msm_bus fallback\n",
+				bus->name, PTR_ERR(bus->icc_path));
+
+		bus->icc_path = NULL;
+		bus->use_icc = false;
 		bus->client = msm_bus_scale_register(bus->master, bus->slave,
 				bus->name, false);
 		if (IS_ERR_OR_NULL(bus->client)) {

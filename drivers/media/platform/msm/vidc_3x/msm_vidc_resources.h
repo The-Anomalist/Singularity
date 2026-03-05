@@ -19,6 +19,8 @@
 #include <media/msm_vidc.h>
 #define MAX_BUFFER_TYPES 32
 
+struct icc_path;
+
 struct version_table {
 	u32 version_mask;
 	u32 version_shift;
@@ -117,7 +119,9 @@ struct bus_info {
 	int slave;
 	unsigned int range[2];
 	struct device *dev;
+	struct icc_path *icc_path;
 	struct msm_bus_client_handle *client;
+	bool use_icc;
 	bool is_prfm_gov_used;
 	const char *mode;
 };
@@ -219,4 +223,3 @@ static inline bool is_iommu_present(struct msm_vidc_platform_resources *res)
 extern uint32_t msm_vidc_pwr_collapse_delay;
 
 #endif
-
