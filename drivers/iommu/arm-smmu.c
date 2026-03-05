@@ -54,6 +54,7 @@
 #include <linux/spinlock.h>
 #include <soc/qcom/secure_buffer.h>
 #include <linux/of_platform.h>
+#include <linux/interconnect.h>
 #include <linux/msm-bus.h>
 #include <trace/events/iommu.h>
 #include <dt-bindings/msm/msm-bus-ids.h>
@@ -223,6 +224,8 @@ struct arm_smmu_power_resources {
 
 	uint32_t			bus_client;
 	struct msm_bus_scale_pdata	*bus_dt_data;
+	struct icc_path			*icc_path;
+	bool				use_icc;
 
 	/* Protects power_count */
 	struct mutex			power_lock;
@@ -1223,6 +1226,17 @@ static void arm_smmu_disable_clocks(struct arm_smmu_power_resources *pwr)
 
 static int arm_smmu_request_bus(struct arm_smmu_power_resources *pwr)
 {
+	int ret;
+
+	if (pwr->use_icc) {
+		ret = icc_set_bw(pwr->icc_path, 0, 1);
+		if (!ret)
+			return 0;
+
+		dev_err(pwr->dev,
+			"ICC vote failed (%d), using msm_bus fallback\n", ret);
+	}
+
 	if (!pwr->bus_client)
 		return 0;
 	return msm_bus_scale_client_update_request(pwr->bus_client, 1);
@@ -1230,6 +1244,17 @@ static int arm_smmu_request_bus(struct arm_smmu_power_resources *pwr)
 
 static void arm_smmu_unrequest_bus(struct arm_smmu_power_resources *pwr)
 {
+	int ret;
+
+	if (pwr->use_icc) {
+		ret = icc_set_bw(pwr->icc_path, 0, 0);
+		if (!ret)
+			return;
+
+		dev_err(pwr->dev,
+			"ICC unvote failed (%d), using msm_bus fallback\n", ret);
+	}
+
 	if (!pwr->bus_client)
 		return;
 	WARN_ON(msm_bus_scale_client_update_request(pwr->bus_client, 0));
@@ -5269,6 +5294,19 @@ static int arm_smmu_init_regulators(struct arm_smmu_power_resources *pwr)
 static int arm_smmu_init_bus_scaling(struct arm_smmu_power_resources *pwr)
 {
 	struct device *dev = pwr->dev;
+	int ret;
+
+	pwr->icc_path = devm_of_icc_get(dev, "smmu-ddr");
+	if (!IS_ERR(pwr->icc_path)) {
+		pwr->use_icc = true;
+		return 0;
+	}
+
+	ret = PTR_ERR(pwr->icc_path);
+	pwr->icc_path = NULL;
+	if (ret != -ENODATA && ret != -ENODEV && ret != -EPROBE_DEFER)
+		dev_dbg(dev, "Unable to get ICC path (%d), using msm_bus fallback\n",
+			ret);
 
 	/* We don't want the bus APIs to print an error message */
 	if (!of_find_property(dev->of_node, "qcom,msm-bus,name", NULL)) {
