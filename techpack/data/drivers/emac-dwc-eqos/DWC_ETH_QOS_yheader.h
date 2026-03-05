@@ -60,6 +60,7 @@
 #include <linux/string.h>
 #include <linux/cdev.h>
 #include <linux/msm-bus.h>
+#include <linux/interconnect.h>
 #include <linux/clk.h>
 
 #include <linux/platform_device.h>
@@ -1637,6 +1638,8 @@ struct DWC_ETH_QOS_prv_data {
 
 	struct msm_bus_scale_pdata *bus_scale_vec;
 	uint32_t bus_hdl;
+	struct icc_path *icc_path;
+	bool use_icc;
 	u32 rgmii_clk_rate;
 	unsigned int vote_idx;
 	int clks_suspended;

@@ -50,6 +50,10 @@
 #include "DWC_ETH_QOS_yheader.h"
 #include "DWC_ETH_QOS_ipa.h"
 
+#define EMAC_ICC_BW_10_MBPS_KBPS	10000
+#define EMAC_ICC_BW_100_MBPS_KBPS	100000
+#define EMAC_ICC_BW_1000_MBPS_KBPS	1000000
+
 /*!
  * \brief read MII PHY register, function called by the driver alone
  *
@@ -743,6 +747,9 @@ static void configure_phy_rx_tx_delay(struct DWC_ETH_QOS_prv_data *pdata)
  */
 void DWC_ETH_QOS_set_clk_and_bus_config(struct DWC_ETH_QOS_prv_data *pdata, int speed)
 {
+	u32 peak_bw_kbps = 0;
+	int icc_rc = 0;
+
 	EMACDBG("Enter\n");
 
 	switch (pdata->io_macro_phy_intf) {
@@ -796,20 +803,32 @@ void DWC_ETH_QOS_set_clk_and_bus_config(struct DWC_ETH_QOS_prv_data *pdata, int 
 	switch (speed) {
 		case SPEED_1000:
 			pdata->vote_idx = VOTE_IDX_1000MBPS;
+			peak_bw_kbps = EMAC_ICC_BW_1000_MBPS_KBPS;
 			break;
 		case SPEED_100:
 			pdata->vote_idx = VOTE_IDX_100MBPS;
+			peak_bw_kbps = EMAC_ICC_BW_100_MBPS_KBPS;
 			break;
 		case SPEED_10:
 			pdata->vote_idx = VOTE_IDX_10MBPS;
+			peak_bw_kbps = EMAC_ICC_BW_10_MBPS_KBPS;
 			break;
 		case 0:
 			pdata->vote_idx = VOTE_IDX_0MBPS;
 			pdata->rgmii_clk_rate = 0;
+			peak_bw_kbps = 0;
 			break;
 	}
 
-	if (pdata->bus_hdl) {
+	if (pdata->icc_path) {
+		icc_rc = icc_set_bw(pdata->icc_path, 0, peak_bw_kbps);
+		if (!icc_rc)
+			pdata->use_icc = true;
+		else
+			EMACDBG("icc_set_bw failed rc=%d, using msm_bus fallback\n", icc_rc);
+	}
+
+	if ((!pdata->use_icc || icc_rc) && pdata->bus_hdl) {
 		if (msm_bus_scale_client_update_request(pdata->bus_hdl, pdata->vote_idx))
 			WARN_ON(1);
 	}
