@@ -15,6 +15,7 @@
 #include <linux/debugfs.h>
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
+#include <linux/interconnect.h>
 #include <linux/regulator/consumer.h>
 #include <linux/dma-direction.h>
 #include <soc/qcom/scm.h>
@@ -160,10 +161,19 @@ static int sde_rotator_bus_scale_set_quota(struct sde_rot_bus_data_type *bus,
 
 	SDEROT_EVTLOG(new_uc_idx, quota);
 	SDEROT_DBG("uc_idx=%d quota=%llu\n", new_uc_idx, quota);
-	ATRACE_BEGIN("msm_bus_scale_req_rot");
-	ret = msm_bus_scale_client_update_request(bus->bus_hdl,
-		new_uc_idx);
-	ATRACE_END("msm_bus_scale_req_rot");
+
+	if (bus->icc_path) {
+		ATRACE_BEGIN("icc_set_bw_rot");
+		ret = icc_set_bw(bus->icc_path, quota, quota ? quota : 0);
+		ATRACE_END("icc_set_bw_rot");
+		if (ret)
+			SDEROT_ERR("ICC vote failed rc=%d quota=%llu\n", ret, quota);
+	} else {
+		ATRACE_BEGIN("msm_bus_scale_req_rot");
+		ret = msm_bus_scale_client_update_request(bus->bus_hdl,
+			new_uc_idx);
+		ATRACE_END("msm_bus_scale_req_rot");
+	}
 
 	return ret;
 }
@@ -173,7 +183,7 @@ static int sde_rotator_enable_reg_bus(struct sde_rot_mgr *mgr, u64 quota)
 	int ret = 0, changed = 0;
 	u32 usecase_ndx = 0;
 
-	if (!mgr || !mgr->reg_bus.bus_hdl)
+	if (!mgr || (!mgr->reg_bus.bus_hdl && !mgr->reg_bus.icc_path))
 		return 0;
 
 	if (quota)
@@ -188,10 +198,21 @@ static int sde_rotator_enable_reg_bus(struct sde_rot_mgr *mgr, u64 quota)
 		quota ? "Enable":"Disable");
 
 	if (changed) {
-		ATRACE_BEGIN("msm_bus_scale_req_rot_reg");
-		ret = msm_bus_scale_client_update_request(mgr->reg_bus.bus_hdl,
-			usecase_ndx);
-		ATRACE_END("msm_bus_scale_req_rot_reg");
+		if (mgr->reg_bus.icc_path) {
+			ATRACE_BEGIN("icc_set_bw_rot_reg");
+			ret = icc_set_bw(mgr->reg_bus.icc_path,
+				quota ? BUS_VOTE_19_MHZ : 0,
+				quota ? BUS_VOTE_19_MHZ : 0);
+			ATRACE_END("icc_set_bw_rot_reg");
+			if (ret)
+				SDEROT_ERR("reg ICC vote failed rc=%d quota=%llu\n",
+					ret, quota);
+		} else {
+			ATRACE_BEGIN("msm_bus_scale_req_rot_reg");
+			ret = msm_bus_scale_client_update_request(
+				mgr->reg_bus.bus_hdl, usecase_ndx);
+			ATRACE_END("msm_bus_scale_req_rot_reg");
+		}
 	}
 
 	return ret;
@@ -2822,6 +2843,24 @@ static int sde_rotator_parse_dt_bus(struct sde_rot_mgr *mgr,
 		}
 	}
 
+	mgr->data_bus.icc_path = devm_of_icc_get(&dev->dev,
+		mgr->data_bus.bus_scale_pdata ?
+		mgr->data_bus.bus_scale_pdata->name : "mdss_rot");
+	if (IS_ERR(mgr->data_bus.icc_path)) {
+		SDEROT_DBG("No ICC path for data bus (%ld), using msm_bus fallback\n",
+			PTR_ERR(mgr->data_bus.icc_path));
+		mgr->data_bus.icc_path = NULL;
+	}
+
+	mgr->reg_bus.icc_path = devm_of_icc_get(&dev->dev,
+		mgr->reg_bus.bus_scale_pdata ?
+		mgr->reg_bus.bus_scale_pdata->name : "mdss_rot_reg");
+	if (IS_ERR(mgr->reg_bus.icc_path)) {
+		SDEROT_DBG("No ICC path for reg bus (%ld), using msm_bus fallback\n",
+			PTR_ERR(mgr->reg_bus.icc_path));
+		mgr->reg_bus.icc_path = NULL;
+	}
+
 	return ret;
 }
 #else
@@ -2943,16 +2982,23 @@ static void sde_rotator_bus_scale_unregister(struct sde_rot_mgr *mgr)
 
 	if (mgr->data_bus.bus_hdl)
 		msm_bus_scale_unregister_client(mgr->data_bus.bus_hdl);
+	if (mgr->data_bus.icc_path)
+		icc_set_bw(mgr->data_bus.icc_path, 0, 0);
 
 	if (mgr->reg_bus.bus_hdl)
 		msm_bus_scale_unregister_client(mgr->reg_bus.bus_hdl);
+	if (mgr->reg_bus.icc_path)
+		icc_set_bw(mgr->reg_bus.icc_path, 0, 0);
 }
 
 static int sde_rotator_bus_scale_register(struct sde_rot_mgr *mgr)
 {
 	if (!mgr->data_bus.bus_scale_pdata) {
-		SDEROT_DBG("Bus scaling is not enabled\n");
-		return 0;
+		if (!mgr->data_bus.icc_path && !mgr->reg_bus.icc_path) {
+			SDEROT_DBG("Bus scaling is not enabled\n");
+			return 0;
+		}
+		goto init_icc_votes;
 	}
 
 	mgr->data_bus.bus_hdl =
@@ -2976,6 +3022,12 @@ static int sde_rotator_bus_scale_register(struct sde_rot_mgr *mgr)
 					mgr->reg_bus.bus_hdl);
 		}
 	}
+
+init_icc_votes:
+	if (mgr->data_bus.icc_path)
+		icc_set_bw(mgr->data_bus.icc_path, 0, 0);
+	if (mgr->reg_bus.icc_path)
+		icc_set_bw(mgr->reg_bus.icc_path, 0, 0);
 
 	return 0;
 }

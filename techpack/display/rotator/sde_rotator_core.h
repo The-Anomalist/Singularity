@@ -212,6 +212,7 @@ struct sde_rotation_item {
 
 struct sde_rot_entry;
 struct sde_rot_perf;
+struct icc_path;
 
 struct sde_rot_clk {
 	struct clk *clk;
@@ -386,6 +387,7 @@ struct sde_rot_bus_data_type {
 	u32 bus_hdl;
 	u32 curr_bw_uc_idx;
 	u64 curr_quota_val;
+	struct icc_path *icc_path;
 };
 
 /*
