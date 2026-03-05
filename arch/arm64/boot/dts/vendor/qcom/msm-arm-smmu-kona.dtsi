@@ -1,4 +1,5 @@
 #include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interconnect/qcom,kona.h>
 
 &soc {
 	kgsl_smmu: kgsl-smmu@3da0000 {
@@ -179,6 +180,8 @@
 				<GIC_SPI 697 IRQ_TYPE_LEVEL_HIGH>,
 				<GIC_SPI 707 IRQ_TYPE_LEVEL_HIGH>;
 		qcom,msm-bus,name = "apps_smmu";
+		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+		interconnect-names = "smmu-ddr";
 		qcom,msm-bus,num-cases = <2>;
 		qcom,msm-bus,active-only;
 		qcom,msm-bus,num-paths = <1>;
@@ -214,6 +217,8 @@
 			reg-names = "base", "status-reg";
 			qcom,stream-id-range = <0x0 0x400>;
 			qcom,msm-bus,name = "apps_smmu";
+			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+			interconnect-names = "smmu-ddr";
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -233,6 +238,8 @@
 			reg-names = "base", "status-reg";
 			qcom,stream-id-range = <0x400 0x400>;
 			qcom,msm-bus,name = "apps_smmu";
+			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+			interconnect-names = "smmu-ddr";
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -254,6 +261,8 @@
 			qcom,regulator-names = "vdd";
 			vdd-supply = <&hlos1_vote_mmnoc_mmu_tbu_hf0_gdsc>;
 			qcom,msm-bus,name = "mnoc_hf_0_tbu";
+			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+			interconnect-names = "smmu-ddr";
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -275,6 +284,8 @@
 			qcom,regulator-names = "vdd";
 			vdd-supply = <&hlos1_vote_mmnoc_mmu_tbu_hf1_gdsc>;
 			qcom,msm-bus,name = "mnoc_hf_1_tbu";
+			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+			interconnect-names = "smmu-ddr";
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -294,6 +305,8 @@
 			reg-names = "base", "status-reg";
 			qcom,stream-id-range = <0x1000 0x400>;
 			qcom,msm-bus,name = "apps_smmu";
+			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+			interconnect-names = "smmu-ddr";
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -313,6 +326,8 @@
 			reg-names = "base", "status-reg";
 			qcom,stream-id-range = <0x1400 0x400>;
 			qcom,msm-bus,name = "apps_smmu";
+			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+			interconnect-names = "smmu-ddr";
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -333,6 +348,8 @@
 			reg-names = "base", "status-reg";
 			qcom,stream-id-range = <0x1800 0x400>;
 			qcom,msm-bus,name = "apps_smmu";
+			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+			interconnect-names = "smmu-ddr";
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -354,6 +371,8 @@
 			clock-names = "gcc_aggre_noc_pcie_tbu_clk";
 			clocks = <&clock_gcc GCC_AGGRE_NOC_PCIE_TBU_CLK>;
 			qcom,msm-bus,name = "apps_smmu";
+			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+			interconnect-names = "smmu-ddr";
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -376,6 +395,8 @@
 			qcom,regulator-names = "vdd";
 			vdd-supply = <&hlos1_vote_mmnoc_mmu_tbu_sf0_gdsc>;
 			qcom,msm-bus,name = "mnoc_sf_0_tbu";
+			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+			interconnect-names = "smmu-ddr";
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -397,6 +418,8 @@
 			qcom,regulator-names = "vdd";
 			vdd-supply = <&hlos1_vote_mmnoc_mmu_tbu_sf1_gdsc>;
 			qcom,msm-bus,name = "mnoc_sf_1_tbu";
+			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+			interconnect-names = "smmu-ddr";
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
