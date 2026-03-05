@@ -7,6 +7,7 @@
 #include <linux/platform_device.h>
 #include <linux/of.h>
 #include <linux/of_gpio.h>
+#include <linux/interconnect.h>
 #include <linux/msm_pcie.h>
 #include <asm/dma-iommu.h>
 #include <linux/msm-bus.h>
@@ -97,6 +98,7 @@ struct msm11ad_ctx {
 	/* bus frequency scaling */
 	struct msm_bus_scale_pdata *bus_scale;
 	u32 msm_bus_handle;
+	struct icc_path *icc_path;
 
 	/* subsystem restart */
 	struct wil_platform_rops rops;
@@ -1090,14 +1092,33 @@ static int msm_11ad_probe(struct platform_device *pdev)
 	}
 	ctx->keep_radio_on_during_sleep = of_property_read_bool(of_node,
 		"qcom,keep-radio-on-during-sleep");
-	ctx->bus_scale = msm_bus_cl_get_pdata(pdev);
-	if (!ctx->bus_scale) {
-		dev_err(ctx->dev, "Unable to read bus-scaling from DT\n");
-		rc = -EINVAL;
-		goto out_module;
+
+	ctx->icc_path = devm_of_icc_get(ctx->dev, "pcie-ddr");
+	if (IS_ERR(ctx->icc_path)) {
+		rc = PTR_ERR(ctx->icc_path);
+		if (rc != -ENODATA && rc != -ENOENT)
+			goto out_module;
+
+		ctx->icc_path = devm_of_icc_get(ctx->dev, NULL);
+		if (IS_ERR(ctx->icc_path)) {
+			rc = PTR_ERR(ctx->icc_path);
+			if (rc != -ENODATA && rc != -ENOENT)
+				goto out_module;
+			ctx->icc_path = NULL;
+		}
+	}
+
+	if (!ctx->icc_path) {
+		ctx->bus_scale = msm_bus_cl_get_pdata(pdev);
+		if (!ctx->bus_scale) {
+			dev_err(ctx->dev,
+				"No ICC path and unable to read bus-scaling from DT\n");
+			rc = -EINVAL;
+			goto out_module;
+		}
 	}
 	ctx->use_ap_ps = of_property_read_bool(of_node,
-					       "qcom,use-ap-power-save");
+				       "qcom,use-ap-power-save");
 
 	/*== execute ==*/
 	/* turn device on */
@@ -1406,25 +1427,33 @@ static int ops_bus_request(void *handle, u32 kbps /* KBytes/Sec */)
 	u32 usecase_kbps;
 	u32 min_kbps = ~0;
 
-	/* find the lowest usecase that is bigger than requested kbps */
-	for (i = 0; i < ctx->bus_scale->num_usecases; i++) {
-		usecase = &ctx->bus_scale->usecase[i];
-		/*
-		 * assume we have single path (vectors[0]). If we ever
-		 * have multiple paths, need to define the behavior
-		 */
-		usecase_kbps = div64_u64(usecase->vectors[0].ab, 1000);
-		if (usecase_kbps >= kbps && usecase_kbps < min_kbps) {
-			min_kbps = usecase_kbps;
-			vote = i;
+	if (ctx->icc_path) {
+		rc = icc_set_bw(ctx->icc_path, kbps, kbps);
+		if (rc)
+			dev_err(ctx->dev, "Failed ICC voting. kbps=%d rc=%d\n",
+				kbps, rc);
+	} else {
+		/* find the lowest usecase that is bigger than requested kbps */
+		for (i = 0; i < ctx->bus_scale->num_usecases; i++) {
+			usecase = &ctx->bus_scale->usecase[i];
+			/*
+			 * assume we have single path (vectors[0]). If we ever
+			 * have multiple paths, need to define the behavior
+			 */
+			usecase_kbps = div64_u64(usecase->vectors[0].ab, 1000);
+			if (usecase_kbps >= kbps && usecase_kbps < min_kbps) {
+				min_kbps = usecase_kbps;
+				vote = i;
+			}
 		}
-	}
 
-	rc = msm_bus_scale_client_update_request(ctx->msm_bus_handle, vote);
-	if (rc)
-		dev_err(ctx->dev,
-			"Failed msm_bus voting. kbps=%d vote=%d, rc=%d\n",
-			kbps, vote, rc);
+		rc = msm_bus_scale_client_update_request(ctx->msm_bus_handle,
+							 vote);
+		if (rc)
+			dev_err(ctx->dev,
+				"Failed msm_bus voting. kbps=%d vote=%d, rc=%d\n",
+				kbps, vote, rc);
+	}
 
 	if (ctx->use_cpu_boost) {
 		bool was_boosted = ctx->is_cpu_boosted;
@@ -1460,6 +1489,9 @@ out:
 static void ops_uninit(void *handle)
 {
 	struct msm11ad_ctx *ctx = (struct msm11ad_ctx *)handle;
+
+	if (ctx->icc_path)
+		icc_set_bw(ctx->icc_path, 0, 0);
 
 	if (ctx->msm_bus_handle) {
 		msm_bus_scale_unregister_client(ctx->msm_bus_handle);
@@ -1594,14 +1626,18 @@ void *msm_11ad_dev_init(struct device *dev, struct wil_platform_ops *ops,
 		return NULL;
 	}
 
-	/* bus scale */
-	ctx->msm_bus_handle =
-		msm_bus_scale_register_client(ctx->bus_scale);
-	if (!ctx->msm_bus_handle) {
-		dev_err(ctx->dev, "Failed msm_bus registration\n");
-		return NULL;
+	/* bus scale / interconnect */
+	if (!ctx->icc_path) {
+		ctx->msm_bus_handle =
+			msm_bus_scale_register_client(ctx->bus_scale);
+		if (!ctx->msm_bus_handle) {
+			dev_err(ctx->dev, "Failed msm_bus registration\n");
+			return NULL;
+		}
+		dev_info(ctx->dev, "msm_bus handle 0x%x\n", ctx->msm_bus_handle);
+	} else {
+		dev_info(ctx->dev, "Using ICC path for bus voting\n");
 	}
-	dev_info(ctx->dev, "msm_bus handle 0x%x\n", ctx->msm_bus_handle);
 
 	domain = iommu_get_domain_for_dev(&pcidev->dev);
 	if (domain) {
@@ -1676,4 +1712,3 @@ EXPORT_SYMBOL(msm_11ad_modexit);
 
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("Platform driver for Qualcomm Technologies, Inc. 11ad card");
-
