@@ -401,6 +401,9 @@ static int sde_rsc_resource_disable(struct sde_rsc_priv *rsc)
 {
 	struct dss_module_power *mp;
 	u32 reg_bus_hdl;
+	struct icc_path *reg_bus_icc_path;
+	int rc = 0;
+	int msm_bus_rc = 0;
 
 	if (!rsc) {
 		pr_err("invalid drv data\n");
@@ -419,9 +422,20 @@ static int sde_rsc_resource_disable(struct sde_rsc_priv *rsc)
 	mp = &rsc->phandle.mp;
 	msm_dss_enable_clk(mp->clk_config, mp->num_clk, false);
 	reg_bus_hdl = rsc->phandle.reg_bus_hdl;
-	if (reg_bus_hdl)
-		msm_bus_scale_client_update_request(reg_bus_hdl,
+	reg_bus_icc_path = rsc->phandle.reg_bus_icc_path;
+	if (reg_bus_icc_path) {
+		rc = icc_set_bw(reg_bus_icc_path, 0, 0);
+		if (rc)
+			pr_debug("reg bus icc vote disable failed rc=%d, fallback to msm_bus\n",
+				rc);
+	}
+
+	if (reg_bus_hdl) {
+		msm_bus_rc = msm_bus_scale_client_update_request(reg_bus_hdl,
 				VOTE_INDEX_DISABLE);
+		if (msm_bus_rc && (!reg_bus_icc_path || rc))
+			pr_err("failed to disable reg bus vote rc=%d\n", msm_bus_rc);
+	}
 	msm_dss_enable_vreg(mp->vreg_config, mp->num_vreg, false);
 
 	return 0;
@@ -431,7 +445,10 @@ static int sde_rsc_resource_enable(struct sde_rsc_priv *rsc)
 {
 	struct dss_module_power *mp;
 	int rc = 0;
+	int msm_bus_rc = 0;
 	u32 reg_bus_hdl;
+	struct icc_path *reg_bus_icc_path;
+	u32 ib_kbps;
 
 	if (!rsc) {
 		pr_err("invalid drv data\n");
@@ -449,10 +466,20 @@ static int sde_rsc_resource_enable(struct sde_rsc_priv *rsc)
 	}
 
 	reg_bus_hdl = rsc->phandle.reg_bus_hdl;
+	reg_bus_icc_path = rsc->phandle.reg_bus_icc_path;
+	ib_kbps = div_u64(SDE_POWER_HANDLE_ENABLE_BUS_IB_QUOTA, 1000);
+
+	if (reg_bus_icc_path) {
+		rc = icc_set_bw(reg_bus_icc_path, 0, ib_kbps);
+		if (rc)
+			pr_debug("reg bus icc vote failed rc=%d, fallback to msm_bus\n", rc);
+	}
+
 	if (reg_bus_hdl) {
-		rc = msm_bus_scale_client_update_request(reg_bus_hdl,
+		msm_bus_rc = msm_bus_scale_client_update_request(reg_bus_hdl,
 				VOTE_INDEX_LOW);
-		if (rc) {
+		if (msm_bus_rc && (!reg_bus_icc_path || rc)) {
+			rc = msm_bus_rc;
 			pr_err("failed to set reg bus vote rc=%d\n", rc);
 			goto reg_bus_hdl_err;
 		}
