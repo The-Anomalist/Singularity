@@ -15,6 +15,7 @@
 #include <linux/clk.h>
 #include <linux/regulator/consumer.h>
 #include <linux/msm-bus.h>
+#include <linux/interconnect.h>
 #include <crypto/ice.h>
 #include <soc/qcom/scm.h>
 #include <soc/qcom/qseecomi.h>
@@ -126,25 +127,95 @@ static int qcom_ice_enable_clocks(struct ice_device *, bool);
 
 #ifdef CONFIG_MSM_BUS_SCALING
 
+static struct icc_path *qcom_ice_get_icc_path(struct ice_device *ice_dev)
+{
+	struct device *dev = ice_dev->pdev;
+	const char * const try_names[] = {
+		"ufs-ddr",
+		"sdcc-ddr",
+		"ice-ddr",
+	};
+	struct icc_path *path;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(try_names); i++) {
+		path = devm_of_icc_get(dev, try_names[i]);
+		if (!IS_ERR(path))
+			return path;
+		if (PTR_ERR(path) == -EPROBE_DEFER)
+			dev_dbg(dev,
+				"%s: ICC provider not ready (%s), keeping msm_bus fallback\n",
+				__func__, try_names[i]);
+	}
+
+	path = devm_of_icc_get(dev, NULL);
+	if (!IS_ERR(path))
+		return path;
+
+	if (PTR_ERR(path) == -EPROBE_DEFER)
+		dev_dbg(dev,
+			"%s: unnamed ICC provider not ready, keeping msm_bus fallback\n",
+			__func__);
+	else
+		dev_dbg(dev, "%s: ICC unavailable (%ld), keeping msm_bus fallback\n",
+			__func__, PTR_ERR(path));
+
+	return NULL;
+}
+
+static int qcom_ice_icc_set_bw(struct ice_device *ice_dev, unsigned int vote)
+{
+	struct msm_bus_scale_pdata *pdata = ice_dev->bus_vote.pdata;
+	const struct msm_bus_paths *usecase;
+	u64 ab = 0, ib = 0;
+	int i;
+
+	if (!ice_dev->bus_vote.icc_path || !pdata)
+		return -ENODEV;
+
+	if (vote >= pdata->num_usecases)
+		return -EINVAL;
+
+	usecase = &pdata->usecase[vote];
+	for (i = 0; i < usecase->num_paths; i++) {
+		ab += usecase->vectors[i].ab;
+		ib += usecase->vectors[i].ib;
+	}
+
+	return icc_set_bw(ice_dev->bus_vote.icc_path, ab, ib);
+}
+
 static int qcom_ice_set_bus_vote(struct ice_device *ice_dev, int vote)
 {
-	int err = 0;
+	int err;
 
-	if (vote != ice_dev->bus_vote.curr_vote) {
-		err = msm_bus_scale_client_update_request(
-				ice_dev->bus_vote.client_handle, vote);
-		if (err) {
-			dev_err(ice_dev->pdev,
-				"%s:failed:client_handle=0x%x, vote=%d,
-				err=%d\n", __func__,
-				ice_dev->bus_vote.client_handle,
-				vote, err);
-			goto out;
-		}
+	if (vote == ice_dev->bus_vote.curr_vote)
+		return 0;
+
+	err = qcom_ice_icc_set_bw(ice_dev, vote);
+	if (!err) {
 		ice_dev->bus_vote.curr_vote = vote;
+		return 0;
 	}
-out:
-	return err;
+	if (err != -ENODEV)
+		dev_warn(ice_dev->pdev,
+			 "%s: ICC vote failed (%d), using msm_bus fallback\n",
+			 __func__, err);
+
+	if (!ice_dev->bus_vote.client_handle)
+		return err;
+
+	err = msm_bus_scale_client_update_request(
+			ice_dev->bus_vote.client_handle, vote);
+	if (err) {
+		dev_err(ice_dev->pdev,
+			"%s: failed: client_handle=0x%x, vote=%d, err=%d\n",
+			__func__, ice_dev->bus_vote.client_handle, vote, err);
+		return err;
+	}
+
+	ice_dev->bus_vote.curr_vote = vote;
+	return 0;
 }
 
 static int qcom_ice_get_bus_vote(struct ice_device *ice_dev,
@@ -173,41 +244,44 @@ out:
 
 static int qcom_ice_bus_register(struct ice_device *ice_dev)
 {
-	int err = 0;
+	int err;
 	struct msm_bus_scale_pdata *bus_pdata;
 	struct device *dev = ice_dev->pdev;
 	struct platform_device *pdev = to_platform_device(dev);
 	struct device_node *np = dev->of_node;
 
+	ice_dev->bus_vote.icc_path = qcom_ice_get_icc_path(ice_dev);
 	bus_pdata = msm_bus_cl_get_pdata(pdev);
-	if (!bus_pdata) {
-		dev_err(dev, "%s: failed to get bus vectors\n", __func__);
-		err = -ENODATA;
-		goto out;
+	ice_dev->bus_vote.pdata = bus_pdata;
+
+	if (!bus_pdata && !ice_dev->bus_vote.icc_path) {
+		dev_err(dev, "%s: no ICC path or msm_bus vectors available\n", __func__);
+		return -ENODATA;
 	}
 
-	err = of_property_count_strings(np, "qcom,bus-vector-names");
-	if (err < 0 || err != bus_pdata->num_usecases) {
-		dev_err(dev, "%s: Error = %d with qcom,bus-vector-names\n",
-				__func__, err);
-		goto out;
-	}
-	err = 0;
+	if (bus_pdata) {
+		err = of_property_count_strings(np, "qcom,bus-vector-names");
+		if (err < 0 || err != bus_pdata->num_usecases) {
+			dev_err(dev, "%s: Error = %d with qcom,bus-vector-names\n",
+					__func__, err);
+			return err;
+		}
 
-	ice_dev->bus_vote.client_handle =
-			msm_bus_scale_register_client(bus_pdata);
-	if (!ice_dev->bus_vote.client_handle) {
-		dev_err(dev, "%s: msm_bus_scale_register_client failed\n",
-				__func__);
-		err = -EFAULT;
-		goto out;
+		ice_dev->bus_vote.client_handle =
+				msm_bus_scale_register_client(bus_pdata);
+		if (!ice_dev->bus_vote.client_handle)
+			dev_warn(dev,
+				 "%s: msm_bus_scale_register_client failed; ICC only mode\n",
+				 __func__);
 	}
 
-	/* cache the vote index for minimum and maximum bandwidth */
 	ice_dev->bus_vote.min_bw_vote = qcom_ice_get_bus_vote(ice_dev, "MIN");
 	ice_dev->bus_vote.max_bw_vote = qcom_ice_get_bus_vote(ice_dev, "MAX");
-out:
-	return err;
+
+	if (!ice_dev->bus_vote.icc_path)
+		dev_dbg(dev, "%s: ICC unavailable, using msm_bus fallback only\n", __func__);
+
+	return 0;
 }
 
 #else

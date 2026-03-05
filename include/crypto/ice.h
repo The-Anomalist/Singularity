@@ -9,9 +9,11 @@
 #include <linux/platform_device.h>
 #include <linux/cdev.h>
 #include <linux/atomic.h>
+#include <linux/interconnect.h>
 #include <linux/wait.h>
 
 struct request;
+struct msm_bus_scale_pdata;
 
 enum ice_cryto_algo_mode {
 	ICE_CRYPTO_ALGO_MODE_AES_ECB = 0x0,
@@ -41,6 +43,8 @@ struct qcom_ice_bus_vote {
 	int max_bw_vote;
 	int saved_vote;
 	bool is_max_bw_needed;
+	struct msm_bus_scale_pdata *pdata;
+	struct icc_path *icc_path;
 	struct device_attribute max_bus_bw;
 };
 
