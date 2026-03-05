@@ -17,6 +17,7 @@
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
 #include <linux/regulator/consumer.h>
+#include <linux/interconnect.h>
 
 #define CREATE_TRACE_POINTS
 #include "sde_rotator_base.h"
@@ -25,6 +26,8 @@
 #include "sde_rotator_debug.h"
 #include "sde_rotator_dev.h"
 #include "sde_rotator_vbif.h"
+
+static u64 sde_mdp_get_reg_bus_vote(u32 usecase_ndx);
 
 static inline u64 fudge_factor(u64 val, u32 numer, u32 denom)
 {
@@ -469,7 +472,8 @@ int sde_update_reg_bus_vote(struct reg_bus_client *bus_client, u32 usecase_ndx)
 	struct reg_bus_client *client, *temp_client;
 	struct sde_rot_data_type *sde_res = sde_rot_get_mdata();
 
-	if (!sde_res || !sde_res->reg_bus_hdl || !bus_client)
+	if (!sde_res || (!sde_res->reg_bus_hdl && !sde_res->reg_bus_icc_path) ||
+			!bus_client)
 		return 0;
 
 	mutex_lock(&sde_res->reg_bus_lock);
@@ -491,7 +495,11 @@ int sde_update_reg_bus_vote(struct reg_bus_client *bus_client, u32 usecase_ndx)
 		"%pS: changed=%d current idx=%d request client %s id:%u idx:%d\n",
 		__builtin_return_address(0), changed, max_usecase_ndx,
 		bus_client->name, bus_client->id, usecase_ndx);
-	if (changed)
+	if (changed && sde_res->reg_bus_icc_path)
+		ret = icc_set_bw(sde_res->reg_bus_icc_path, 0,
+			sde_mdp_get_reg_bus_vote(max_usecase_ndx));
+
+	if (changed && sde_res->reg_bus_hdl && (!sde_res->reg_bus_icc_path || ret))
 		ret = msm_bus_scale_client_update_request(sde_res->reg_bus_hdl,
 			max_usecase_ndx);
 
@@ -827,6 +835,20 @@ static void sde_mdp_destroy_dt_misc(struct platform_device *pdev,
 #define BUS_VOTE_40_MHZ 320000000
 #define BUS_VOTE_80_MHZ 640000000
 
+static u64 sde_mdp_get_reg_bus_vote(u32 usecase_ndx)
+{
+	switch (usecase_ndx) {
+	case VOTE_INDEX_LOW:
+		return BUS_VOTE_19_MHZ;
+	case VOTE_INDEX_MEDIUM:
+		return BUS_VOTE_40_MHZ;
+	case VOTE_INDEX_HIGH:
+		return BUS_VOTE_80_MHZ;
+	default:
+		return 0;
+	}
+}
+
 #ifdef CONFIG_QCOM_BUS_SCALING
 
 static struct msm_bus_vectors mdp_reg_bus_vectors[] = {
@@ -848,6 +870,16 @@ static int sde_mdp_bus_scale_register(struct sde_rot_data_type *mdata)
 {
 	struct msm_bus_scale_pdata *reg_bus_pdata;
 	int i;
+
+	if (!mdata->reg_bus_icc_path) {
+		mdata->reg_bus_icc_path = devm_of_icc_get(&mdata->pdev->dev,
+			"mdp-reg");
+		if (IS_ERR(mdata->reg_bus_icc_path)) {
+			SDEROT_DBG("No ICC path for mdp-reg (%ld), using msm_bus fallback\n",
+				PTR_ERR(mdata->reg_bus_icc_path));
+			mdata->reg_bus_icc_path = NULL;
+		}
+	}
 
 	if (!mdata->reg_bus_hdl) {
 		reg_bus_pdata = &mdp_reg_bus_scale_table;
@@ -879,6 +911,9 @@ static inline int sde_mdp_bus_scale_register(struct sde_rot_data_type *mdata)
 static void sde_mdp_bus_scale_unregister(struct sde_rot_data_type *mdata)
 {
 	SDEROT_DBG("unregister reg_bus_hdl=%x\n", mdata->reg_bus_hdl);
+
+	if (mdata->reg_bus_icc_path)
+		icc_set_bw(mdata->reg_bus_icc_path, 0, 0);
 
 	if (mdata->reg_bus_hdl) {
 		msm_bus_scale_unregister_client(mdata->reg_bus_hdl);
