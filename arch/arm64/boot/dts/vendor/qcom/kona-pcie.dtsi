@@ -1,5 +1,4 @@
 #include <dt-bindings/clock/qcom,gcc-kona.h>
-#include <dt-bindings/interconnect/qcom,kona.h>
 
 &soc {
 	pcie0: qcom,pcie@1c00000 {
@@ -55,8 +54,6 @@
 		qcom,bw-scale = <RPMH_REGULATOR_LEVEL_LOW_SVS 19200000
 				RPMH_REGULATOR_LEVEL_LOW_SVS 19200000
 				RPMH_REGULATOR_LEVEL_NOM 100000000>;
-		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
-		interconnect-names = "pcie-ddr";
 
 		qcom,msm-bus,name = "pcie0";
 		qcom,msm-bus,num-cases = <2>;
@@ -305,8 +302,6 @@
 		qcom,bw-scale = <RPMH_REGULATOR_LEVEL_LOW_SVS 19200000
 				RPMH_REGULATOR_LEVEL_LOW_SVS 19200000
 				RPMH_REGULATOR_LEVEL_NOM 100000000>;
-		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
-		interconnect-names = "pcie-ddr";
 
 		qcom,msm-bus,name = "pcie1";
 		qcom,msm-bus,num-cases = <2>;
@@ -587,8 +582,6 @@
 		qcom,bw-scale = <RPMH_REGULATOR_LEVEL_LOW_SVS 19200000
 				RPMH_REGULATOR_LEVEL_LOW_SVS 19200000
 				RPMH_REGULATOR_LEVEL_NOM 100000000>;
-		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
-		interconnect-names = "pcie-ddr";
 
 		qcom,msm-bus,name = "pcie2";
 		qcom,msm-bus,num-cases = <2>;

@@ -13,7 +13,6 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
-#include <linux/interconnect.h>
 #include <linux/ipc_logging.h>
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
@@ -756,7 +755,6 @@ struct msm_pcie_dev_t {
 	struct wakeup_source *ws;
 	struct msm_bus_scale_pdata *bus_scale_table;
 	uint32_t bus_client;
-	struct icc_path *icc_path;
 
 	bool l0s_supported;
 	bool l1_supported;
@@ -3460,16 +3458,8 @@ static int msm_pcie_clk_init(struct msm_pcie_dev_t *dev)
 		return rc;
 	}
 
-	if (dev->icc_path) {
-		rc = icc_set_bw(dev->icc_path, 500, 800);
-		if (rc)
-			PCIE_ERR(dev,
-				"PCIe: ICC vote failed for RC%d (%d), using msm_bus fallback\n",
-				dev->rc_idx, rc);
-	}
-
 	PCIE_DBG(dev, "PCIe: requesting bus vote for RC%d\n", dev->rc_idx);
-	if ((!dev->icc_path || rc) && dev->bus_client) {
+	if (dev->bus_client) {
 		rc = msm_bus_scale_client_update_request(dev->bus_client, 1);
 		if (rc) {
 			PCIE_ERR(dev,
@@ -3590,15 +3580,7 @@ static void msm_pcie_clk_deinit(struct msm_pcie_dev_t *dev)
 		mutex_unlock(&dev->clk_lock);
 	}
 
-	if (dev->icc_path) {
-		rc = icc_set_bw(dev->icc_path, 0, 0);
-		if (rc)
-			PCIE_ERR(dev,
-				"PCIe: ICC unvote failed for RC%d (%d), using msm_bus fallback\n",
-				dev->rc_idx, rc);
-	}
-
-	if ((!dev->icc_path || rc) && dev->bus_client) {
+	if (dev->bus_client) {
 		PCIE_DBG(dev, "PCIe: removing bus vote for RC%d\n",
 			dev->rc_idx);
 
@@ -4264,15 +4246,6 @@ static int msm_pcie_get_resources(struct msm_pcie_dev_t *dev,
 	struct msm_pcie_irq_info_t *irq_info;
 
 	PCIE_DBG(dev, "PCIe: RC%d: entry\n", dev->rc_idx);
-
-	dev->icc_path = devm_of_icc_get(&pdev->dev, "pcie-ddr");
-	if (IS_ERR(dev->icc_path)) {
-		ret = PTR_ERR(dev->icc_path);
-		PCIE_DBG(dev,
-			"PCIe: RC%d: unable to get ICC path (%d), using msm_bus fallback\n",
-			dev->rc_idx, ret);
-		dev->icc_path = NULL;
-	}
 
 	dev->bus_scale_table = msm_bus_cl_get_pdata(pdev);
 	if (!dev->bus_scale_table) {
@@ -7535,15 +7508,7 @@ static int msm_pcie_drv_resume(struct msm_pcie_dev_t *pcie_dev)
 
 	msm_pcie_vreg_init(pcie_dev);
 
-	if (pcie_dev->icc_path) {
-		ret = icc_set_bw(pcie_dev->icc_path, 500, 800);
-		if (ret)
-			PCIE_ERR(pcie_dev,
-				"PCIe: RC%d: ICC vote failed (%d), using msm_bus fallback\n",
-				pcie_dev->rc_idx, ret);
-	}
-
-	if ((!pcie_dev->icc_path || ret) && pcie_dev->bus_client) {
+	if (pcie_dev->bus_client) {
 		ret = msm_bus_scale_client_update_request(pcie_dev->bus_client,
 							1);
 		if (ret)
@@ -7704,15 +7669,7 @@ static int msm_pcie_drv_suspend(struct msm_pcie_dev_t *pcie_dev,
 		if (clk_info->hdl && !clk_info->suppressible)
 			clk_disable_unprepare(clk_info->hdl);
 
-	if (pcie_dev->icc_path) {
-		ret = icc_set_bw(pcie_dev->icc_path, 0, 0);
-		if (ret)
-			PCIE_ERR(pcie_dev,
-				"PCIe: RC%d: DRV: ICC unvote failed (%d), using msm_bus fallback\n",
-				pcie_dev->rc_idx, ret);
-	}
-
-	if ((!pcie_dev->icc_path || ret) && pcie_dev->bus_client) {
+	if (pcie_dev->bus_client) {
 		ret = msm_bus_scale_client_update_request(pcie_dev->bus_client,
 							0);
 		if (ret)
