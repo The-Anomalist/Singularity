@@ -7,7 +7,6 @@
 #include <asm/arch_timer.h>
 #include <linux/esoc_client.h>
 #include <linux/etherdevice.h>
-#include <linux/interconnect.h>
 #include <linux/msm-bus.h>
 #include <linux/pm_qos.h>
 #include <net/cnss2.h>
@@ -142,7 +141,6 @@ struct cnss_esoc_info {
 struct cnss_bus_bw_info {
 	struct msm_bus_scale_pdata *bus_scale_table;
 	u32 bus_client;
-	struct icc_path *icc_path;
 	int current_bw_vote;
 };
 

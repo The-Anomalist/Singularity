@@ -51,19 +51,6 @@ static struct cnss_plat_data *plat_env;
 
 static DECLARE_RWSEM(cnss_pm_sem);
 
-static const struct {
-	u32 ab;
-	u32 ib;
-} cnss_icc_bw_votes[] = {
-	[CNSS_BUS_WIDTH_NONE] = { 0, 0 },
-	[CNSS_BUS_WIDTH_IDLE] = { 2250, 1600000 },
-	[CNSS_BUS_WIDTH_LOW] = { 7500, 1600000 },
-	[CNSS_BUS_WIDTH_MEDIUM] = { 30000, 1804800 },
-	[CNSS_BUS_WIDTH_HIGH] = { 100000, 1804800 },
-	[CNSS_BUS_WIDTH_VERY_HIGH] = { 175000, 6220800 },
-	[CNSS_BUS_WIDTH_LOW_LATENCY] = { 7500, 2188800 },
-};
-
 static struct cnss_fw_files FW_FILES_QCA6174_FW_3_0 = {
 	"qwlan30.bin", "bdwlan30.bin", "otp30.bin", "utf30.bin",
 	"utfbd30.bin", "epping30.bin", "evicted30.bin"
@@ -177,7 +164,6 @@ EXPORT_SYMBOL(cnss_get_fw_files_for_target);
 int cnss_request_bus_bandwidth(struct device *dev, int bandwidth)
 {
 	int ret = 0;
-	int icc_ret = 0;
 	struct cnss_plat_data *plat_priv = cnss_bus_dev_to_plat_priv(dev);
 	struct cnss_bus_bw_info *bus_bw_info;
 
@@ -185,6 +171,8 @@ int cnss_request_bus_bandwidth(struct device *dev, int bandwidth)
 		return -ENODEV;
 
 	bus_bw_info = &plat_priv->bus_bw_info;
+	if (!bus_bw_info->bus_client)
+		return -EINVAL;
 
 	switch (bandwidth) {
 	case CNSS_BUS_WIDTH_NONE:
@@ -194,25 +182,8 @@ int cnss_request_bus_bandwidth(struct device *dev, int bandwidth)
 	case CNSS_BUS_WIDTH_HIGH:
 	case CNSS_BUS_WIDTH_VERY_HIGH:
 	case CNSS_BUS_WIDTH_LOW_LATENCY:
-		if (bus_bw_info->icc_path) {
-			icc_ret = icc_set_bw(
-				bus_bw_info->icc_path,
-				cnss_icc_bw_votes[bandwidth].ab,
-				cnss_icc_bw_votes[bandwidth].ib);
-			if (!icc_ret) {
-				bus_bw_info->current_bw_vote = bandwidth;
-				return 0;
-			}
-
-			cnss_pr_err("ICC vote failed for bus bandwidth %d, err = %d, using msm_bus fallback\n",
-				    bandwidth, icc_ret);
-		}
-
-		if (!bus_bw_info->bus_client)
-			return icc_ret ? icc_ret : -EINVAL;
-
-		ret = msm_bus_scale_client_update_request(
-				bus_bw_info->bus_client, bandwidth);
+		ret = msm_bus_scale_client_update_request
+			(bus_bw_info->bus_client, bandwidth);
 		if (!ret)
 			bus_bw_info->current_bw_vote = bandwidth;
 		else
@@ -2331,20 +2302,9 @@ int cnss_minidump_remove_region(struct cnss_plat_data *plat_priv,
 static int cnss_register_bus_scale(struct cnss_plat_data *plat_priv)
 {
 	int ret = 0;
-	int icc_ret;
 	struct cnss_bus_bw_info *bus_bw_info;
 
 	bus_bw_info = &plat_priv->bus_bw_info;
-	bus_bw_info->icc_path = of_icc_get(plat_priv->plat_dev,
-					   "wifi-ddr");
-	if (IS_ERR(bus_bw_info->icc_path)) {
-		icc_ret = PTR_ERR(bus_bw_info->icc_path);
-		if (icc_ret != -EPROBE_DEFER && icc_ret != -ENODATA &&
-		    icc_ret != -ENOENT)
-			cnss_pr_err("Failed to get ICC path wifi-ddr, err = %d\n",
-				    icc_ret);
-		bus_bw_info->icc_path = NULL;
-	}
 
 	bus_bw_info->bus_scale_table =
 		msm_bus_cl_get_pdata(plat_priv->plat_dev);
@@ -2372,9 +2332,6 @@ static void cnss_unregister_bus_scale(struct cnss_plat_data *plat_priv)
 
 	if (bus_bw_info->bus_client)
 		msm_bus_scale_unregister_client(bus_bw_info->bus_client);
-
-	if (bus_bw_info->icc_path)
-		icc_put(bus_bw_info->icc_path);
 }
 
 static ssize_t qtime_sync_period_show(struct device *dev,
