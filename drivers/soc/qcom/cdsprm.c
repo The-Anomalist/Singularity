@@ -55,7 +55,6 @@
 #define CDSPRM_MSG_QUEUE_DEPTH		50
 #define CDSP_THERMAL_MAX_STATE		10
 #define HVX_THERMAL_MAX_STATE		10
-#define CDSPRM_L3_BOOST_PCT_MAX		50
 
 struct sysmon_l3_msg {
 	unsigned int l3_clock_khz;
@@ -197,28 +196,6 @@ struct cdsprm {
 static struct cdsprm gcdsprm;
 static LIST_HEAD(cdsprm_list);
 static DECLARE_WAIT_QUEUE_HEAD(cdsprm_wq);
-static unsigned int cdsprm_l3_boost_pct = 10;
-module_param_named(l3_boost_pct, cdsprm_l3_boost_pct, uint, 0644);
-MODULE_PARM_DESC(l3_boost_pct,
-	"Percent boost applied to CDSP-requested L3 clock (0-50)");
-
-static unsigned int cdsprm_get_boosted_l3_clock(unsigned int l3_clock_khz)
-{
-	u64 boosted = l3_clock_khz;
-	unsigned int boost_pct = min(cdsprm_l3_boost_pct,
-					 CDSPRM_L3_BOOST_PCT_MAX);
-
-	if (!boost_pct)
-		return l3_clock_khz;
-
-	boosted = boosted * (100 + boost_pct);
-	do_div(boosted, 100);
-
-	if (boosted > UINT_MAX)
-		return UINT_MAX;
-
-	return boosted;
-}
 
 /**
  * cdsprm_register_cdspl3gov() - Register a method to set L3 clock
@@ -763,7 +740,6 @@ static int process_cdsp_request_thread(void *data)
 		} else if (msg && (msg->feature_id ==
 			SYSMON_CDSP_FEATURE_L3_RX)) {
 			l3_clock_khz = msg->fs.l3_struct.l3_clock_khz;
-			l3_clock_khz = cdsprm_get_boosted_l3_clock(l3_clock_khz);
 
 			spin_lock_irqsave(&gcdsprm.l3_lock, flags);
 			gcdsprm.set_l3_freq_cached = gcdsprm.set_l3_freq;
