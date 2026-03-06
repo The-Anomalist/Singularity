@@ -9,7 +9,6 @@
 #include <linux/msm_kgsl.h>
 #include <linux/of_device.h>
 #include <linux/interconnect.h>
-#include <linux/moduleparam.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
@@ -34,28 +33,6 @@
 #define KGSL_MAX_BUSLEVELS	20
 
 #define DEFAULT_BUS_P 25
-
-static uint kgsl_icc_vote_boost_pct = 135;
-module_param_named(icc_vote_boost_pct, kgsl_icc_vote_boost_pct, uint, 0644);
-MODULE_PARM_DESC(icc_vote_boost_pct,
-	"Scale KGSL ICC AB/IB votes by this percent to reduce bus starvation under load");
-
-static uint kgsl_gpu_cfg_icc_vote_boost_pct = 125;
-module_param_named(gpu_cfg_icc_vote_boost_pct,
-	kgsl_gpu_cfg_icc_vote_boost_pct, uint, 0644);
-MODULE_PARM_DESC(gpu_cfg_icc_vote_boost_pct,
-	"Scale KGSL GPU-CFG ICC AB/IB votes by this percent for faster command setup");
-
-static uint kgsl_force_active_min_buslevel = 2;
-module_param_named(force_active_min_buslevel, kgsl_force_active_min_buslevel,
-	uint, 0644);
-MODULE_PARM_DESC(force_active_min_buslevel,
-	"Minimum KGSL buslevel while GPU is active (0 disables the floor)");
-
-static uint kgsl_force_min_pwrlevel = 1;
-module_param_named(force_min_pwrlevel, kgsl_force_min_pwrlevel, uint, 0644);
-MODULE_PARM_DESC(force_min_pwrlevel,
-	"Cap the minimum runtime GPU powerlevel index (lower index = higher clocks)");
 
 /* Order deeply matters here because reasons. New entries go on the end */
 static const char * const clocks[] = {
@@ -234,22 +211,6 @@ static void _ab_buslevel_update(struct kgsl_pwrctrl *pwr,
 		*ab = (pwr->bus_percent_ab * max_bw) / 100;
 }
 
-static inline u32 _kgsl_scale_bw_vote(u32 bw, unsigned int boost_pct)
-{
-	u64 scaled;
-
-	if (!bw || boost_pct <= 100)
-		return bw;
-
-	scaled = (u64)bw * boost_pct;
-	do_div(scaled, 100);
-
-	if (scaled > U32_MAX)
-		return U32_MAX;
-
-	return (u32)scaled;
-}
-
 /**
  * _adjust_pwrlevel() - Given a requested power level do bounds checking on the
  * constraints and return the nearest possible level
@@ -353,10 +314,6 @@ int kgsl_pwrctrl_gpu_cfg_set(struct kgsl_device *device, unsigned int buslevel)
 
 			avg_bw = pwr->gpu_cfg_icc_ab_mbytes[idx];
 			peak_bw = pwr->gpu_cfg_icc_ib_mbytes[idx];
-			avg_bw = _kgsl_scale_bw_vote(avg_bw,
-				kgsl_gpu_cfg_icc_vote_boost_pct);
-			peak_bw = _kgsl_scale_bw_vote(peak_bw,
-				kgsl_gpu_cfg_icc_vote_boost_pct);
 			ret = icc_set_bw(pwr->gpu_cfg_icc_path, avg_bw, peak_bw);
 		} else if (pwr->gpu_cfg_bus_scale_table) {
 			if (buslevel >= pwr->gpu_cfg_bus_scale_table->num_usecases)
@@ -369,10 +326,6 @@ int kgsl_pwrctrl_gpu_cfg_set(struct kgsl_device *device, unsigned int buslevel)
 				else {
 					avg_bw = div_u64((u64)vector[0].ab, 1000ULL);
 					peak_bw = div_u64((u64)vector[0].ib, 1000ULL);
-					avg_bw = _kgsl_scale_bw_vote(avg_bw,
-						kgsl_gpu_cfg_icc_vote_boost_pct);
-					peak_bw = _kgsl_scale_bw_vote(peak_bw,
-						kgsl_gpu_cfg_icc_vote_boost_pct);
 					ret = icc_set_bw(pwr->gpu_cfg_icc_path, avg_bw, peak_bw);
 				}
 			}
@@ -419,8 +372,6 @@ static int kgsl_bus_scale_request(struct kgsl_device *device,
 
 			avg_bw = pwr->icc_ab_mbytes[idx];
 			peak_bw = pwr->icc_ib_mbytes[idx];
-			avg_bw = _kgsl_scale_bw_vote(avg_bw, kgsl_icc_vote_boost_pct);
-			peak_bw = _kgsl_scale_bw_vote(peak_bw, kgsl_icc_vote_boost_pct);
 
 			for (i = 0; !ret && i < pwr->num_icc_paths; i++)
 				ret = icc_set_bw(pwr->icc_paths[i], avg_bw, peak_bw);
@@ -441,10 +392,6 @@ static int kgsl_bus_scale_request(struct kgsl_device *device,
 
 				avg_bw = div_u64((u64)vectors[vec_idx].ab, 1000ULL);
 				peak_bw = div_u64((u64)vectors[vec_idx].ib, 1000ULL);
-				avg_bw = _kgsl_scale_bw_vote(avg_bw,
-					kgsl_icc_vote_boost_pct);
-				peak_bw = _kgsl_scale_bw_vote(peak_bw,
-					kgsl_icc_vote_boost_pct);
 
 				ret = icc_set_bw(pwr->icc_paths[i], avg_bw, peak_bw);
 			}
@@ -586,10 +533,6 @@ void kgsl_pwrctrl_buslevel_update(struct kgsl_device *device,
 		buslevel = min_t(int, pwr->pwrlevels[0].bus_max,
 				cur + pwr->bus_mod);
 		buslevel = max_t(int, buslevel, 1);
-		if (kgsl_force_active_min_buslevel)
-			buslevel = max_t(int, buslevel,
-				min_t(unsigned int, kgsl_force_active_min_buslevel,
-					pwr->pwrlevels[0].bus_max));
 	} else {
 		/* If the bus is being turned off, reset to default level */
 		pwr->bus_mod = 0;
@@ -2589,10 +2532,6 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 
 	pwr->max_pwrlevel = 0;
 	pwr->min_pwrlevel = pwr->num_pwrlevels - 2;
-	if (kgsl_force_min_pwrlevel)
-		pwr->min_pwrlevel = min_t(unsigned int,
-			pwr->min_pwrlevel,
-			max_t(unsigned int, 1, kgsl_force_min_pwrlevel));
 	pwr->thermal_pwrlevel = 0;
 	pwr->thermal_pwrlevel_floor = pwr->min_pwrlevel;
 
