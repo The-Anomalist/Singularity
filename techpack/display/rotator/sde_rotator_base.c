@@ -27,6 +27,24 @@
 #include "sde_rotator_dev.h"
 #include "sde_rotator_vbif.h"
 
+/*
+ * Older SDE rotator trees used VOTE_INDEX_{LOW,MEDIUM,HIGH} to select
+ * register-bus vote levels. Some interconnect/techpack mixes only keep
+ * VOTE_INDEX_MAX in the shared header, which breaks the switch below.
+ * Define the legacy indices locally when missing to preserve usecase
+ * ordering (0: none, 1: low, 2: medium, 3: high).
+ */
+#ifndef VOTE_INDEX_LOW
+#define VOTE_INDEX_LOW    1
+#endif
+#ifndef VOTE_INDEX_MEDIUM
+#define VOTE_INDEX_MEDIUM 2
+#endif
+#ifndef VOTE_INDEX_HIGH
+#define VOTE_INDEX_HIGH   3
+#endif
+
+
 static u64 sde_mdp_get_reg_bus_vote(u32 usecase_ndx);
 
 static inline u64 fudge_factor(u64 val, u32 numer, u32 denom)
