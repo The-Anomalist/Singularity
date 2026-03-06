@@ -20,8 +20,6 @@
 #include "sde_rotator_formats.h"
 #include <linux/pm_qos.h>
 
-struct icc_path;
-
 /* HW Revisions for different targets */
 #define SDE_GET_MAJOR_REV(rev)	((rev) >> 28)
 #define SDE_GET_MAJOR_MINOR(rev)	((rev) >> 16)
@@ -255,7 +253,6 @@ struct sde_rot_data_type {
 
 	/* register bus (AHB) */
 	u32 reg_bus_hdl;
-	struct icc_path *reg_bus_icc_path;
 	u32 reg_bus_usecase_ndx;
 	struct list_head reg_bus_clist;
 	struct mutex reg_bus_lock;
