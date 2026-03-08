@@ -2335,7 +2335,7 @@ static int cnss_register_bus_scale(struct cnss_plat_data *plat_priv)
 	struct cnss_bus_bw_info *bus_bw_info;
 
 	bus_bw_info = &plat_priv->bus_bw_info;
-	bus_bw_info->icc_path = of_icc_get(plat_priv->plat_dev,
+	bus_bw_info->icc_path = of_icc_get(&plat_priv->plat_dev->dev,
 					   "wifi-ddr");
 	if (IS_ERR(bus_bw_info->icc_path)) {
 		icc_ret = PTR_ERR(bus_bw_info->icc_path);
