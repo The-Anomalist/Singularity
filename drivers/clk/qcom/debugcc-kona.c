@@ -61,46 +61,6 @@ static struct msm_bus_scale_pdata clk_measure_scale_table = {
 	.name = "clk_measure",
 };
 
-/*
- * Prefer named ICC paths if they get added to DT later. Until then we still
- * accept the first unnamed path and keep msm_bus as a fallback for deferred
- * ICC providers.
- */
-static struct icc_path *kona_debugcc_get_icc_path(struct device *dev)
-{
-	static const char *const try_names[] = {
-		"cam-cfg",
-		"video-cfg",
-		"disp-cfg",
-	};
-	struct icc_path *path;
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(try_names); i++) {
-		path = devm_of_icc_get(dev, try_names[i]);
-		if (!IS_ERR(path))
-			return path;
-
-		if (PTR_ERR(path) == -EPROBE_DEFER)
-			dev_dbg(dev,
-				"debugcc: %s ICC provider not ready, using msm_bus fallback\n",
-				try_names[i]);
-	}
-
-	path = devm_of_icc_get(dev, NULL);
-	if (IS_ERR(path)) {
-		if (PTR_ERR(path) == -EPROBE_DEFER)
-			dev_dbg(dev,
-				"debugcc: unnamed ICC provider not ready, using msm_bus fallback\n");
-		else
-			dev_dbg(dev, "debugcc: ICC unavailable (%ld), using msm_bus fallback\n",
-				PTR_ERR(path));
-		return NULL;
-	}
-
-	return path;
-}
-
 static struct measure_clk_data debug_mux_priv = {
 	.ctl_reg = 0x62038,
 	.status_reg = 0x6203C,
@@ -1087,17 +1047,14 @@ static int clk_debug_kona_probe(struct platform_device *pdev)
 	}
 
 	debug_mux_priv.cxo = clk;
-
-	/* Always keep msm_bus registered as fallback for transient ICC deferrals. */
-	gcc_debug_mux.bus_cl_id =
-		msm_bus_scale_register_client(&clk_measure_scale_table);
-	if (!gcc_debug_mux.bus_cl_id)
-		return -EPROBE_DEFER;
-
-	gcc_debug_mux.icc_path = kona_debugcc_get_icc_path(&pdev->dev);
-	if (gcc_debug_mux.icc_path)
-		dev_dbg(&pdev->dev,
-			"debugcc: ICC path attached; msm_bus fallback kept for transient ICC deferrals\n");
+	gcc_debug_mux.icc_path = devm_of_icc_get(&pdev->dev, NULL);
+	if (IS_ERR(gcc_debug_mux.icc_path)) {
+		gcc_debug_mux.icc_path = NULL;
+		gcc_debug_mux.bus_cl_id =
+			msm_bus_scale_register_client(&clk_measure_scale_table);
+		if (!gcc_debug_mux.bus_cl_id)
+			return -EPROBE_DEFER;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(mux_list); i++) {
 		ret = map_debug_bases(pdev, mux_list[i].regmap_name,
