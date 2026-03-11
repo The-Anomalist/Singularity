@@ -50,7 +50,7 @@
 		cvp_bus_ddr {
 			compatible = "qcom,msm-cvp,bus";
 			label = "cvp-ddr";
-			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+			interconnects = <&kona_icc KONA_ICC_CVP_TO_MEM>;
 			interconnect-names = "cvp-ddr";
 			qcom,bus-master = <MSM_BUS_MASTER_VIDEO_PROC>;
 			qcom,bus-slave = <MSM_BUS_SLAVE_EBI_CH0>;

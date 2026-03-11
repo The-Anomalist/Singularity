@@ -3943,7 +3943,7 @@
 		qcom,proxy-clock-names = "xo";
 
 		qcom,pas-id = <18>;
-		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+		interconnects = <&kona_icc KONA_ICC_PAS_TO_MEM>;
 		interconnect-names = "pas-ddr";
 		qcom,proxy-timeout-ms = <10000>;
 		qcom,smem-id = <601>;
@@ -4000,7 +4000,7 @@
 		qcom,ahb-freq = <200000000>;
 
 		qcom,pas-id = <9>;
-		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
+		interconnects = <&kona_icc KONA_ICC_PAS_TO_MEM>;
 		interconnect-names = "pas-ddr";
 		qcom,msm-bus,name = "pil-venus";
 		qcom,msm-bus,num-cases = <2>;
