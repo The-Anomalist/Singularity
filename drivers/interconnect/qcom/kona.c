@@ -148,6 +148,66 @@ module_param_named(kona_display_cfg_nonzero_floor_ib_kBps, kona_display_cfg_nonz
 MODULE_PARM_DESC(kona_display_cfg_nonzero_floor_ib_kBps,
 	"Fallback DISPLAY config-path floor peak BW (kB/s) for 0/0 votes");
 
+static bool kona_camera_nonzero_floor_enable = true;
+module_param_named(kona_camera_nonzero_floor_enable, kona_camera_nonzero_floor_enable, bool, 0644);
+MODULE_PARM_DESC(kona_camera_nonzero_floor_enable,
+	"Force non-zero fallback floor for camera ICC paths when clients request 0/0");
+
+static unsigned int kona_camera_nonzero_floor_ab_kBps = 160000; /* 160 MB/s */
+module_param_named(kona_camera_nonzero_floor_ab_kBps, kona_camera_nonzero_floor_ab_kBps, uint, 0644);
+MODULE_PARM_DESC(kona_camera_nonzero_floor_ab_kBps,
+	"Fallback camera-path floor average BW (kB/s) when a 0/0 vote is requested");
+
+static unsigned int kona_camera_nonzero_floor_ib_kBps = 320000; /* 320 MB/s */
+module_param_named(kona_camera_nonzero_floor_ib_kBps, kona_camera_nonzero_floor_ib_kBps, uint, 0644);
+MODULE_PARM_DESC(kona_camera_nonzero_floor_ib_kBps,
+	"Fallback camera-path floor peak BW (kB/s) when a 0/0 vote is requested");
+
+static bool kona_dsp_nonzero_floor_enable = true;
+module_param_named(kona_dsp_nonzero_floor_enable, kona_dsp_nonzero_floor_enable, bool, 0644);
+MODULE_PARM_DESC(kona_dsp_nonzero_floor_enable,
+	"Force non-zero fallback floor for DSP/CDSP ICC paths when clients request 0/0");
+
+static unsigned int kona_dsp_nonzero_floor_ab_kBps = 128000; /* 128 MB/s */
+module_param_named(kona_dsp_nonzero_floor_ab_kBps, kona_dsp_nonzero_floor_ab_kBps, uint, 0644);
+MODULE_PARM_DESC(kona_dsp_nonzero_floor_ab_kBps,
+	"Fallback DSP/CDSP floor average BW (kB/s) when a 0/0 vote is requested");
+
+static unsigned int kona_dsp_nonzero_floor_ib_kBps = 256000; /* 256 MB/s */
+module_param_named(kona_dsp_nonzero_floor_ib_kBps, kona_dsp_nonzero_floor_ib_kBps, uint, 0644);
+MODULE_PARM_DESC(kona_dsp_nonzero_floor_ib_kBps,
+	"Fallback DSP/CDSP floor peak BW (kB/s) when a 0/0 vote is requested");
+
+static bool kona_pil_tz_nonzero_floor_enable = true;
+module_param_named(kona_pil_tz_nonzero_floor_enable, kona_pil_tz_nonzero_floor_enable, bool, 0644);
+MODULE_PARM_DESC(kona_pil_tz_nonzero_floor_enable,
+	"Force non-zero fallback floor for PIL-TZ PAS path when clients request 0/0");
+
+static unsigned int kona_pil_tz_nonzero_floor_ab_kBps = 128000; /* 128 MB/s */
+module_param_named(kona_pil_tz_nonzero_floor_ab_kBps, kona_pil_tz_nonzero_floor_ab_kBps, uint, 0644);
+MODULE_PARM_DESC(kona_pil_tz_nonzero_floor_ab_kBps,
+	"Fallback PIL-TZ PAS floor average BW (kB/s) when a 0/0 vote is requested");
+
+static unsigned int kona_pil_tz_nonzero_floor_ib_kBps = 256000; /* 256 MB/s */
+module_param_named(kona_pil_tz_nonzero_floor_ib_kBps, kona_pil_tz_nonzero_floor_ib_kBps, uint, 0644);
+MODULE_PARM_DESC(kona_pil_tz_nonzero_floor_ib_kBps,
+	"Fallback PIL-TZ PAS floor peak BW (kB/s) when a 0/0 vote is requested");
+
+static bool kona_generic_nonzero_floor_enable = true;
+module_param_named(kona_generic_nonzero_floor_enable, kona_generic_nonzero_floor_enable, bool, 0644);
+MODULE_PARM_DESC(kona_generic_nonzero_floor_enable,
+	"Force non-zero fallback floor for generic ICC paths while msm_bus fallback is still used");
+
+static unsigned int kona_generic_nonzero_floor_ab_kBps = 64000; /* 64 MB/s */
+module_param_named(kona_generic_nonzero_floor_ab_kBps, kona_generic_nonzero_floor_ab_kBps, uint, 0644);
+MODULE_PARM_DESC(kona_generic_nonzero_floor_ab_kBps,
+	"Fallback generic-path floor average BW (kB/s) when a 0/0 vote is requested");
+
+static unsigned int kona_generic_nonzero_floor_ib_kBps = 128000; /* 128 MB/s */
+module_param_named(kona_generic_nonzero_floor_ib_kBps, kona_generic_nonzero_floor_ib_kBps, uint, 0644);
+MODULE_PARM_DESC(kona_generic_nonzero_floor_ib_kBps,
+	"Fallback generic-path floor peak BW (kB/s) when a 0/0 vote is requested");
+
 static bool kona_display_bootstrap_floor_enable = true;
 module_param_named(kona_display_bootstrap_floor_enable, kona_display_bootstrap_floor_enable, bool, 0644);
 MODULE_PARM_DESC(kona_display_bootstrap_floor_enable,
@@ -1145,6 +1205,46 @@ static void kona_icc_get_display_nonzero_floor(u32 id, u64 *ab, u64 *ib)
 	*ib = floor_ib;
 }
 
+static bool kona_icc_get_nonzero_floor(const struct kona_icc_node_desc *desc,
+				      u64 *ab, u64 *ib)
+{
+	u64 floor_ab = 0;
+	u64 floor_ib = 0;
+
+	if (!desc || !ab || !ib)
+		return false;
+
+	if (desc->role == KONA_ROLE_DISPLAY && kona_display_nonzero_floor_enable) {
+		kona_icc_get_display_nonzero_floor(desc->id, &floor_ab, &floor_ib);
+	} else if (desc->id == KONA_ICC_CAM_CFG && kona_camera_nonzero_floor_enable) {
+		floor_ab = (u64)kona_camera_nonzero_floor_ab_kBps;
+		floor_ib = (u64)kona_camera_nonzero_floor_ib_kBps;
+	} else if (desc->id == KONA_ICC_PAS_TO_MEM && kona_pil_tz_nonzero_floor_enable) {
+		floor_ab = (u64)kona_pil_tz_nonzero_floor_ab_kBps;
+		floor_ib = (u64)kona_pil_tz_nonzero_floor_ib_kBps;
+	} else if (desc->role == KONA_ROLE_DSP && kona_dsp_nonzero_floor_enable) {
+		floor_ab = (u64)kona_dsp_nonzero_floor_ab_kBps;
+		floor_ib = (u64)kona_dsp_nonzero_floor_ib_kBps;
+	} else if (desc->role == KONA_ROLE_GENERIC &&
+		   kona_generic_nonzero_floor_enable) {
+		floor_ab = (u64)kona_generic_nonzero_floor_ab_kBps;
+		floor_ib = (u64)kona_generic_nonzero_floor_ib_kBps;
+	}
+
+	if (!floor_ab && !floor_ib)
+		return false;
+
+	if (floor_ab && !floor_ib)
+		floor_ib = floor_ab * 2;
+	else if (floor_ab && floor_ib < floor_ab * 2)
+		floor_ib = floor_ab * 2;
+
+	*ab = floor_ab;
+	*ib = floor_ib;
+
+	return true;
+}
+
 static int kona_icc_validate_display_nodes(struct kona_icc_provider *qp)
 {
 	static const u32 required_ids[] = {
@@ -1653,15 +1753,14 @@ skip_perf_floor:
 	}
 
 	/*
-	 * Hard non-zero fallback for DISPLAY paths: avoid 0/0 collapse on ddr and
-	 * config-path links where panel/SDE/dispcc sequences can stall.
+	 * Hard non-zero fallbacks for ICC paths that should not fully collapse
+	 * when clients transiently drop to 0/0 while subsystems still need fabric.
 	 */
-	if (qp->nodes[index].role == KONA_ROLE_DISPLAY && !ab && !ib &&
-	    kona_display_nonzero_floor_enable && !READ_ONCE(qp->system_suspended)) {
-		kona_icc_get_display_nonzero_floor(qp->nodes[index].id, &ab, &ib);
-		if (kona_resume_debug)
+	if (!ab && !ib && !READ_ONCE(qp->system_suspended)) {
+		if (kona_icc_get_nonzero_floor(&qp->nodes[index], &ab, &ib) &&
+		    kona_resume_debug)
 			dev_info_ratelimited(qp->provider.dev,
-				"kona-icc: fallback non-zero DISPLAY floor for %s: ab=%llu ib=%llu\n",
+				"kona-icc: fallback non-zero floor for %s: ab=%llu ib=%llu\n",
 				qp->nodes[index].name, ab, ib);
 	}
 
