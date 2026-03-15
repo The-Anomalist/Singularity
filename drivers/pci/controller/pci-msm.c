@@ -18,6 +18,7 @@
 #include <linux/irqdomain.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
+#include <linux/interconnect.h>
 #include <linux/module.h>
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
@@ -753,6 +754,8 @@ struct msm_pcie_dev_t {
 	struct pci_saved_state *saved_state;
 
 	struct wakeup_source *ws;
+	struct icc_path *icc_path;
+	bool use_icc;
 	struct msm_bus_scale_pdata *bus_scale_table;
 	uint32_t bus_client;
 
@@ -842,6 +845,23 @@ struct msm_pcie_dev_t {
 
 	void (*rumi_init)(struct msm_pcie_dev_t *pcie_dev);
 };
+
+#define MSM_PCIE_ICC_ON_AB_KBPS	500
+#define MSM_PCIE_ICC_ON_IB_KBPS	800
+
+static int msm_pcie_set_bus_bw(struct msm_pcie_dev_t *dev, bool enable)
+{
+	if (dev->use_icc)
+		return icc_set_bw(dev->icc_path,
+				enable ? MSM_PCIE_ICC_ON_AB_KBPS : 0,
+				enable ? MSM_PCIE_ICC_ON_IB_KBPS : 0);
+
+	if (dev->bus_client)
+		return msm_bus_scale_client_update_request(dev->bus_client,
+				enable ? 1 : 0);
+
+	return 0;
+}
 
 struct msm_root_dev_t {
 	struct msm_pcie_dev_t *pcie_dev;
@@ -3459,8 +3479,8 @@ static int msm_pcie_clk_init(struct msm_pcie_dev_t *dev)
 	}
 
 	PCIE_DBG(dev, "PCIe: requesting bus vote for RC%d\n", dev->rc_idx);
-	if (dev->bus_client) {
-		rc = msm_bus_scale_client_update_request(dev->bus_client, 1);
+	if (dev->bus_client || dev->use_icc) {
+		rc = msm_pcie_set_bus_bw(dev, true);
 		if (rc) {
 			PCIE_ERR(dev,
 				"PCIe: fail to set bus bandwidth for RC%d:%d.\n",
@@ -3580,11 +3600,11 @@ static void msm_pcie_clk_deinit(struct msm_pcie_dev_t *dev)
 		mutex_unlock(&dev->clk_lock);
 	}
 
-	if (dev->bus_client) {
+	if (dev->bus_client || dev->use_icc) {
 		PCIE_DBG(dev, "PCIe: removing bus vote for RC%d\n",
 			dev->rc_idx);
 
-		rc = msm_bus_scale_client_update_request(dev->bus_client, 0);
+		rc = msm_pcie_set_bus_bw(dev, false);
 		if (rc)
 			PCIE_ERR(dev,
 				"PCIe: fail to relinquish bus bandwidth for RC%d:%d.\n",
@@ -4247,12 +4267,22 @@ static int msm_pcie_get_resources(struct msm_pcie_dev_t *dev,
 
 	PCIE_DBG(dev, "PCIe: RC%d: entry\n", dev->rc_idx);
 
+	dev->icc_path = devm_of_icc_get(&pdev->dev, "pcie-mem");
+	if (IS_ERR(dev->icc_path)) {
+		dev->icc_path = NULL;
+		dev->use_icc = false;
+	} else {
+		dev->use_icc = true;
+		PCIE_DBG(dev, "PCIe: RC%d: using ICC path for %s\n",
+			dev->rc_idx, dev->pdev->name);
+	}
+
 	dev->bus_scale_table = msm_bus_cl_get_pdata(pdev);
 	if (!dev->bus_scale_table) {
 		PCIE_DBG(dev, "PCIe: RC%d: No bus scale table for %s\n",
 			dev->rc_idx, dev->pdev->name);
 		dev->bus_client = 0;
-	} else {
+	} else if (!dev->use_icc) {
 		dev->bus_client =
 			msm_bus_scale_register_client(dev->bus_scale_table);
 		if (!dev->bus_client) {
@@ -7508,9 +7538,8 @@ static int msm_pcie_drv_resume(struct msm_pcie_dev_t *pcie_dev)
 
 	msm_pcie_vreg_init(pcie_dev);
 
-	if (pcie_dev->bus_client) {
-		ret = msm_bus_scale_client_update_request(pcie_dev->bus_client,
-							1);
+	if (pcie_dev->bus_client || pcie_dev->use_icc) {
+		ret = msm_pcie_set_bus_bw(pcie_dev, true);
 		if (ret)
 			PCIE_ERR(pcie_dev,
 				"PCIe: RC%d: failed to set bus bw vote: %d\n",
@@ -7669,9 +7698,8 @@ static int msm_pcie_drv_suspend(struct msm_pcie_dev_t *pcie_dev,
 		if (clk_info->hdl && !clk_info->suppressible)
 			clk_disable_unprepare(clk_info->hdl);
 
-	if (pcie_dev->bus_client) {
-		ret = msm_bus_scale_client_update_request(pcie_dev->bus_client,
-							0);
+	if (pcie_dev->bus_client || pcie_dev->use_icc) {
+		ret = msm_pcie_set_bus_bw(pcie_dev, false);
 		if (ret)
 			PCIE_ERR(pcie_dev,
 				"PCIe: RC%d: DRV: failed to remove bus bw vote: %d\n",
