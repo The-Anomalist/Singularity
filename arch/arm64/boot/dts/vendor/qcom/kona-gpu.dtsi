@@ -86,6 +86,19 @@
 				<&kona_icc KONA_ICC_CPU_TO_GPU_CFG>;
 		interconnect-names = "gpu-llcc", "gpu-ddr", "cpu-gpu-cfg";
 
+		/*
+		 * ICC GPU BW levels in kB/s. Keep msm_bus tables for fallback until
+		 * all downstream users are fully moved to ICC-only voting.
+		 */
+		qcom,gpu-icc-bw-avg-kbps =
+			<0 195312 292968 440429 534179 665039 750000
+			 993164 1518554 1761718 2042968 2671875 3125000 3515625>;
+		qcom,gpu-icc-bw-peak-kbps =
+			<0 781250 1171875 1761718 2136718 2660156 3000000
+			 3972656 6074218 7046875 8171875 10687500 12500000 14062500>;
+		qcom,gpu-cfg-icc-bw-avg-kbps = <0 25>;
+		qcom,gpu-cfg-icc-bw-peak-kbps = <0 100>;
+
 		clocks = <&clock_gpucc GPU_CC_CXO_CLK>,
 			<&clock_gcc GCC_DDRSS_GPU_AXI_CLK>,
 			<&clock_gcc GCC_GPU_MEMNOC_GFX_CLK>,
