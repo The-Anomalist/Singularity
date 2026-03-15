@@ -32,6 +32,10 @@
 
 		mmcx-supply = <&VDD_MMCX_LEVEL>;
 
+		interconnects = <&kona_icc KONA_ICC_DISP0_TO_MEM>,
+				<&kona_icc KONA_ICC_DISP_CFG>;
+		interconnect-names = "disp0-ddr", "disp-cfg";
+
 		/* interrupt config */
 		interrupts = <GIC_SPI 83 IRQ_TYPE_LEVEL_HIGH>;
 		interrupt-controller;
@@ -463,6 +467,10 @@
 		reg-names = "mdp_phys",
 			"rot_vbif_phys";
 		status = "disabled";
+
+		interconnects = <&kona_icc KONA_ICC_DISP0_TO_MEM>,
+				<&kona_icc KONA_ICC_DISP_CFG>;
+		interconnect-names = "rot-ddr", "disp-cfg";
 
 		#list-cells = <1>;
 

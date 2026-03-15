@@ -114,8 +114,12 @@ static int mdss_rotator_bus_scale_set_quota(struct mdss_rot_bus_data_type *bus,
 	MDSS_XLOG(new_uc_idx, ((quota >> 32) & 0xFFFFFFFF),
 		(quota & 0xFFFFFFFF));
 	if (bus->icc_path) {
-		ret = icc_set_bw(bus->icc_path, min_t(u64, quota, U32_MAX),
-			min_t(u64, quota, U32_MAX));
+		u32 bw = min_t(u64, quota, U32_MAX);
+
+		if (quota && !bw)
+			bw = 1;
+
+		ret = icc_set_bw(bus->icc_path, bw, bw);
 		if (!ret)
 			return 0;
 		pr_debug("ICC data vote failed rc=%d, using msm_bus fallback\n", ret);
@@ -163,6 +167,8 @@ static int mdss_rotator_enable_reg_bus(struct mdss_rot_mgr *mgr, u64 quota)
 
 			avg_bw = quota ? max_t(u32, 1, min_t(u64, avg, U32_MAX)) : 0;
 			peak_bw = quota ? max_t(u32, 1, min_t(u64, peak, U32_MAX)) : 0;
+			if (quota && !avg_bw && !peak_bw)
+				peak_bw = 1;
 
 			ret = icc_set_bw(mgr->reg_bus.icc_path, avg_bw, peak_bw);
 			if (!ret)

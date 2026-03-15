@@ -694,6 +694,8 @@ static int mdss_mdp_bus_scale_set_quota(u64 ab_quota_rt, u64 ab_quota_nrt,
 
 		mdss_mdp_icc_get_uc_bw(mdss_res->bus_scale_table, new_uc_idx,
 					&avg_bw, &peak_bw);
+		if (new_uc_idx && !avg_bw && !peak_bw)
+			peak_bw = 1;
 		if (mdss_res->bus_icc_path) {
 			rc = icc_set_bw(mdss_res->bus_icc_path, avg_bw, peak_bw);
 			if (!rc)
@@ -788,6 +790,8 @@ int mdss_update_reg_bus_vote(struct reg_bus_client *bus_client, u32 usecase_ndx)
 
 		mdss_mdp_icc_get_uc_bw(mdss_res->reg_bus_scale_table, max_usecase_ndx,
 					&avg_bw, &peak_bw);
+		if (max_usecase_ndx && !avg_bw && !peak_bw)
+			peak_bw = 1;
 		if (mdss_res->reg_bus_icc_path) {
 			ret = icc_set_bw(mdss_res->reg_bus_icc_path, avg_bw, peak_bw);
 			if (!ret) {
@@ -1456,6 +1460,8 @@ static int mdss_bus_rt_bw_vote(bool enable)
 
 		mdss_mdp_icc_get_uc_bw(mdata->hw_rt_bus_scale_table,
 					enable ? 1 : 0, &avg_bw, &peak_bw);
+		if (enable && !avg_bw && !peak_bw)
+			peak_bw = 1;
 		if (mdata->hw_rt_bus_icc_path) {
 			rc = icc_set_bw(mdata->hw_rt_bus_icc_path, avg_bw, peak_bw);
 			if (!rc)
