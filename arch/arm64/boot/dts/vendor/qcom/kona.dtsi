@@ -4298,6 +4298,8 @@
 		qcom,bam-ee = <0>;
 		qcom,ce-hw-shared;
 		qcom,clk-mgmt-sus-res;
+		interconnects = <&kona_icc KONA_ICC_CRYPTO_TO_MEM>;
+		interconnect-names = "crypto-ddr";
 		qcom,msm-bus,name = "qcrypto-noc";
 		qcom,msm-bus,num-cases = <2>;
 		qcom,msm-bus,num-paths = <1>;
@@ -5077,6 +5079,8 @@
 		clocks = <&clock_gcc GCC_TSIF_AHB_CLK>,
 			<&clock_gcc GCC_TSIF_REF_CLK>;
 
+		interconnects = <&kona_icc KONA_ICC_TSIF_TO_MEM>;
+		interconnect-names = "tsif-ddr";
 		qcom,msm-bus,name = "tsif";
 		qcom,msm-bus,num-cases = <2>;
 		qcom,msm-bus,num-paths = <1>;

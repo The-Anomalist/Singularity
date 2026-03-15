@@ -621,6 +621,8 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 	case KONA_ICC_CPU_TO_GPU_CFG:
 	case KONA_ICC_UFS_TO_MEM:
 	case KONA_ICC_QUP_TO_MEM:
+	case KONA_ICC_CRYPTO_TO_MEM:
+	case KONA_ICC_TSIF_TO_MEM:
 	case KONA_ICC_CAM_CFG:
 	case KONA_ICC_VIDEO_TO_MEM:
 	case KONA_ICC_CPU0_TO_MEM:
@@ -1139,7 +1141,21 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
 		.role = KONA_ROLE_GENERIC,
-        },
+	},
+	{
+		.id = KONA_ICC_CRYPTO_TO_MEM,
+		.name = "crypto-ddr",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
+	{
+		.id = KONA_ICC_TSIF_TO_MEM,
+		.name = "tsif-ddr",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
 };
 
 static inline int kona_icc_validate_node_count(void)
