@@ -49,6 +49,7 @@ struct dev_data {
 	bool use_icc;
 	bool icc_share_ab;
 	bool icc_share_peak;
+	u32 icc_boost_percent;
 	u32 icc_min_avg_kbps;
 	u32 icc_min_peak_kbps;
 	long gov_ab;
@@ -126,6 +127,27 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 			peak_bw = 1;
 		if (new_ab && !avg_bw)
 			avg_bw = 1;
+
+		/*
+		 * Optional DT controlled headroom for benchmark-heavy or latency
+		 * sensitive SKUs. Keep disabled by default and only apply on
+		 * non-zero votes.
+		 */
+		if (d->icc_boost_percent > 100) {
+			u64 boosted;
+
+			if (avg_bw) {
+				boosted = mult_frac((u64)avg_bw,
+						d->icc_boost_percent, 100);
+				avg_bw = min_t(u64, boosted, U32_MAX);
+			}
+
+			if (peak_bw) {
+				boosted = mult_frac((u64)peak_bw,
+						d->icc_boost_percent, 100);
+				peak_bw = min_t(u64, boosted, U32_MAX);
+			}
+		}
 
 		/*
 		 * Keep non-zero ICC requests above optional DT floors so critical
@@ -275,6 +297,12 @@ int devfreq_add_devbw(struct device *dev)
 			     &d->icc_min_avg_kbps);
 	of_property_read_u32(dev->of_node, "qcom,icc-min-peak-kbps",
 			     &d->icc_min_peak_kbps);
+	of_property_read_u32(dev->of_node, "qcom,icc-boost-percent",
+			     &d->icc_boost_percent);
+	if (d->icc_boost_percent && d->icc_boost_percent < 100)
+		d->icc_boost_percent = 100;
+	if (d->icc_boost_percent > 400)
+		d->icc_boost_percent = 400;
 	ret = 0;
 	if (num_icc_paths < 0) {
 		devbw_log_icc_dt(dev, num_icc_paths);

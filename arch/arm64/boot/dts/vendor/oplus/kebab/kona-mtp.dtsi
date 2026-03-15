@@ -95,6 +95,22 @@
 	status = "ok";
 };
 
+/*
+ * Benchmark-oriented CPU memory path floors.
+ * Keep these scoped to kebab so generic kona boards are not affected.
+ */
+&cpu_cpu_llcc_bw {
+	qcom,icc-min-avg-kbps = <6881000>;
+	qcom,icc-min-peak-kbps = <13762000>;
+	qcom,icc-boost-percent = <125>;
+};
+
+&cpu_llcc_ddr_bw {
+	qcom,icc-min-avg-kbps = <5161000>;
+	qcom,icc-min-peak-kbps = <12207000>;
+	qcom,icc-boost-percent = <125>;
+};
+
 &soc {
 	gpio_keys {
 		compatible = "gpio-keys";
