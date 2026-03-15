@@ -41,8 +41,12 @@ static struct devfreq_msm_adreno_tz_data adreno_tz_data = {
 	.device_id = KGSL_DEVICE_3D0,
 	.singularity_aggressiveness = 180,
 	.singularity_boost_level = 0,
-	.singularity_boost_ms = 65,
+	.singularity_boost_ms = 90,
 	.singularity_boost_enable = true,
+	.singularity_scene_boost_ms = 160,
+	.singularity_downscale_delay_ms = 45,
+	.singularity_transition_boost_pct = 35,
+	.singularity_transition_contexts = 2,
 };
 
 /*

@@ -166,6 +166,7 @@ static ssize_t singularity_boost_enable_store(struct device *dev,
 	if (!priv->singularity_boost_enable) {
 		spin_lock(&boost_lock);
 		priv->singularity_boost_end = 0;
+		priv->singularity_downscale_blocked_till = 0;
 		spin_unlock(&boost_lock);
 	}
 	singularity_update_devfreq(devfreq);
@@ -257,6 +258,122 @@ static ssize_t singularity_aggressiveness_store(struct device *dev,
 	return count;
 }
 
+static ssize_t singularity_scene_boost_ms_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct devfreq *devfreq = to_devfreq(dev);
+	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
+
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+		priv->singularity_scene_boost_ms);
+}
+
+static ssize_t singularity_scene_boost_ms_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct devfreq *devfreq = to_devfreq(dev);
+	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
+	unsigned long val;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret)
+		return ret;
+	if (val > 4000)
+		return -EINVAL;
+
+	priv->singularity_scene_boost_ms = val;
+	singularity_update_devfreq(devfreq);
+	return count;
+}
+
+static ssize_t singularity_downscale_delay_ms_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct devfreq *devfreq = to_devfreq(dev);
+	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
+
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+		priv->singularity_downscale_delay_ms);
+}
+
+static ssize_t singularity_downscale_delay_ms_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct devfreq *devfreq = to_devfreq(dev);
+	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
+	unsigned long val;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret)
+		return ret;
+	if (val > 1000)
+		return -EINVAL;
+
+	priv->singularity_downscale_delay_ms = val;
+	singularity_update_devfreq(devfreq);
+	return count;
+}
+
+static ssize_t singularity_transition_boost_pct_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct devfreq *devfreq = to_devfreq(dev);
+	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
+
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+		priv->singularity_transition_boost_pct);
+}
+
+static ssize_t singularity_transition_boost_pct_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct devfreq *devfreq = to_devfreq(dev);
+	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
+	unsigned long val;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret)
+		return ret;
+	if (val > 100)
+		return -EINVAL;
+
+	priv->singularity_transition_boost_pct = val;
+	singularity_update_devfreq(devfreq);
+	return count;
+}
+
+static ssize_t singularity_transition_contexts_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct devfreq *devfreq = to_devfreq(dev);
+	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
+
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+		priv->singularity_transition_contexts);
+}
+
+static ssize_t singularity_transition_contexts_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct devfreq *devfreq = to_devfreq(dev);
+	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
+	unsigned long val;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret)
+		return ret;
+	if (val > 32)
+		return -EINVAL;
+
+	priv->singularity_transition_contexts = val;
+	singularity_update_devfreq(devfreq);
+	return count;
+}
+
 static DEVICE_ATTR_RO(gpu_load);
 
 static DEVICE_ATTR_RO(suspend_time);
@@ -264,6 +381,10 @@ static DEVICE_ATTR_RW(singularity_boost_enable);
 static DEVICE_ATTR_RW(singularity_boost_level);
 static DEVICE_ATTR_RW(singularity_boost_ms);
 static DEVICE_ATTR_RW(singularity_aggressiveness);
+static DEVICE_ATTR_RW(singularity_scene_boost_ms);
+static DEVICE_ATTR_RW(singularity_downscale_delay_ms);
+static DEVICE_ATTR_RW(singularity_transition_boost_pct);
+static DEVICE_ATTR_RW(singularity_transition_contexts);
 
 static const struct device_attribute *singularity_attr_list[] = {
 		&dev_attr_gpu_load,
@@ -272,6 +393,10 @@ static const struct device_attribute *singularity_attr_list[] = {
 		&dev_attr_singularity_boost_level,
 		&dev_attr_singularity_boost_ms,
 		&dev_attr_singularity_aggressiveness,
+		&dev_attr_singularity_scene_boost_ms,
+		&dev_attr_singularity_downscale_delay_ms,
+		&dev_attr_singularity_transition_boost_pct,
+		&dev_attr_singularity_transition_contexts,
 		NULL
 };
 
@@ -586,6 +711,10 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	else if (busy_pct < 15 && val <= 0)
 		val = 1;
 
+	if (val > 0 && priv->singularity_downscale_delay_ms &&
+		time_before(jiffies, priv->singularity_downscale_blocked_till))
+		val = 0;
+
 	if (val) {
 		level += val;
 		level = max(level, 0);
@@ -614,6 +743,10 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 			boost_level = clamp_t(int, boost_level, 0,
 				devfreq->profile->max_state - 1);
 			level = min(level, boost_level);
+			if (priv->singularity_transition_boost_pct &&
+				busy_pct >= (100 -
+					priv->singularity_transition_boost_pct))
+				level = max(level - 1, 0);
 		}
 	}
 
@@ -643,12 +776,24 @@ static int tz_notify(struct notifier_block *nb, unsigned long type, void *devp)
 	case ADRENO_DEVFREQ_NOTIFY_SUBMIT:
 		if (priv->singularity_boost_enable &&
 				priv->singularity_boost_ms) {
+			unsigned long boost_ms = priv->singularity_boost_ms;
+
+			if (priv->singularity_transition_contexts &&
+				devfreq->last_status.private_data &&
+				(*((int *)devfreq->last_status.private_data) >=
+					priv->singularity_transition_contexts) &&
+				priv->singularity_scene_boost_ms > boost_ms)
+				boost_ms = priv->singularity_scene_boost_ms;
+
 			spin_lock(&boost_lock);
 			priv->singularity_boost_end =
-				jiffies + msecs_to_jiffies(
-					priv->singularity_boost_ms);
+				jiffies + msecs_to_jiffies(boost_ms);
 			spin_unlock(&boost_lock);
 		}
+		if (priv->singularity_downscale_delay_ms)
+			priv->singularity_downscale_blocked_till =
+				jiffies + msecs_to_jiffies(
+					priv->singularity_downscale_delay_ms);
 		break;
 	/* ignored by this governor */
 	default:
@@ -684,6 +829,7 @@ static int tz_start(struct devfreq *devfreq)
 	priv = devfreq->data;
 	priv->nb.notifier_call = tz_notify;
 	priv->singularity_boost_end = 0;
+	priv->singularity_downscale_blocked_till = 0;
 
 	out = 1;
 	if (devfreq->profile->max_state < MSM_ADRENO_MAX_PWRLEVELS) {
@@ -746,6 +892,7 @@ static int tz_suspend(struct devfreq *devfreq)
 
 	priv->bin.total_time = 0;
 	priv->bin.busy_time = 0;
+	priv->singularity_downscale_blocked_till = 0;
 	return 0;
 }
 
