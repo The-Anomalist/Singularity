@@ -36,6 +36,12 @@ static const char *data_bus_icc_name[SDE_POWER_HANDLE_DBUS_ID_MAX] = {
 	[SDE_POWER_HANDLE_DBUS_ID_EBI] = "mdp-ebi",
 };
 
+static const char *legacy_data_bus_icc_name[SDE_POWER_HANDLE_DBUS_ID_MAX] = {
+	[SDE_POWER_HANDLE_DBUS_ID_MNOC] = "disp0-ddr",
+	[SDE_POWER_HANDLE_DBUS_ID_LLCC] = "disp1-ddr",
+	[SDE_POWER_HANDLE_DBUS_ID_EBI] = "disp0-ddr",
+};
+
 const char *sde_power_handle_get_dbus_name(u32 bus_id)
 {
 	if (bus_id < SDE_POWER_HANDLE_DBUS_ID_MAX)
@@ -419,9 +425,19 @@ static int sde_power_data_bus_parse(struct platform_device *pdev,
 	if (icc_name) {
 		pdbus->icc_path = devm_of_icc_get(&pdev->dev, icc_name);
 		if (IS_ERR(pdbus->icc_path)) {
-			pr_debug("No ICC path for %s (%ld), using msm_bus fallback\n",
-				icc_name, PTR_ERR(pdbus->icc_path));
-			pdbus->icc_path = NULL;
+			const char *legacy_icc_name =
+				(bus_id < SDE_POWER_HANDLE_DBUS_ID_MAX) ?
+				legacy_data_bus_icc_name[bus_id] : NULL;
+
+			if (legacy_icc_name)
+				pdbus->icc_path = devm_of_icc_get(&pdev->dev,
+					legacy_icc_name);
+
+			if (IS_ERR(pdbus->icc_path)) {
+				pr_debug("No ICC path for %s (%ld), using msm_bus fallback\n",
+					icc_name, PTR_ERR(pdbus->icc_path));
+				pdbus->icc_path = NULL;
+			}
 		}
 	}
 
@@ -465,6 +481,8 @@ static int sde_power_reg_bus_parse(struct platform_device *pdev,
 	int rc = 0;
 
 	phandle->reg_bus_icc_path = devm_of_icc_get(&pdev->dev, "mdp-reg");
+	if (IS_ERR(phandle->reg_bus_icc_path))
+		phandle->reg_bus_icc_path = devm_of_icc_get(&pdev->dev, "disp-cfg");
 	if (IS_ERR(phandle->reg_bus_icc_path)) {
 		pr_debug("No ICC path for mdp-reg (%ld), using msm_bus fallback\n",
 			PTR_ERR(phandle->reg_bus_icc_path));

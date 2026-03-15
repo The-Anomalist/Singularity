@@ -64,6 +64,36 @@
 static struct sde_rsc_priv *rsc_prv_list[MAX_RSC_COUNT];
 static struct device *rpmh_dev[MAX_RSC_COUNT];
 
+static int sde_rsc_reg_bus_vote(struct sde_rsc_priv *rsc, u32 usecase_ndx)
+{
+	int rc = 0;
+	int msm_bus_rc = 0;
+	u32 reg_bus_hdl;
+	u32 ib_kbps;
+
+	if (!rsc)
+		return -EINVAL;
+
+	ib_kbps = usecase_ndx ? div_u64(SDE_POWER_HANDLE_ENABLE_BUS_IB_QUOTA,
+			1000) : 0;
+
+	if (rsc->phandle.reg_bus_icc_path) {
+		rc = icc_set_bw(rsc->phandle.reg_bus_icc_path, 0, ib_kbps);
+		if (rc)
+			pr_debug("reg bus icc vote failed rc=%d, fallback to msm_bus\n", rc);
+	}
+
+	reg_bus_hdl = rsc->phandle.reg_bus_hdl;
+	if (reg_bus_hdl) {
+		msm_bus_rc = msm_bus_scale_client_update_request(reg_bus_hdl,
+				usecase_ndx);
+		if (msm_bus_rc && (!rsc->phandle.reg_bus_icc_path || rc))
+			rc = msm_bus_rc;
+	}
+
+	return rc;
+}
+
 /**
  * sde_rsc_client_create() - create the client for sde rsc.
  * Different displays like DSI, HDMI, DP, WB, etc should call this
@@ -400,7 +430,7 @@ static u32 sde_rsc_timer_calculate(struct sde_rsc_priv *rsc,
 static int sde_rsc_resource_disable(struct sde_rsc_priv *rsc)
 {
 	struct dss_module_power *mp;
-	u32 reg_bus_hdl;
+	int rc;
 
 	if (!rsc) {
 		pr_err("invalid drv data\n");
@@ -418,10 +448,9 @@ static int sde_rsc_resource_disable(struct sde_rsc_priv *rsc)
 
 	mp = &rsc->phandle.mp;
 	msm_dss_enable_clk(mp->clk_config, mp->num_clk, false);
-	reg_bus_hdl = rsc->phandle.reg_bus_hdl;
-	if (reg_bus_hdl)
-		msm_bus_scale_client_update_request(reg_bus_hdl,
-				VOTE_INDEX_DISABLE);
+	rc = sde_rsc_reg_bus_vote(rsc, VOTE_INDEX_DISABLE);
+	if (rc)
+		pr_err("failed to clear reg bus vote rc=%d\n", rc);
 	msm_dss_enable_vreg(mp->vreg_config, mp->num_vreg, false);
 
 	return 0;
@@ -431,7 +460,6 @@ static int sde_rsc_resource_enable(struct sde_rsc_priv *rsc)
 {
 	struct dss_module_power *mp;
 	int rc = 0;
-	u32 reg_bus_hdl;
 
 	if (!rsc) {
 		pr_err("invalid drv data\n");
@@ -448,10 +476,8 @@ static int sde_rsc_resource_enable(struct sde_rsc_priv *rsc)
 		goto end;
 	}
 
-	reg_bus_hdl = rsc->phandle.reg_bus_hdl;
-	if (reg_bus_hdl) {
-		rc = msm_bus_scale_client_update_request(reg_bus_hdl,
-				VOTE_INDEX_LOW);
+	if (rsc->phandle.reg_bus_hdl || rsc->phandle.reg_bus_icc_path) {
+		rc = sde_rsc_reg_bus_vote(rsc, VOTE_INDEX_LOW);
 		if (rc) {
 			pr_err("failed to set reg bus vote rc=%d\n", rc);
 			goto reg_bus_hdl_err;
@@ -467,9 +493,8 @@ static int sde_rsc_resource_enable(struct sde_rsc_priv *rsc)
 	return rc;
 
 clk_err:
-	if (reg_bus_hdl)
-		msm_bus_scale_client_update_request(reg_bus_hdl,
-				VOTE_INDEX_DISABLE);
+	if (rsc->phandle.reg_bus_hdl || rsc->phandle.reg_bus_icc_path)
+		sde_rsc_reg_bus_vote(rsc, VOTE_INDEX_DISABLE);
 reg_bus_hdl_err:
 	msm_dss_enable_vreg(mp->vreg_config, mp->num_vreg, false);
 end:

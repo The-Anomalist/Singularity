@@ -292,7 +292,7 @@
 		qcom,sde-data-bus {
 			interconnects = <&kona_icc KONA_ICC_DISP0_TO_MEM>,
 					<&kona_icc KONA_ICC_DISP1_TO_MEM>;
-			interconnect-names = "disp0-ddr", "disp1-ddr";
+			interconnect-names = "mdp-mnoc", "mdp-llcc";
 
 			qcom,msm-bus,name = "mdss_sde";
 			qcom,msm-bus,num-cases = <3>;
@@ -305,7 +305,7 @@
 
 		qcom,sde-reg-bus {
 			interconnects = <&kona_icc KONA_ICC_DISP_CFG>;
-			interconnect-names = "disp-cfg";
+			interconnect-names = "mdp-reg";
 
 			qcom,msm-bus,name = "mdss_reg";
 			qcom,msm-bus,num-cases = <4>;
@@ -480,7 +480,7 @@
 		qcom,sde-data-bus {
 			interconnects = <&kona_icc KONA_ICC_DISP0_TO_MEM>,
 					<&kona_icc KONA_ICC_DISP1_TO_MEM>;
-			interconnect-names = "disp0-ddr", "disp1-ddr";
+			interconnect-names = "mdp-mnoc", "mdp-llcc";
 
 			qcom,msm-bus,name = "disp_rsc_mnoc_llcc";
 			qcom,msm-bus,active-only;
@@ -494,7 +494,7 @@
 
 		qcom,sde-ebi-bus {
 			interconnects = <&kona_icc KONA_ICC_DISP0_TO_MEM>;
-			interconnect-names = "disp0-ddr";
+			interconnect-names = "mdp-ebi";
 
 			qcom,msm-bus,name = "disp_rsc_ebi";
 			qcom,msm-bus,active-only;
@@ -508,7 +508,7 @@
 
 		qcom,sde-reg-bus {
 			interconnects = <&kona_icc KONA_ICC_DISP_CFG>;
-			interconnect-names = "disp-cfg";
+			interconnect-names = "mdp-reg";
 
 			qcom,msm-bus,name = "disp_rsc_reg";
 			qcom,msm-bus,num-cases = <4>;
@@ -536,7 +536,7 @@
 
 		/* Bus Scale Settings */
 		interconnects = <&kona_icc KONA_ICC_DISP0_TO_MEM>;
-		interconnect-names = "rot-ddr";
+		interconnect-names = "mdss_rotator";
 
 		qcom,msm-bus,name = "mdss_rotator";
 		qcom,msm-bus,num-cases = <3>;
@@ -577,8 +577,9 @@
 
 		/* reg bus scale settings */
 		rot_reg: qcom,rot-reg-bus {
-			interconnects = <&kona_icc KONA_ICC_DISP_CFG>;
-			interconnect-names = "disp-cfg";
+			interconnects = <&kona_icc KONA_ICC_DISP_CFG>,
+				<&kona_icc KONA_ICC_DISP_CFG>;
+			interconnect-names = "mdss_rot_reg", "mdp-reg";
 
 			qcom,msm-bus,name = "mdss_rot_reg";
 			qcom,msm-bus,num-cases = <2>;
@@ -616,6 +617,10 @@
 			<&clock_dispcc DISP_CC_MDSS_ESC0_CLK>;
 		clock-names = "byte_clk", "byte_clk_rcg", "byte_intf_clk",
 				"pixel_clk", "pixel_clk_rcg", "esc_clk";
+
+		interconnects = <&kona_icc KONA_ICC_DISP0_TO_MEM>;
+		interconnect-names = "dsi-mem";
+
 
 		qcom,ctrl-supply-entries {
 			#address-cells = <1>;
@@ -666,6 +671,9 @@
 			<&clock_dispcc DISP_CC_MDSS_ESC1_CLK>;
 		clock-names = "byte_clk", "byte_clk_rcg", "byte_intf_clk",
 				"pixel_clk", "pixel_clk_rcg", "esc_clk";
+
+		interconnects = <&kona_icc KONA_ICC_DISP1_TO_MEM>;
+		interconnect-names = "dsi-mem";
 		qcom,ctrl-supply-entries {
 			#address-cells = <1>;
 			#size-cells = <0>;

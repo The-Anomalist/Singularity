@@ -892,6 +892,9 @@ static int sde_mdp_bus_scale_register(struct sde_rot_data_type *mdata)
 	if (!mdata->reg_bus_icc_path) {
 		mdata->reg_bus_icc_path = devm_of_icc_get(&mdata->pdev->dev,
 			"mdp-reg");
+		if (IS_ERR(mdata->reg_bus_icc_path))
+			mdata->reg_bus_icc_path = devm_of_icc_get(&mdata->pdev->dev,
+				"disp-cfg");
 		if (IS_ERR(mdata->reg_bus_icc_path)) {
 			SDEROT_DBG("No ICC path for mdp-reg (%ld), using msm_bus fallback\n",
 				PTR_ERR(mdata->reg_bus_icc_path));

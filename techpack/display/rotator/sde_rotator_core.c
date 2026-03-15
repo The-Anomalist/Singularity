@@ -2846,6 +2846,8 @@ static int sde_rotator_parse_dt_bus(struct sde_rot_mgr *mgr,
 	mgr->data_bus.icc_path = devm_of_icc_get(&dev->dev,
 		mgr->data_bus.bus_scale_pdata ?
 		mgr->data_bus.bus_scale_pdata->name : "mdss_rot");
+	if (IS_ERR(mgr->data_bus.icc_path))
+		mgr->data_bus.icc_path = devm_of_icc_get(&dev->dev, "rot-ddr");
 	if (IS_ERR(mgr->data_bus.icc_path)) {
 		SDEROT_DBG("No ICC path for data bus (%ld), using msm_bus fallback\n",
 			PTR_ERR(mgr->data_bus.icc_path));
@@ -2855,6 +2857,10 @@ static int sde_rotator_parse_dt_bus(struct sde_rot_mgr *mgr,
 	mgr->reg_bus.icc_path = devm_of_icc_get(&dev->dev,
 		mgr->reg_bus.bus_scale_pdata ?
 		mgr->reg_bus.bus_scale_pdata->name : "mdss_rot_reg");
+	if (IS_ERR(mgr->reg_bus.icc_path))
+		mgr->reg_bus.icc_path = devm_of_icc_get(&dev->dev, "mdp-reg");
+	if (IS_ERR(mgr->reg_bus.icc_path))
+		mgr->reg_bus.icc_path = devm_of_icc_get(&dev->dev, "disp-cfg");
 	if (IS_ERR(mgr->reg_bus.icc_path)) {
 		SDEROT_DBG("No ICC path for reg bus (%ld), using msm_bus fallback\n",
 			PTR_ERR(mgr->reg_bus.icc_path));
