@@ -144,16 +144,6 @@ MODULE_PARM_DESC(kona_display_cfg_nonzero_floor_ab_kBps,
 	"Fallback DISPLAY config-path floor average BW (kB/s) for 0/0 votes");
 
 static unsigned int kona_display_cfg_nonzero_floor_ib_kBps = 240000; /* 240 MB/s */
-
-static unsigned int kona_cam_nonzero_floor_ab_kBps = 64000; /* 64 MB/s */
-module_param_named(kona_cam_nonzero_floor_ab_kBps, kona_cam_nonzero_floor_ab_kBps, uint, 0644);
-MODULE_PARM_DESC(kona_cam_nonzero_floor_ab_kBps,
-	"Fallback camera non-zero floor average BW (kB/s) for 0/0 votes");
-
-static unsigned int kona_cam_nonzero_floor_ib_kBps = 128000; /* 128 MB/s */
-module_param_named(kona_cam_nonzero_floor_ib_kBps, kona_cam_nonzero_floor_ib_kBps, uint, 0644);
-MODULE_PARM_DESC(kona_cam_nonzero_floor_ib_kBps,
-	"Fallback camera non-zero floor peak BW (kB/s) for 0/0 votes");
 module_param_named(kona_display_cfg_nonzero_floor_ib_kBps, kona_display_cfg_nonzero_floor_ib_kBps, uint, 0644);
 MODULE_PARM_DESC(kona_display_cfg_nonzero_floor_ib_kBps,
 	"Fallback DISPLAY config-path floor peak BW (kB/s) for 0/0 votes");
@@ -1085,27 +1075,6 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.role = KONA_ROLE_DSP,
 	},
 	{
-		.id = KONA_ICC_CAM_HF0_TO_MEM,
-		.name = "cam-hf0-ddr",
-		.ab = "CPU_MEM_AB",
-		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_DSP,
-	},
-	{
-		.id = KONA_ICC_CAM_SF0_TO_MEM,
-		.name = "cam-sf0-ddr",
-		.ab = "CPU_MEM_AB",
-		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_DSP,
-	},
-	{
-		.id = KONA_ICC_CAM_SF_ICP_TO_MEM,
-		.name = "cam-sf-icp-ddr",
-		.ab = "CPU_MEM_AB",
-		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_DSP,
-	},
-	{
 		.id = KONA_ICC_DISP_CFG,
 		.name = "disp-cfg",
 		.ab = "CPU_MEM_AB",
@@ -1194,19 +1163,6 @@ static bool kona_icc_is_display_cfg_id(u32 id)
 	switch (id) {
 	case KONA_ICC_DISP_CFG:
 	case KONA_ICC_VIDEO_CFG:
-		return true;
-	default:
-		return false;
-	}
-}
-
-
-static bool kona_is_camera_data_path(u32 id)
-{
-	switch (id) {
-	case KONA_ICC_CAM_HF0_TO_MEM:
-	case KONA_ICC_CAM_SF0_TO_MEM:
-	case KONA_ICC_CAM_SF_ICP_TO_MEM:
 		return true;
 	default:
 		return false;
@@ -1752,16 +1708,6 @@ skip_perf_floor:
 		if (kona_resume_debug)
 			dev_info_ratelimited(qp->provider.dev,
 				"kona-icc: fallback non-zero DISPLAY floor for %s: ab=%llu ib=%llu\n",
-				qp->nodes[index].name, ab, ib);
-	}
-
-	if (kona_is_camera_data_path(qp->nodes[index].id) && !ab && !ib &&
-	    !READ_ONCE(qp->system_suspended)) {
-		ab = max_t(u64, ab, (u64)kona_cam_nonzero_floor_ab_kBps);
-		ib = max_t(u64, ib, (u64)kona_cam_nonzero_floor_ib_kBps);
-		if (kona_resume_debug)
-			dev_info_ratelimited(qp->provider.dev,
-				"kona-icc: fallback non-zero camera floor for %s: ab=%llu ib=%llu\n",
 				qp->nodes[index].name, ab, ib);
 	}
 
