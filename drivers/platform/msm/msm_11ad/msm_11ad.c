@@ -1099,6 +1099,14 @@ static int msm_11ad_probe(struct platform_device *pdev)
 		if (rc != -ENODATA && rc != -ENOENT)
 			goto out_module;
 
+		ctx->icc_path = devm_of_icc_get(ctx->dev, "wifi-ddr");
+		if (!IS_ERR(ctx->icc_path))
+			goto have_icc;
+
+		rc = PTR_ERR(ctx->icc_path);
+		if (rc != -ENODATA && rc != -ENOENT)
+			goto out_module;
+
 		ctx->icc_path = devm_of_icc_get(ctx->dev, NULL);
 		if (IS_ERR(ctx->icc_path)) {
 			rc = PTR_ERR(ctx->icc_path);
@@ -1107,6 +1115,8 @@ static int msm_11ad_probe(struct platform_device *pdev)
 			ctx->icc_path = NULL;
 		}
 	}
+
+have_icc:
 
 	if (!ctx->icc_path) {
 		ctx->bus_scale = msm_bus_cl_get_pdata(pdev);
@@ -1422,16 +1432,19 @@ static int ops_bus_request(void *handle, u32 kbps /* KBytes/Sec */)
 {
 	struct msm11ad_ctx *ctx = (struct msm11ad_ctx *)handle;
 	int rc, i;
+	u32 icc_kbps;
 	int vote = 0; /* vote 0 in case requested kbps cannot be satisfied */
 	struct msm_bus_paths *usecase;
 	u32 usecase_kbps;
 	u32 min_kbps = ~0;
 
 	if (ctx->icc_path) {
-		rc = icc_set_bw(ctx->icc_path, kbps, kbps);
+		/* Keep a tiny floor so we never issue a 0/0 ICC vote. */
+		icc_kbps = max_t(u32, kbps, 1);
+		rc = icc_set_bw(ctx->icc_path, icc_kbps, icc_kbps);
 		if (rc)
 			dev_err(ctx->dev, "Failed ICC voting. kbps=%d rc=%d\n",
-				kbps, rc);
+				icc_kbps, rc);
 	} else {
 		/* find the lowest usecase that is bigger than requested kbps */
 		for (i = 0; i < ctx->bus_scale->num_usecases; i++) {
@@ -1491,7 +1504,7 @@ static void ops_uninit(void *handle)
 	struct msm11ad_ctx *ctx = (struct msm11ad_ctx *)handle;
 
 	if (ctx->icc_path)
-		icc_set_bw(ctx->icc_path, 0, 0);
+		icc_set_bw(ctx->icc_path, 1, 1);
 
 	if (ctx->msm_bus_handle) {
 		msm_bus_scale_unregister_client(ctx->msm_bus_handle);
