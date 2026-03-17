@@ -167,15 +167,15 @@ MODULE_PARM_DESC(kona_display_topology_strict,
  * avoid under-voting critical CPU/GPU/NPU traffic.
  */
 #define KONA_CPU_DDR_AB_FLOOR_KB	(19000000ULL) /* ~19 GB/s */
-#define KONA_CPU_DDR_IB_FLOOR_KB	(31000000ULL) /* ~31 GB/s */
+#define KONA_CPU_DDR_IB_FLOOR_KB	(35000000ULL) /* ~35 GB/s */
 #define KONA_CPU_LLCC_AB_FLOOR_KB	(12000000ULL) /* ~12 GB/s */
 #define KONA_CPU_LLCC_IB_FLOOR_KB	(20000000ULL) /* ~20 GB/s */
 #define KONA_CPU_PRIME_DDR_AB_FLOOR_KB	(21000000ULL) /* ~21 GB/s */
-#define KONA_CPU_PRIME_DDR_IB_FLOOR_KB	(33000000ULL) /* ~33 GB/s */
+#define KONA_CPU_PRIME_DDR_IB_FLOOR_KB	(37000000ULL) /* ~37 GB/s */
 #define KONA_CPU_PRIME_LLCC_AB_FLOOR_KB	(13000000ULL) /* ~13 GB/s */
 #define KONA_CPU_PRIME_LLCC_IB_FLOOR_KB	(22000000ULL) /* ~22 GB/s */
 #define KONA_GPU_DDR_AB_FLOOR_KB	(19000000ULL) /* ~19 GB/s */
-#define KONA_GPU_DDR_IB_FLOOR_KB	(32000000ULL) /* ~32 GB/s */
+#define KONA_GPU_DDR_IB_FLOOR_KB	(36000000ULL) /* ~36 GB/s */
 #define KONA_GPU_LLCC_AB_FLOOR_KB	(13000000ULL) /* ~13 GB/s */
 #define KONA_GPU_LLCC_IB_FLOOR_KB	(22000000ULL) /* ~22 GB/s */
 /*
@@ -193,7 +193,7 @@ MODULE_PARM_DESC(kona_display_topology_strict,
 #define KONA_NPU_LLCC_AB_FLOOR_KB	(8000000ULL)  /* ~8 GB/s */
 #define KONA_NPU_LLCC_IB_FLOOR_KB	(14000000ULL) /* ~14 GB/s */
 #define KONA_UX_DDR_AB_FLOOR_KB	(9000000ULL)  /* ~9 GB/s */
-#define KONA_UX_DDR_IB_FLOOR_KB	(16000000ULL) /* ~16 GB/s */
+#define KONA_UX_DDR_IB_FLOOR_KB	(20000000ULL) /* ~20 GB/s */
 
 /*
  * Global minimum floors for any non-zero bandwidth vote. This protects
@@ -1356,6 +1356,18 @@ out_retry:
 	return -EAGAIN;
 }
 
+static bool kona_icc_vote_is_unchanged(struct kona_icc_provider *qp,
+				      unsigned int index, u64 ab, u64 ib)
+{
+	if (!qp->last_ab || !qp->last_ib)
+		return false;
+
+	if (qp->last_ab[index] == U64_MAX || qp->last_ib[index] == U64_MAX)
+		return false;
+
+	return qp->last_ab[index] == ab && qp->last_ib[index] == ib;
+}
+
 static bool kona_icc_can_program(struct kona_icc_provider *qp, const char **reason)
 {
 	if (unlikely(READ_ONCE(qp->system_suspended))) {
@@ -1407,8 +1419,7 @@ static bool kona_icc_replay_req_votes(struct kona_icc_provider *qp)
 		if (ab == U64_MAX || ib == U64_MAX)
 			continue;
 
-		if (qp->last_ab && qp->last_ib &&
-		    qp->last_ab[i] == ab && qp->last_ib[i] == ib)
+		if (kona_icc_vote_is_unchanged(qp, i, ab, ib))
 			continue;
 
 		kona_icc_send_node_votes(qp, i, ab, ib, &retry);
@@ -1735,6 +1746,14 @@ skip_perf_floor:
 		qp->saved_ab[index] = ab;
 		qp->saved_ib[index] = ib;
 	}
+
+	/*
+	 * Avoid redundant RPMh writes when the effective vote is unchanged.
+	 * Keep req_* and saved_* updates above so resume replay still tracks
+	 * the newest client intent even when programming can be skipped.
+	 */
+	if (kona_icc_vote_is_unchanged(qp, index, ab, ib))
+		return 0;
 
 
 	/*
