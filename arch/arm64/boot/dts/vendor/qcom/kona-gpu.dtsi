@@ -139,7 +139,7 @@
 			qcom,msm-bus,num-cases = <14>;
 			qcom,msm-bus,num-paths = <1>;
 			qcom,msm-bus,vectors-KBps =
-				<26 512 0 MHZ_TO_KBPS(0, 4)>,    /* index=0  */
+				<26 512 1 MHZ_TO_KBPS(1, 4)>,    /* index=0  */
 				<26 512 0 MHZ_TO_KBPS(200, 4)>,  /* index=1  */
 				<26 512 0 MHZ_TO_KBPS(300, 4)>,  /* index=2  */
 				<26 512 0 MHZ_TO_KBPS(451, 4)>,  /* index=3  */
@@ -162,7 +162,7 @@
 			qcom,msm-bus,num-cases = <14>;
 			qcom,msm-bus,num-paths = <1>;
 			qcom,msm-bus,vectors-KBps =
-				<26 512 0 MHZ_TO_KBPS(0, 4)>,    /* index=0  */
+				<26 512 1 MHZ_TO_KBPS(1, 4)>,    /* index=0  */
 				<26 512 0 MHZ_TO_KBPS(200, 4)>,  /* index=1  */
 				<26 512 0 MHZ_TO_KBPS(300, 4)>,  /* index=2  */
 				<26 512 0 MHZ_TO_KBPS(451, 4)>,  /* index=3  */
@@ -280,9 +280,9 @@
 			qcom,gpu-pwrlevel@3 {
 				reg = <3>;
 				qcom,gpu-freq = <0>;
-				qcom,bus-freq = <0>;
-				qcom,bus-min = <0>;
-				qcom,bus-max = <0>;
+				qcom,bus-freq = <1>;
+				qcom,bus-min = <1>;
+				qcom,bus-max = <1>;
 			};
 		};
 	};
