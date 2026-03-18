@@ -10,6 +10,7 @@
 #include <linux/cpu.h>
 #include <linux/types.h>
 #include <linux/platform_device.h>
+#include <linux/of.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmapool.h>
 #include <linux/crypto.h>
