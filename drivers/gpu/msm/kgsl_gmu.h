@@ -209,6 +209,7 @@ struct gmu_device {
 	unsigned int num_icc_bwlevels;
 	u32 *icc_ab_mbytes;
 	u32 *icc_ib_mbytes;
+	unsigned int freq;
 	struct msm_bus_scale_pdata *gpu_bus_scale_table;
 	struct rpmh_votes_t rpmh_votes;
 	struct regulator *cx_gdsc;

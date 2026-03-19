@@ -59,11 +59,11 @@
 	 * V2 targets don't depend on base include ordering for ICC-first voting.
 	 */
 	qcom,gpu-icc-bw-avg-kbps =
-		<1 195312 292968 440429 534179 665039 750000
-		 993164 1518554 1761718 2042968 2671875 3125000 3515625>;
+		<1 292968 440429 622558 760253 946289 1113281
+		 1406250 1968750 2390625 2812500 3515625 4218750 4921875>;
 	qcom,gpu-icc-bw-peak-kbps =
-		<1 781250 1171875 1761718 2136718 2660156 3000000
-		 3972656 6074218 7046875 8171875 10687500 12500000 14062500>;
+		<1 1171875 1761718 2490234 3041015 3785156 4453125
+		 5625000 7875000 9562500 11250000 14062500 16875000 19687500>;
 	qcom,gpu-cfg-icc-bw-avg-kbps = <1 25>;
 	qcom,gpu-cfg-icc-bw-peak-kbps = <1 100>;
 
@@ -795,9 +795,12 @@
 	interconnects = <&kona_icc KONA_ICC_GMU_TO_LLCC>,
 			<&kona_icc KONA_ICC_GMU_TO_MEM>;
 	interconnect-names = "gmu-llcc", "gmu-ddr";
+	qcom,gmu-freq = <575000000>;
+	qcom,gmu-icc-bw-avg-kbps = <1 292968 585937 878906>;
+	qcom,gmu-icc-bw-peak-kbps = <1 1171875 2343750 3515625>;
 };
 
 &gpubw {
-	qcom,icc-min-avg-kbps = <2288000>;
-	qcom,icc-min-peak-kbps = <4576000>;
+	qcom,icc-min-avg-kbps = <2745600>;
+	qcom,icc-min-peak-kbps = <5491200>;
 };

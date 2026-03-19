@@ -1237,6 +1237,19 @@ static int gmu_clocks_probe(struct gmu_device *gmu, struct device_node *node)
 	return 0;
 }
 
+static void gmu_read_dt_tunables(struct gmu_device *gmu)
+{
+	struct device *dev = &gmu->pdev->dev;
+	u32 freq;
+
+	gmu->freq = GMU_FREQUENCY;
+	if (!of_property_read_u32(dev->of_node, "qcom,gmu-freq", &freq) &&
+		freq >= 200000000 && freq <= 600000000)
+		gmu->freq = freq;
+	else if (freq)
+		dev_warn(dev, "Ignoring invalid qcom,gmu-freq=%u\n", freq);
+}
+
 static int gmu_gpu_bw_probe(struct kgsl_device *device, struct gmu_device *gmu)
 {
 	struct msm_bus_scale_pdata *bus_scale_table =
@@ -1634,6 +1647,8 @@ static int gmu_probe(struct kgsl_device *device, struct device_node *node)
 	}
 
 	/* Initializes GPU b/w levels configuration */
+	gmu_read_dt_tunables(gmu);
+
 	ret = gmu_gpu_bw_probe(device, gmu);
 	if (ret)
 		goto error;
@@ -1680,10 +1695,10 @@ static int gmu_enable_clks(struct kgsl_device *device)
 	if (IS_ERR_OR_NULL(gmu->clks[0]))
 		return -EINVAL;
 
-	ret = clk_set_rate(gmu->clks[0], GMU_FREQUENCY);
+	ret = clk_set_rate(gmu->clks[0], gmu->freq);
 	if (ret) {
-		dev_err(&gmu->pdev->dev, "fail to set default GMU clk freq %d\n",
-				GMU_FREQUENCY);
+		dev_err(&gmu->pdev->dev, "fail to set default GMU clk freq %u\n",
+				gmu->freq);
 		return ret;
 	}
 
