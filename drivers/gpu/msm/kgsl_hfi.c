@@ -454,7 +454,7 @@ static int hfi_send_dcvstbl_v1(struct gmu_device *gmu)
 	cmd.cx_votes[0].vote = gmu->rpmh_votes.cx_votes[0];
 	cmd.cx_votes[0].freq = 0;
 	cmd.cx_votes[1].vote = gmu->rpmh_votes.cx_votes[1];
-	cmd.cx_votes[1].freq = gmu->freq / 1000;
+	cmd.cx_votes[1].freq = GMU_FREQUENCY / 1000;
 
 	return hfi_send_generic_req(gmu, HFI_CMD_ID, &cmd);
 }
@@ -500,7 +500,7 @@ static int hfi_send_dcvstbl(struct gmu_device *gmu)
 	cmd.cx_votes[0].vote = gmu->rpmh_votes.cx_votes[0];
 	cmd.cx_votes[0].freq = 0;
 	cmd.cx_votes[1].vote = gmu->rpmh_votes.cx_votes[1];
-	cmd.cx_votes[1].freq = gmu->freq / 1000;
+	cmd.cx_votes[1].freq = GMU_FREQUENCY / 1000;
 
 	return hfi_send_generic_req(gmu, HFI_CMD_ID, &cmd);
 }
