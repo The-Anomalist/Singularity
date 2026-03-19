@@ -911,6 +911,8 @@
 		governor = "powersave";
 		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 		interconnect-names = "cpu-ddr";
+		qcom,icc-min-avg-kbps = <762000>;
+		qcom,icc-min-peak-kbps = <1524000>;
 		qcom,src-dst-ports = <MSM_BUS_MASTER_AMPSS_M0
 			MSM_BUS_SLAVE_IMEM_CFG>;
 		qcom,active-only;
@@ -989,8 +991,8 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU_TO_LLCC>;
 		interconnect-names = "cpu-llcc";
-		qcom,icc-min-avg-kbps = <5161000>;
-		qcom,icc-min-peak-kbps = <10322000>;
+		qcom,icc-min-avg-kbps = <6881000>;
+		qcom,icc-min-peak-kbps = <13763000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_LLCC>;
 		qcom,active-only;
@@ -1015,8 +1017,8 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 		interconnect-names = "cpu-ddr";
-		qcom,icc-min-avg-kbps = <3048000>;
-		qcom,icc-min-peak-kbps = <6096000>;
+		qcom,icc-min-avg-kbps = <4173000>;
+		qcom,icc-min-peak-kbps = <8346000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
@@ -1148,6 +1150,8 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU0_TO_LLCC>;
 		interconnect-names = "cpu-llcc";
+		qcom,icc-min-avg-kbps = <2288000>;
+		qcom,icc-min-peak-kbps = <4577000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_LLCC>;
 		qcom,active-only;
@@ -1159,6 +1163,8 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU4_TO_LLCC>;
 		interconnect-names = "cpu-llcc";
+		qcom,icc-min-avg-kbps = <4577000>;
+		qcom,icc-min-peak-kbps = <9155000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_LLCC>;
 		qcom,active-only;
@@ -1170,6 +1176,8 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU0_TO_MEM>;
 		interconnect-names = "cpu-ddr";
+		qcom,icc-min-avg-kbps = <1720000>;
+		qcom,icc-min-peak-kbps = <3440000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
@@ -1181,6 +1189,8 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU4_TO_MEM>;
 		interconnect-names = "cpu-ddr";
+		qcom,icc-min-avg-kbps = <3048000>;
+		qcom,icc-min-peak-kbps = <6096000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
@@ -1192,6 +1202,8 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU4_TO_MEM>;
 		interconnect-names = "cpu-ddr";
+		qcom,icc-min-avg-kbps = <4173000>;
+		qcom,icc-min-peak-kbps = <8346000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
@@ -1247,9 +1259,10 @@
 			qcom,core-dev-table =
 				<  300000 MHZ_TO_MBPS( 150, 16) >,
 				<  729600 MHZ_TO_MBPS( 300, 16) >,
-				< 1036800 MHZ_TO_MBPS( 384, 16) >,
-				< 1497600 MHZ_TO_MBPS( 550, 16) >,
-				< 1670400 MHZ_TO_MBPS( 600, 16) >;
+				< 1036800 MHZ_TO_MBPS( 466, 16) >,
+				< 1228800 MHZ_TO_MBPS( 550, 16) >,
+				< 1497600 MHZ_TO_MBPS( 600, 16) >,
+				< 1670400 MHZ_TO_MBPS( 680, 16) >;
 			};
 
 		cpu0_llcc_ddr_latmon: qcom,cpu0-llcc-ddr-latmon {
@@ -1262,9 +1275,10 @@
 				qcom,core-dev-table =
 					<  300000 MHZ_TO_MBPS(  220, 4) >,
 					<  729600 MHZ_TO_MBPS(  500, 4) >,
-					< 1132800 MHZ_TO_MBPS(  650, 4) >,
-					< 1497600 MHZ_TO_MBPS(  900, 4) >,
-					< 1670400 MHZ_TO_MBPS( 1017, 4) >;
+					< 1036800 MHZ_TO_MBPS(  650, 4) >,
+					< 1228800 MHZ_TO_MBPS(  768, 4) >,
+					< 1497600 MHZ_TO_MBPS( 1017, 4) >,
+					< 1670400 MHZ_TO_MBPS( 1353, 4) >;
 				};
 
 			ddr5-map {
@@ -1272,9 +1286,10 @@
 				qcom,core-dev-table =
 					<  300000 MHZ_TO_MBPS(  220, 4) >,
 					<  729600 MHZ_TO_MBPS(  500, 4) >,
-					< 1132800 MHZ_TO_MBPS(  650, 4) >,
-					< 1497600 MHZ_TO_MBPS(  900, 4) >,
-					< 1670400 MHZ_TO_MBPS( 1017, 4) >;
+					< 1036800 MHZ_TO_MBPS(  650, 4) >,
+					< 1228800 MHZ_TO_MBPS(  768, 4) >,
+					< 1497600 MHZ_TO_MBPS( 1017, 4) >,
+					< 1670400 MHZ_TO_MBPS( 1353, 4) >;
 				};
 		};
 
@@ -1322,8 +1337,8 @@
 			qcom,core-dev-table =
 				<  300000 MHZ_TO_MBPS(  150, 16) >,
 				<  691200 MHZ_TO_MBPS(  300, 16) >,
-				< 1017600 MHZ_TO_MBPS(  550, 16) >,
-				< 1228800 MHZ_TO_MBPS(  680, 16) >,
+				< 1017600 MHZ_TO_MBPS(  466, 16) >,
+				< 1228800 MHZ_TO_MBPS(  600, 16) >,
 				< 1804800 MHZ_TO_MBPS(  806, 16) >,
 				< 2227200 MHZ_TO_MBPS(  933, 16) >,
 				< 2476800 MHZ_TO_MBPS( 1000, 16) >;
@@ -1344,10 +1359,10 @@
 					< 1228800 MHZ_TO_MBPS(1017, 4) >,
 					< 1574400 MHZ_TO_MBPS(1353, 4) >,
 					< 1804800 MHZ_TO_MBPS(1555, 4) >,
-					< 2227200 MHZ_TO_MBPS(1804, 4) >,
-					< 2380800 MHZ_TO_MBPS(2092, 4) >,
-					< 2500000 MHZ_TO_MBPS(2368, 4) >,
-					< 2600000 MHZ_TO_MBPS(2736, 4) >;
+					< 2000000 MHZ_TO_MBPS(1804, 4) >,
+					< 2227200 MHZ_TO_MBPS(2092, 4) >,
+					< 2380800 MHZ_TO_MBPS(2368, 4) >,
+					< 2500000 MHZ_TO_MBPS(2736, 4) >;
 			};
 
 			ddr5-map {
@@ -1360,12 +1375,12 @@
 					< 1228800 MHZ_TO_MBPS(1017, 4) >,
 					< 1574400 MHZ_TO_MBPS(1353, 4) >,
 					< 1804800 MHZ_TO_MBPS(1555, 4) >,
-					< 2227200 MHZ_TO_MBPS(1804, 4) >,
-					< 2380800 MHZ_TO_MBPS(2092, 4) >,
+					< 2000000 MHZ_TO_MBPS(1804, 4) >,
+					< 2227200 MHZ_TO_MBPS(2092, 4) >,
+					< 2380800 MHZ_TO_MBPS(2368, 4) >,
 					< 2476800 MHZ_TO_MBPS(2736, 4) >,
-					< 2500000 MHZ_TO_MBPS(2900, 4) >,
-					< 2600000 MHZ_TO_MBPS(3200, 4) >,
-					< 2700000 MHZ_TO_MBPS(3600, 4) >;
+					< 2500000 MHZ_TO_MBPS(3200, 4) >,
+					< 2600000 MHZ_TO_MBPS(3600, 4) >;
 			};
 		};
 
