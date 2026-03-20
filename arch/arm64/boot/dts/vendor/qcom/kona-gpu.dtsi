@@ -20,6 +20,13 @@
 		interconnects = <&kona_icc KONA_ICC_GPU_TO_LLCC>,
 				<&kona_icc KONA_ICC_GPU_TO_MEM>;
 		interconnect-names = "gpu-llcc", "gpu-ddr";
+		/*
+		 * Keep both GPU memory paths at the requested sustaining vote and
+		 * add modest headroom so short benchmark bursts don't undershoot
+		 * after the move to ICC voting.
+		 */
+		qcom,icc-no-split-ab-kbps;
+		qcom,icc-boost-percent = <125>;
 		qcom,icc-min-avg-kbps = <2745600>;
 		qcom,icc-min-peak-kbps = <5491200>;
 		qcom,src-dst-ports = <26 512>;

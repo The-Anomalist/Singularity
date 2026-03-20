@@ -810,6 +810,8 @@
 };
 
 &gpubw {
+	qcom,icc-no-split-ab-kbps;
+	qcom,icc-boost-percent = <125>;
 	qcom,icc-min-avg-kbps = <2745600>;
 	qcom,icc-min-peak-kbps = <5491200>;
 };
