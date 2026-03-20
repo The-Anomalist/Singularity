@@ -9,6 +9,7 @@
  */
 #include <dt-bindings/msm/msm-bus-ids.h>
 #include <linux/clk.h>
+#include <linux/interconnect.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/io.h>
@@ -1812,6 +1813,13 @@ static int npu_parse_dt_bw(struct npu_device *npu_dev)
 	bwctrl->bw_data.num_usecases = ARRAY_SIZE(bwctrl->bw_levels);
 	bwctrl->bw_data.name = dev_name(&pdev->dev);
 	bwctrl->bw_data.active_only = false;
+	bwctrl->icc_path = devm_of_icc_get(&pdev->dev, "npu-ddr");
+	if (IS_ERR(bwctrl->icc_path)) {
+		ret = PTR_ERR(bwctrl->icc_path);
+		bwctrl->icc_path = NULL;
+		NPU_WARN("ICC unavailable for npu-ddr (%d), using msm_bus only\n",
+			 ret);
+	}
 
 	for (i = 0; i < num_paths; i++) {
 		bwctrl->bw_levels[0].vectors[i].src = ports[2 * i];
@@ -1837,20 +1845,34 @@ static int npu_parse_dt_bw(struct npu_device *npu_dev)
 int npu_set_bw(struct npu_device *npu_dev, int new_ib, int new_ab)
 {
 	int i, j, ret;
+	u32 avg_bw = DIV_ROUND_UP_ULL((u64)new_ab * MBYTE, 1000);
+	u32 peak_bw = DIV_ROUND_UP_ULL((u64)new_ib * MBYTE, 1000);
 	struct npu_bwctrl *bwctrl = &npu_dev->bwctrl;
 
-	if (!bwctrl->bus_client) {
-		NPU_DBG("bus client doesn't exist\n");
+	if (!bwctrl->bus_client && !bwctrl->icc_path) {
+		NPU_DBG("no BW client exists\n");
 		return 0;
 	}
 
 	if (bwctrl->cur_ib == new_ib && bwctrl->cur_ab == new_ab)
 		return 0;
 
+	if (bwctrl->icc_path) {
+		ret = icc_set_bw(bwctrl->icc_path, avg_bw, peak_bw);
+		if (ret) {
+			NPU_ERR("ICC bandwidth request failed (%d)\n", ret);
+			return ret;
+		}
+	}
+
 	i = (bwctrl->cur_idx + 1) % DBL_BUF;
 
 	for (j = 0; j < bwctrl->num_paths; j++) {
-		if ((bwctrl->bw_levels[i].vectors[j].dst ==
+		if (bwctrl->icc_path &&
+		    bwctrl->bw_levels[i].vectors[j].dst == MSM_BUS_SLAVE_EBI_CH0) {
+			bwctrl->bw_levels[i].vectors[j].ib = 0;
+			bwctrl->bw_levels[i].vectors[j].ab = 0;
+		} else if ((bwctrl->bw_levels[i].vectors[j].dst ==
 			MSM_BUS_SLAVE_CLK_CTL) && (new_ib > 0)) {
 			bwctrl->bw_levels[i].vectors[j].ib = 1;
 			bwctrl->bw_levels[i].vectors[j].ab = 1;
@@ -1861,10 +1883,17 @@ int npu_set_bw(struct npu_device *npu_dev, int new_ib, int new_ab)
 		}
 	}
 
-	ret = msm_bus_scale_client_update_request(bwctrl->bus_client, i);
-	if (ret) {
-		NPU_ERR("bandwidth request failed (%d)\n", ret);
-	} else {
+	ret = 0;
+	if (bwctrl->bus_client) {
+		ret = msm_bus_scale_client_update_request(bwctrl->bus_client, i);
+		if (ret) {
+			NPU_ERR("bandwidth request failed (%d)\n", ret);
+			if (bwctrl->icc_path)
+				icc_set_bw(bwctrl->icc_path, 0, 0);
+		}
+	}
+
+	if (!ret) {
 		bwctrl->cur_idx = i;
 		bwctrl->cur_ib = new_ib;
 		bwctrl->cur_ab = new_ab;
@@ -2652,6 +2681,8 @@ static int npu_remove(struct platform_device *pdev)
 	unregister_chrdev_region(npu_dev->dev_num, 1);
 	dev_set_drvdata(&pdev->dev, NULL);
 	npu_mbox_deinit(npu_dev);
+	if (npu_dev->bwctrl.icc_path)
+		icc_set_bw(npu_dev->bwctrl.icc_path, 0, 0);
 	msm_bus_scale_unregister_client(npu_dev->bwctrl.bus_client);
 
 	g_npu_dev = NULL;

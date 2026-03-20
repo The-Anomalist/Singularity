@@ -28,6 +28,8 @@
 
 #include "npu_mgr.h"
 
+struct icc_path;
+
 /* -------------------------------------------------------------------------
  * Defines
  * -------------------------------------------------------------------------
@@ -225,6 +227,7 @@ struct npu_bwctrl {
 	struct msm_bus_vectors vectors[MAX_PATHS * DBL_BUF];
 	struct msm_bus_paths bw_levels[DBL_BUF];
 	struct msm_bus_scale_pdata bw_data;
+	struct icc_path *icc_path;
 	uint32_t bus_client;
 	int cur_ab;
 	int cur_ib;
