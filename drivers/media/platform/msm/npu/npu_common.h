@@ -49,6 +49,7 @@ struct icc_path;
 #define NPU_MAX_STATS_BUF_SIZE 16384
 #define NPU_MAX_PATCH_NUM		160
 #define NPU_MAX_BW_DEVS			4
+#define NPU_MAX_ICC_PATHS		2
 
 #define PERF_MODE_DEFAULT 0
 
@@ -227,7 +228,8 @@ struct npu_bwctrl {
 	struct msm_bus_vectors vectors[MAX_PATHS * DBL_BUF];
 	struct msm_bus_paths bw_levels[DBL_BUF];
 	struct msm_bus_scale_pdata bw_data;
-	struct icc_path *icc_path;
+	struct icc_path *icc_paths[NPU_MAX_ICC_PATHS];
+	uint32_t num_icc_paths;
 	uint32_t bus_client;
 	int cur_ab;
 	int cur_ib;
