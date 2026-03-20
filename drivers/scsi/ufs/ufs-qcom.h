@@ -336,6 +336,9 @@ struct ufs_qcom_host {
 	struct ufs_hba *hba;
 	struct ufs_qcom_bus_vote bus_vote;
 	struct icc_path *icc_paths[2];
+	u32 *icc_avg_bw;
+	u32 *icc_peak_bw;
+	int num_icc_votes;
 	int num_icc_paths;
 	bool use_icc;
 	struct ufs_pa_layer_attr dev_req_params;

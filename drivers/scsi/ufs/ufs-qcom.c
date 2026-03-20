@@ -19,6 +19,7 @@
 #include <linux/phy/phy-qcom-ufs.h>
 #include <linux/clk/qcom.h>
 #include <linux/interconnect.h>
+#include <linux/slab.h>
 
 #ifdef CONFIG_QCOM_BUS_SCALING
 #include <linux/msm-bus.h>
@@ -1136,6 +1137,38 @@ static int ufs_qcom_get_icc_bw_for_vote(struct ufs_qcom_host *host,
 			offset + 3, peak_bw);
 }
 
+static int ufs_qcom_cache_icc_bw(struct ufs_qcom_host *host,
+				 struct msm_bus_scale_pdata *bus_pdata)
+{
+	struct device *dev = host->hba->dev;
+	int entries, vote, path, idx, err;
+
+	if (!host->use_icc || !host->num_icc_paths)
+		return 0;
+
+	entries = bus_pdata->num_usecases * host->num_icc_paths;
+	host->icc_avg_bw = devm_kcalloc(dev, entries, sizeof(*host->icc_avg_bw),
+					GFP_KERNEL);
+	host->icc_peak_bw = devm_kcalloc(dev, entries, sizeof(*host->icc_peak_bw),
+					 GFP_KERNEL);
+	if (!host->icc_avg_bw || !host->icc_peak_bw)
+		return -ENOMEM;
+
+	for (vote = 0; vote < bus_pdata->num_usecases; vote++) {
+		for (path = 0; path < host->num_icc_paths; path++) {
+			idx = vote * host->num_icc_paths + path;
+			err = ufs_qcom_get_icc_bw_for_vote(host, vote, path,
+							   &host->icc_avg_bw[idx],
+							   &host->icc_peak_bw[idx]);
+			if (err)
+				return err;
+		}
+	}
+
+	host->num_icc_votes = bus_pdata->num_usecases;
+	return 0;
+}
+
 static int __ufs_qcom_set_bus_vote(struct ufs_qcom_host *host, int vote)
 {
 	int err = 0;
@@ -1145,14 +1178,16 @@ static int __ufs_qcom_set_bus_vote(struct ufs_qcom_host *host, int vote)
 			int i;
 
 			for (i = 0; i < host->num_icc_paths; i++) {
-				u32 avg_bw = 0, peak_bw = 0;
+				int idx = vote * host->num_icc_paths + i;
 
-				err = ufs_qcom_get_icc_bw_for_vote(host, vote, i,
-							   &avg_bw, &peak_bw);
-				if (err)
+				if (vote >= host->num_icc_votes) {
+					err = -EINVAL;
 					break;
+				}
 
-				err = icc_set_bw(host->icc_paths[i], avg_bw, peak_bw);
+				err = icc_set_bw(host->icc_paths[i],
+						 host->icc_avg_bw[idx],
+						 host->icc_peak_bw[idx]);
 				if (err)
 					break;
 			}
@@ -1329,6 +1364,16 @@ static int ufs_qcom_bus_register(struct ufs_qcom_host *host)
 		dev_err(dev, "%s: qcom,bus-vector-names not specified correctly %d\n",
 				__func__, err);
 		goto out;
+	}
+
+	err = ufs_qcom_cache_icc_bw(host, bus_pdata);
+	if (err && host->use_icc) {
+		dev_warn(dev,
+			 "Failed to cache UFS ICC votes (%d), using msm_bus fallback\n",
+			 err);
+		host->use_icc = false;
+		host->num_icc_paths = 0;
+		host->num_icc_votes = 0;
 	}
 
 	host->bus_vote.client_handle = msm_bus_scale_register_client(bus_pdata);
