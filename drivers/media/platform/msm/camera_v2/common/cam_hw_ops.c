@@ -14,6 +14,7 @@
 #define pr_fmt(fmt) "CAM-AHB %s:%d " fmt, __func__, __LINE__
 #define TRUE   1
 #include <linux/module.h>
+#include <linux/interconnect.h>
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
 #include <linux/of_platform.h>
@@ -37,6 +38,7 @@ struct cam_bus_vector {
 
 struct cam_ahb_client_data {
 	struct msm_bus_scale_pdata *pbus_data;
+	struct icc_path *icc_path;
 	u32 ahb_client;
 	u32 ahb_clk_state;
 	struct msm_bus_vectors *paths;
@@ -50,6 +52,24 @@ struct cam_ahb_client_data {
 };
 
 static struct cam_ahb_client_data data;
+
+static int cam_ahb_update_bw(u32 vote)
+{
+	int ret = 0;
+
+	if (data.icc_path) {
+		ret = icc_set_bw(data.icc_path, 0, vote);
+		if (!ret)
+			return 0;
+
+		pr_debug("ICC vote failed (%d), using msm_bus fallback\n", ret);
+	}
+
+	if (data.ahb_client)
+		return msm_bus_scale_client_update_request(data.ahb_client, vote);
+
+	return ret;
+}
 
 static int get_vector_index(char *name)
 {
@@ -147,6 +167,17 @@ int cam_ahb_clk_init(struct platform_device *pdev)
 	rc = of_property_read_u32_array(of_node, "qcom,bus-votes",
 		data.votes, cnt);
 
+	if (of_find_property(of_node, "interconnects", NULL)) {
+		data.icc_path = devm_of_icc_get(&pdev->dev, "cam-cfg");
+		if (IS_ERR(data.icc_path))
+			data.icc_path = devm_of_icc_get(&pdev->dev, NULL);
+		if (IS_ERR(data.icc_path)) {
+			pr_debug("Failed to get ICC path: %ld, using msm_bus fallback\n",
+				PTR_ERR(data.icc_path));
+			data.icc_path = NULL;
+		}
+	}
+
 	for (i = 0; i < data.cnt; i++) {
 		data.paths[i] = (struct msm_bus_vectors) {
 			MSM_BUS_MASTER_AMPSS_M0,
@@ -183,8 +214,11 @@ int cam_ahb_clk_init(struct platform_device *pdev)
 	}
 
 	/* request for svs in init */
-	msm_bus_scale_client_update_request(data.ahb_client,
-		index);
+	rc = cam_ahb_update_bw(index);
+	if (rc) {
+		pr_err("failed to set initial ahb vote rc=%d\n", rc);
+		goto err6;
+	}
 	data.ahb_clk_state = CAM_AHB_SUSPEND_VOTE;
 	data.probe_done = TRUE;
 	mutex_init(&data.lock);
@@ -233,8 +267,7 @@ static int cam_consolidate_ahb_vote(enum cam_ahb_clk_client id,
 
 	CDBG("dbg: max vote : %u\n", max);
 	if (max != data.ahb_clk_state) {
-		msm_bus_scale_client_update_request(data.ahb_client,
-			max);
+		cam_ahb_update_bw(max);
 		data.ahb_clk_state = max;
 		CDBG("dbg: state : %u, vector : %d\n",
 			data.ahb_clk_state, max);

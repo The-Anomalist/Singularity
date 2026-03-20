@@ -24,12 +24,14 @@
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/of_platform.h>
+#include <linux/interconnect.h>
 #include <linux/msm-bus.h>
 #include <linux/clk.h>
 #include "cam_soc_api.h"
 
 struct msm_cam_bus_pscale_data {
 	struct msm_bus_scale_pdata *pdata;
+	struct icc_path *icc_path;
 	uint32_t bus_client;
 	uint32_t num_usecases;
 	uint32_t num_paths;
@@ -39,6 +41,26 @@ struct msm_cam_bus_pscale_data {
 };
 
 static struct msm_cam_bus_pscale_data g_cv[CAM_BUS_CLIENT_MAX];
+
+static int msm_camera_icc_vote(struct msm_cam_bus_pscale_data *cv,
+	struct msm_bus_vectors *vec)
+{
+	int ret = 0;
+
+	if (cv->icc_path) {
+		ret = icc_set_bw(cv->icc_path, vec->ab, vec->ib);
+		if (!ret)
+			return 0;
+
+		pr_debug("ICC vote failed (%d), using msm_bus fallback\n", ret);
+	}
+
+	if (cv->bus_client)
+		return msm_bus_scale_client_update_request(cv->bus_client,
+			cv->vector_index);
+
+	return ret;
+}
 
 
 /* Get all clocks from DT */
@@ -948,6 +970,18 @@ uint32_t msm_camera_register_bus_client(struct platform_device *pdev,
 			pr_err("failed get_pdata client_id :%d\n", id);
 			return -EINVAL;
 		}
+
+		if (of_find_property(of_node, "interconnects", NULL)) {
+			g_cv[id].icc_path = devm_of_icc_get(&pdev->dev, "cam-cfg");
+			if (IS_ERR(g_cv[id].icc_path))
+				g_cv[id].icc_path = devm_of_icc_get(&pdev->dev, NULL);
+			if (IS_ERR(g_cv[id].icc_path)) {
+				pr_debug("Failed to get ICC path client_id=%d rc=%ld, using msm_bus fallback\n",
+					id, PTR_ERR(g_cv[id].icc_path));
+				g_cv[id].icc_path = NULL;
+			}
+		}
+
 		bus_client = msm_bus_scale_register_client(pdata);
 		if (!bus_client) {
 			pr_err("Unable to register bus client :%d\n", id);
@@ -1000,7 +1034,7 @@ uint32_t msm_camera_update_bus_bw(int id, uint64_t ab, uint64_t ib)
 
 	CDBG("Register client ID : %d [ab : %llx, ib : %llx], update :%d\n",
 		id, ab, ib, idx);
-	msm_bus_scale_client_update_request(g_cv[id].bus_client, idx);
+	msm_camera_icc_vote(&g_cv[id], &path->vectors[0]);
 
 	return 0;
 }
@@ -1021,8 +1055,9 @@ uint32_t msm_camera_update_bus_vector(enum cam_bus_client id,
 	}
 
 	CDBG("Register client ID : %d vector idx: %d,\n", id, vector_index);
-	msm_bus_scale_client_update_request(g_cv[id].bus_client,
-		vector_index);
+	g_cv[id].vector_index = vector_index;
+	msm_camera_icc_vote(&g_cv[id],
+		&g_cv[id].pdata->usecase[vector_index].vectors[0]);
 
 	return 0;
 }
@@ -1041,6 +1076,7 @@ uint32_t msm_camera_unregister_bus_client(enum cam_bus_client id)
 	mutex_destroy(&g_cv[id].lock);
 	msm_bus_scale_unregister_client(g_cv[id].bus_client);
 	g_cv[id].bus_client = 0;
+	g_cv[id].icc_path = NULL;
 	g_cv[id].num_usecases = 0;
 	g_cv[id].num_paths = 0;
 	g_cv[id].vector_index = 0;
