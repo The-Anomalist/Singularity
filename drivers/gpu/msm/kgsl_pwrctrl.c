@@ -874,13 +874,17 @@ void kgsl_pwrctrl_pwrlevel_change(struct kgsl_device *device,
 	pwr->previous_pwrlevel = old_level;
 
 	/*
-	 * If the bus is running faster than its default level and the GPU
-	 * frequency is moving down keep the DDR at a relatively high level.
+	 * Reset stale negative modifiers before a new vote. When ramping the GPU
+	 * up, bias the bus one step above the default level so DDR/ICC is ready
+	 * before the higher shader clock begins to demand bandwidth.
 	 */
-	if (pwr->bus_mod < 0 || new_level < old_level) {
+	if (pwr->bus_mod < 0) {
 		pwr->bus_mod = 0;
 		pwr->bus_percent_ab = 0;
 	}
+
+	if (new_level < old_level)
+		pwr->bus_mod = max_t(int, pwr->bus_mod, (int) upclock_bus_boost);
 	/*
 	 * Update the bus before the GPU clock to prevent underrun during
 	 * frequency increases.

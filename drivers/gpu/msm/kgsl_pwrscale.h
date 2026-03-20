@@ -10,7 +10,7 @@
 #include "kgsl_pwrctrl.h"
 
 /* devfreq governor call window in usec */
-#define KGSL_GOVERNOR_CALL_INTERVAL 7000
+#define KGSL_GOVERNOR_CALL_INTERVAL 5000
 
 /* Power events to be tracked with history */
 #define KGSL_PWREVENT_STATE	0
@@ -140,6 +140,7 @@ int kgsl_busmon_get_dev_status(struct device *dev,
 int kgsl_busmon_get_cur_freq(struct device *dev, unsigned long *freq);
 
 bool kgsl_popp_check(struct kgsl_device *device);
+extern uint upclock_bus_boost;
 
 
 #define KGSL_PWRSCALE_INIT(_priv_data) { \

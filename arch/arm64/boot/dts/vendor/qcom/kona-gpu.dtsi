@@ -20,8 +20,8 @@
 		interconnects = <&kona_icc KONA_ICC_GPU_TO_LLCC>,
 				<&kona_icc KONA_ICC_GPU_TO_MEM>;
 		interconnect-names = "gpu-llcc", "gpu-ddr";
-		qcom,icc-min-avg-kbps = <2288000>;
-		qcom,icc-min-peak-kbps = <4576000>;
+		qcom,icc-min-avg-kbps = <2745600>;
+		qcom,icc-min-peak-kbps = <5491200>;
 		qcom,src-dst-ports = <26 512>;
 		operating-points-v2 = <&suspendable_ddr_bw_opp_table>;
 	};
@@ -62,7 +62,7 @@
 
 		qcom,initial-pwrlevel = <2>;
 
-		qcom,idle-timeout = <300>; /* msecs */
+		qcom,idle-timeout = <120>; /* msecs */
 
 		qcom,no-nap;
 
@@ -81,6 +81,11 @@
 
 		qcom,pm-qos-active-latency = <44>;
 
+		qcom,enable-ca-jump;
+		qcom,ca-busy-penalty = <9000>;
+		qcom,ca-target-pwrlevel = <1>;
+		qcom,enable-midframe-timer;
+
 		interconnects = <&kona_icc KONA_ICC_GPU_TO_LLCC>,
 				<&kona_icc KONA_ICC_GPU_TO_MEM>,
 				<&kona_icc KONA_ICC_CPU_TO_GPU_CFG>;
@@ -91,11 +96,11 @@
 		 * all downstream users are fully moved to ICC-only voting.
 		 */
 		qcom,gpu-icc-bw-avg-kbps =
-			<1 195312 292968 440429 534179 665039 750000
-			 993164 1518554 1761718 2042968 2671875 3125000 3515625>;
+			<1 292968 440429 622558 760253 946289 1113281
+			 1406250 1968750 2390625 2812500 3515625 4218750 4921875>;
 		qcom,gpu-icc-bw-peak-kbps =
-			<1 781250 1171875 1761718 2136718 2660156 3000000
-			 3972656 6074218 7046875 8171875 10687500 12500000 14062500>;
+			<1 1171875 1761718 2490234 3041015 3785156 4453125
+			 5625000 7875000 9562500 11250000 14062500 16875000 19687500>;
 		qcom,gpu-cfg-icc-bw-avg-kbps = <1 25>;
 		qcom,gpu-cfg-icc-bw-peak-kbps = <1 100>;
 
@@ -224,13 +229,13 @@
 			qcom,gpu-mempool@2 {
 				reg = <2>;
 				qcom,mempool-page-size = <65536>;
-				qcom,mempool-reserved = <256>;
+				qcom,mempool-reserved = <384>;
 			};
 			/* 1M Page Pool configuration */
 			qcom,gpu-mempool@3 {
 				reg = <3>;
 				qcom,mempool-page-size = <1048576>;
-				qcom,mempool-reserved = <32>;
+				qcom,mempool-reserved = <48>;
 			};
 		};
 
@@ -256,25 +261,25 @@
 			qcom,gpu-pwrlevel@1 {
 				reg = <1>;
 				qcom,gpu-freq = <381000000>;
-				qcom,bus-freq-ddr7 = <10>;
-				qcom,bus-min-ddr7 = <7>;
+				qcom,bus-freq-ddr7 = <11>;
+				qcom,bus-min-ddr7 = <8>;
 				qcom,bus-max-ddr7 = <13>;
 
-				qcom,bus-freq-ddr8 = <10>;
-				qcom,bus-min-ddr8 = <7>;
+				qcom,bus-freq-ddr8 = <11>;
+				qcom,bus-min-ddr8 = <8>;
 				qcom,bus-max-ddr8 = <13>;
 			};
 
 			qcom,gpu-pwrlevel@2 {
 				reg = <2>;
 				qcom,gpu-freq = <290000000>;
-				qcom,bus-freq-ddr7 = <4>;
-				qcom,bus-min-ddr7 = <1>;
-				qcom,bus-max-ddr7 = <9>;
+				qcom,bus-freq-ddr7 = <6>;
+				qcom,bus-min-ddr7 = <2>;
+				qcom,bus-max-ddr7 = <10>;
 
-				qcom,bus-freq-ddr8 = <4>;
-				qcom,bus-min-ddr8 = <1>;
-				qcom,bus-max-ddr8 = <8>;
+				qcom,bus-freq-ddr8 = <6>;
+				qcom,bus-min-ddr8 = <2>;
+				qcom,bus-max-ddr8 = <10>;
 			};
 
 			qcom,gpu-pwrlevel@3 {
@@ -339,6 +344,10 @@
 		interconnects = <&kona_icc KONA_ICC_GMU_TO_LLCC>,
 				<&kona_icc KONA_ICC_GMU_TO_MEM>;
 		interconnect-names = "gmu-llcc", "gmu-ddr";
+
+		qcom,gmu-freq = <575000000>;
+		qcom,gmu-icc-bw-avg-kbps = <1 292968 585937 878906>;
+		qcom,gmu-icc-bw-peak-kbps = <1 1171875 2343750 3515625>;
 
 		qcom,msm-bus,name = "cnoc";
 		qcom,msm-bus,num-cases = <2>;

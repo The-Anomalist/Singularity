@@ -54,10 +54,10 @@ static void do_devfreq_notify(struct work_struct *work);
 static struct xstats last_xstats;
 static struct devfreq_dev_status last_status = { .private_data = &last_xstats };
 
-static bool force_high_power = true;
+static bool force_high_power;
 module_param(force_high_power, bool, 0644);
 MODULE_PARM_DESC(force_high_power,
-	"Force KGSL devfreq to hold max power level while active");
+	"Force KGSL devfreq to hold max power level while active (debug only)");
 
 static uint force_bus_min_mod = 1;
 module_param(force_bus_min_mod, uint, 0644);
@@ -68,6 +68,16 @@ static uint force_bus_percent_ab = 90;
 module_param(force_bus_percent_ab, uint, 0644);
 MODULE_PARM_DESC(force_bus_percent_ab,
 	"Minimum AB percentage for KGSL bus vote when force_high_power is set");
+
+static uint downscale_stabilize_ms = 18;
+module_param(downscale_stabilize_ms, uint, 0644);
+MODULE_PARM_DESC(downscale_stabilize_ms,
+	"Minimum time to hold a level before one-step downscaling");
+
+uint upclock_bus_boost = 1;
+module_param(upclock_bus_boost, uint, 0644);
+MODULE_PARM_DESC(upclock_bus_boost,
+	"Additional bus vote steps to apply while ramping GPU clocks up");
 
 /*
  * kgsl_pwrscale_sleep - notify governor that device is going off
@@ -577,13 +587,16 @@ int kgsl_devfreq_target(struct device *dev, unsigned long *freq, u32 flags)
 
 	/* If the governor recommends a new frequency, update it here */
 	if (rec_freq != cur_freq) {
+		s64 since_change_ms = ktime_to_ms(ktime_get()) -
+			device->pwrscale.freq_change_time;
+
 		level = pwr->max_pwrlevel;
 		/*
 		 * Array index of pwrlevels[] should be within the permitted
 		 * power levels, i.e., from max_pwrlevel to min_pwrlevel.
 		 */
 		for (i = pwr->min_pwrlevel; (i >= pwr->max_pwrlevel
-					  && i <= pwr->min_pwrlevel); i--)
+				  && i <= pwr->min_pwrlevel); i--)
 			if (rec_freq <= pwr->pwrlevels[i].gpu_freq) {
 				if (pwr->thermal_cycle == CYCLE_ACTIVE)
 					level = _thermal_adjust(pwr, i);
@@ -591,6 +604,18 @@ int kgsl_devfreq_target(struct device *dev, unsigned long *freq, u32 flags)
 					level = popp_trans2(device, i);
 				break;
 			}
+
+		/*
+		 * Ignore short-lived one-step downscale recommendations right after
+		 * a frequency transition to reduce adjacent-level oscillation and
+		 * preserve frametime stability under bursty gaming workloads.
+		 */
+		if (level > pwr->active_pwrlevel &&
+			(level - pwr->active_pwrlevel) == 1 &&
+			since_change_ms >= 0 &&
+			since_change_ms < downscale_stabilize_ms)
+			level = pwr->active_pwrlevel;
+
 		if (level != pwr->active_pwrlevel)
 			kgsl_pwrctrl_pwrlevel_change(device, level);
 	} else if (popp_stable(device)) {
