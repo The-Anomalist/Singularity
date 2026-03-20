@@ -74,6 +74,11 @@ module_param(downscale_stabilize_ms, uint, 0644);
 MODULE_PARM_DESC(downscale_stabilize_ms,
 	"Minimum time to hold a level before one-step downscaling");
 
+static uint downscale_guard_ms = 40;
+module_param(downscale_guard_ms, uint, 0644);
+MODULE_PARM_DESC(downscale_guard_ms,
+	"Minimum time to limit larger GPU downscales while active contexts remain");
+
 uint upclock_bus_boost = 1;
 module_param(upclock_bus_boost, uint, 0644);
 MODULE_PARM_DESC(upclock_bus_boost,
@@ -589,6 +594,7 @@ int kgsl_devfreq_target(struct device *dev, unsigned long *freq, u32 flags)
 	if (rec_freq != cur_freq) {
 		s64 since_change_ms = ktime_to_ms(ktime_get()) -
 			device->pwrscale.freq_change_time;
+		unsigned int active_level = pwr->active_pwrlevel;
 
 		level = pwr->max_pwrlevel;
 		/*
@@ -610,13 +616,31 @@ int kgsl_devfreq_target(struct device *dev, unsigned long *freq, u32 flags)
 		 * a frequency transition to reduce adjacent-level oscillation and
 		 * preserve frametime stability under bursty gaming workloads.
 		 */
-		if (level > pwr->active_pwrlevel &&
-			(level - pwr->active_pwrlevel) == 1 &&
-			since_change_ms >= 0 &&
-			since_change_ms < downscale_stabilize_ms)
-			level = pwr->active_pwrlevel;
+		if (level > active_level && since_change_ms >= 0) {
+			/*
+			 * When the GPU still has active contexts and thermal
+			 * cycling is not forcing a reduction, avoid dropping
+			 * multiple levels at once on short-lived load dips.
+			 * This keeps bursty workloads from bouncing down too
+			 * aggressively between frames.
+			 */
+			if (pwr->thermal_cycle != CYCLE_ACTIVE &&
+				device->active_context_count > 0 &&
+				since_change_ms < downscale_guard_ms) {
+				unsigned int guard_level =
+					min_t(unsigned int, pwr->min_pwrlevel,
+						active_level + 1);
 
-		if (level != pwr->active_pwrlevel)
+				if (level > guard_level)
+					level = guard_level;
+			}
+
+			if ((level - active_level) == 1 &&
+				since_change_ms < downscale_stabilize_ms)
+				level = active_level;
+		}
+
+		if (level != active_level)
 			kgsl_pwrctrl_pwrlevel_change(device, level);
 	} else if (popp_stable(device)) {
 		popp_trans1(device);
