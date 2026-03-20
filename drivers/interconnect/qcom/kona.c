@@ -20,6 +20,7 @@
 #include <linux/sysfs.h>
 #include <linux/workqueue.h>
 #include <linux/jiffies.h>
+#include <linux/msm_drm_notify.h>
 #include <linux/suspend.h>
 #include <linux/atomic.h>
 
@@ -70,6 +71,8 @@ struct kona_icc_provider {
 	atomic_t replay_runs;
 	atomic_t display_replay_skips;
 	unsigned long *last_active_jiffies;
+	bool display_active;
+	struct notifier_block display_nb;
 	struct device **sysfs_nodes;
 	struct class *icc_class;
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
@@ -407,6 +410,11 @@ static void kona_icc_apply_gpu_llcc_turbo(struct kona_icc_provider *qp,
                 *ib = kona_gpu_llcc_turbo_ib_kb;
 }
 
+static inline bool kona_icc_display_runtime_active(struct kona_icc_provider *qp)
+{
+	return qp->display_active && !READ_ONCE(qp->system_suspended);
+}
+
 static u64 kona_icc_add_headroom(u64 value, unsigned int bias)
 {
         /* Avoid overflow when adding headroom; values are already in KBps. */
@@ -424,13 +432,17 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 	if (!qp->last_ab || !qp->last_ib || *ab || *ib)
 		return false;
 
+	desc = &qp->nodes[index];
+
+	if (desc->role == KONA_ROLE_DISPLAY &&
+	    !kona_icc_display_runtime_active(qp))
+		return false;
+
 	if (qp->last_ab[index] == U64_MAX || qp->last_ib[index] == U64_MAX)
 		return false;
 
 	if (!qp->last_ab[index] && !qp->last_ib[index])
 		return false;
-
-	desc = &qp->nodes[index];
 
 	switch (desc->role) {
 	case KONA_ROLE_CPU:
@@ -1690,7 +1702,8 @@ skip_perf_floor:
 	 * this can collapse interconnect too early and wedge panel bring-up.
 	 */
 	if (qp->nodes[index].role == KONA_ROLE_DISPLAY && !ab && !ib &&
-	    !READ_ONCE(qp->system_suspended) && !atomic_read(&qp->votes_paused) &&
+	    kona_icc_display_runtime_active(qp) &&
+	    !atomic_read(&qp->votes_paused) &&
 	    kona_display_resume_hold_ms &&
 	    time_before(jiffies, qp->resume_jiffies +
 			msecs_to_jiffies(kona_display_resume_hold_ms)) &&
@@ -1714,7 +1727,8 @@ skip_perf_floor:
 	 * config-path links where panel/SDE/dispcc sequences can stall.
 	 */
 	if (qp->nodes[index].role == KONA_ROLE_DISPLAY && !ab && !ib &&
-	    kona_display_nonzero_floor_enable && !READ_ONCE(qp->system_suspended)) {
+	    kona_display_nonzero_floor_enable &&
+	    kona_icc_display_runtime_active(qp)) {
 		kona_icc_get_display_nonzero_floor(qp->nodes[index].id, &ab, &ib);
 		if (kona_resume_debug)
 			dev_info_ratelimited(qp->provider.dev,
@@ -1950,6 +1964,43 @@ static void kona_icc_invalidate_cache(struct kona_icc_provider *qp)
 #endif
 }
 
+static int kona_icc_display_notifier_cb(struct notifier_block *nb,
+					unsigned long event, void *data)
+{
+	struct kona_icc_provider *qp =
+		container_of(nb, struct kona_icc_provider, display_nb);
+	struct msm_drm_notifier *evdata = data;
+	int *blank;
+	int i;
+
+	if (event != MSM_DRM_EARLY_EVENT_BLANK && event != MSM_DRM_EVENT_BLANK)
+		return NOTIFY_DONE;
+
+	if (!evdata || evdata->id != MSM_DRM_PRIMARY_DISPLAY || !evdata->data)
+		return NOTIFY_DONE;
+
+	blank = evdata->data;
+
+	switch (*blank) {
+	case MSM_DRM_BLANK_UNBLANK:
+		qp->display_active = true;
+		break;
+	case MSM_DRM_BLANK_POWERDOWN:
+		qp->display_active = false;
+		for (i = 0; i < qp->num_nodes; i++) {
+			if (qp->nodes[i].role != KONA_ROLE_DISPLAY)
+				continue;
+			qp->saved_ab[i] = U64_MAX;
+			qp->saved_ib[i] = U64_MAX;
+		}
+		break;
+	default:
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
         static int kona_icc_suspend_noirq(struct device *dev)
 {
 	struct kona_icc_provider *qp = dev_get_drvdata(dev);
@@ -2122,6 +2173,8 @@ static int kona_icc_probe(struct platform_device *pdev)
 	atomic_set(&qp->deferred_votes, 0);
 	atomic_set(&qp->replay_runs, 0);
 	atomic_set(&qp->display_replay_skips, 0);
+	qp->display_active = true;
+	qp->display_nb.notifier_call = kona_icc_display_notifier_cb;
 
 	for (i = 0; i < qp->num_nodes; i++) {
 		qp->last_ab[i] = U64_MAX;
@@ -2154,6 +2207,13 @@ static int kona_icc_probe(struct platform_device *pdev)
                 icc_provider_unregister(&qp->provider);
                 return ret;
         }
+
+	ret = msm_drm_register_client(&qp->display_nb);
+	if (ret) {
+		kona_icc_unregister_sysfs(qp);
+		icc_provider_unregister(&qp->provider);
+		return ret;
+	}
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
 	if (qp->boot_floor_vote) {
@@ -2197,6 +2257,7 @@ static int kona_icc_remove(struct platform_device *pdev)
 	struct kona_icc_provider *qp = platform_get_drvdata(pdev);
 
 	cancel_delayed_work_sync(&qp->retry_work);
+	msm_drm_unregister_client(&qp->display_nb);
 
         kona_icc_unregister_sysfs(qp);
         icc_provider_unregister(&qp->provider);
