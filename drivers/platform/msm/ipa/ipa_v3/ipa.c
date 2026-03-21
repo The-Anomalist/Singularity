@@ -6897,7 +6897,7 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 		IPADBG("Use bus scaling info from device tree #usecases=%d\n",
 			ipa3_ctx->ctrl->msm_bus_data_ptr->num_usecases);
 
-		num_icc_paths = of_count_phandle_with_args(pdev->dev.of_node,
+		num_icc_paths = of_count_phandle_with_args(ipa_pdev->dev.of_node,
 						      "interconnects",
 						      "#interconnect-cells");
 		if (num_icc_paths > 0 &&
@@ -6913,12 +6913,12 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 			}
 
 			for (i = 0; i < num_icc_paths; i++) {
-				result = of_property_read_string_index(pdev->dev.of_node, "interconnect-names",
+				result = of_property_read_string_index(ipa_pdev->dev.of_node, "interconnect-names",
 							      i, &icc_name);
 				if (result)
 					break;
 				ipa3_ctx->ctrl->icc_paths[i] =
-					devm_of_icc_get(&pdev->dev, icc_name);
+					devm_of_icc_get(&ipa_pdev->dev, icc_name);
 				if (IS_ERR(ipa3_ctx->ctrl->icc_paths[i])) {
 					result = PTR_ERR(ipa3_ctx->ctrl->icc_paths[i]);
 					ipa3_ctx->ctrl->icc_paths[i] = NULL;
@@ -8023,8 +8023,8 @@ static int ipa_smmu_uc_cb_probe(struct device *dev)
 	}
 
 	if (smmu_info.use_64_bit_dma_mask) {
-		if (dma_set_mask(dev, DMA_BIT_MASK(64)) ||
-			dma_set_coherent_mask(dev, DMA_BIT_MASK(64))) {
+		if (dma_set_mask(dev, ~0ULL) ||
+			dma_set_coherent_mask(dev, ~0ULL)) {
 			IPAERR("DMA set 64bit mask failed\n");
 			return -EOPNOTSUPP;
 		}
@@ -8115,8 +8115,8 @@ static int ipa_smmu_ap_cb_probe(struct device *dev)
 	}
 
 	if (smmu_info.use_64_bit_dma_mask) {
-		if (dma_set_mask(dev, DMA_BIT_MASK(64)) ||
-			dma_set_coherent_mask(dev, DMA_BIT_MASK(64))) {
+		if (dma_set_mask(dev, ~0ULL) ||
+			dma_set_coherent_mask(dev, ~0ULL)) {
 			IPAERR("DMA set 64bit mask failed\n");
 			return -EOPNOTSUPP;
 		}
@@ -8487,9 +8487,8 @@ int ipa3_plat_drv_probe(struct platform_device *pdev_p,
 	} else {
 		if (of_property_read_bool(pdev_p->dev.of_node,
 			"qcom,use-64-bit-dma-mask")) {
-			if (dma_set_mask(&pdev_p->dev, DMA_BIT_MASK(64)) ||
-			    dma_set_coherent_mask(&pdev_p->dev,
-			    DMA_BIT_MASK(64))) {
+			if (dma_set_mask(&pdev_p->dev, ~0ULL) ||
+			    dma_set_coherent_mask(&pdev_p->dev, ~0ULL)) {
 				IPAERR("DMA set 64bit mask failed\n");
 				return -EOPNOTSUPP;
 			}
