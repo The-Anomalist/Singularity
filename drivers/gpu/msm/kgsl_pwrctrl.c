@@ -124,6 +124,57 @@ static int kgsl_icc_bw_table_init(struct device *dev,
 	return 0;
 }
 
+static int kgsl_icc_bw_table_from_msm_bus(struct device *dev,
+		struct msm_bus_scale_pdata *bus_scale_table, u32 **ab_tbl,
+		u32 **ib_tbl, unsigned int *num_levels)
+{
+	u32 *ab, *ib;
+	unsigned int i;
+
+	*num_levels = 0;
+
+	if (!bus_scale_table || !bus_scale_table->num_usecases)
+		return 0;
+
+	/*
+	 * Only synthesize ICC votes from the legacy msm_bus table when the DT
+	 * doesn't provide an explicit interconnect table. This keeps the new
+	 * interconnect support aligned with existing qcom,gpu-bus-table-{0,1}
+	 * users while retaining msm_bus as a fallback path.
+	 */
+	if (*ab_tbl || *ib_tbl)
+		return 0;
+
+	ab = devm_kcalloc(dev, bus_scale_table->num_usecases, sizeof(*ab),
+			GFP_KERNEL);
+	ib = devm_kcalloc(dev, bus_scale_table->num_usecases, sizeof(*ib),
+			GFP_KERNEL);
+	if (!ab || !ib)
+		return -ENOMEM;
+
+	for (i = 0; i < bus_scale_table->num_usecases; i++) {
+		struct msm_bus_paths *usecase = &bus_scale_table->usecase[i];
+		struct msm_bus_vectors *vector;
+
+		if (!usecase->vectors || !usecase->num_paths)
+			return -EINVAL;
+
+		vector = &usecase->vectors[0];
+
+		ab[i] = div_u64((u64)vector->ab, 1000ULL);
+		ib[i] = div_u64((u64)vector->ib, 1000ULL);
+	}
+
+	*ab_tbl = ab;
+	*ib_tbl = ib;
+	*num_levels = bus_scale_table->num_usecases;
+
+	dev_info(dev, "Derived %u ICC BW levels from legacy msm_bus table\n",
+		*num_levels);
+
+	return 0;
+}
+
 static int kgsl_pwrctrl_clk_set_rate(struct clk *grp_clk, unsigned int freq,
 				const char *name);
 static void _gpu_clk_prepare_enable(struct kgsl_device *device,
@@ -2584,6 +2635,12 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 			"qcom,gpu-icc-bw-peak-kbps",
 			&pwr->icc_ab_mbytes,
 			&pwr->icc_ib_mbytes,
+			&pwr->num_icc_bw_levels);
+	if (result == -ENOMEM)
+		goto error_disable_pm;
+
+	result = kgsl_icc_bw_table_from_msm_bus(device->dev, bus_scale_table,
+			&pwr->icc_ab_mbytes, &pwr->icc_ib_mbytes,
 			&pwr->num_icc_bw_levels);
 	if (result == -ENOMEM)
 		goto error_disable_pm;
