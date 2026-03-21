@@ -19,6 +19,7 @@
 #include <linux/rbtree.h>
 #include <linux/uaccess.h>
 #include <linux/interrupt.h>
+#include <linux/interconnect.h>
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
 #include <linux/netdevice.h>
@@ -4923,6 +4924,33 @@ void _ipa_enable_clks_v3_0(void)
 	ipa3_uc_notify_clk_state(true);
 }
 
+static int ipa3_vote_icc_path(unsigned int idx)
+{
+	struct msm_bus_paths *usecase;
+	int i, ret;
+
+	if (!ipa3_ctx->ctrl->use_icc)
+		return -ENODEV;
+
+	if (!ipa3_ctx->ctrl->msm_bus_data_ptr ||
+	    idx >= ipa3_ctx->ctrl->msm_bus_data_ptr->num_usecases)
+		return -EINVAL;
+
+	usecase = &ipa3_ctx->ctrl->msm_bus_data_ptr->usecase[idx];
+	if (usecase->num_paths != ipa3_ctx->ctrl->num_icc_paths)
+		return -EINVAL;
+
+	for (i = 0; i < ipa3_ctx->ctrl->num_icc_paths; i++) {
+		ret = icc_set_bw(ipa3_ctx->ctrl->icc_paths[i],
+				 min_t(u64, usecase->vectors[i].ab, U32_MAX),
+				 min_t(u64, usecase->vectors[i].ib, U32_MAX));
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
 static unsigned int ipa3_get_bus_vote(void)
 {
 	unsigned int idx = 1;
@@ -4961,9 +4989,13 @@ void ipa3_enable_clks(void)
 
 	IPADBG("enabling IPA clocks and bus voting\n");
 
-	if (msm_bus_scale_client_update_request(ipa3_ctx->ipa_bus_hdl,
-	    ipa3_get_bus_vote()))
+	if (ipa3_ctx->ctrl->use_icc) {
+		if (ipa3_vote_icc_path(ipa3_get_bus_vote()))
+			WARN(1, "icc scaling failed");
+	} else if (msm_bus_scale_client_update_request(ipa3_ctx->ipa_bus_hdl,
+		    ipa3_get_bus_vote())) {
 		WARN(1, "bus scaling failed");
+	}
 	ipa3_ctx->ctrl->ipa3_enable_clks();
 	atomic_set(&ipa3_ctx->ipa_clk_vote, 1);
 }
@@ -5437,9 +5469,13 @@ int ipa3_set_clock_plan_from_pm(int idx)
 	if (atomic_read(&ipa3_ctx->ipa3_active_clients.cnt) > 0) {
 		if (ipa3_clk)
 			clk_set_rate(ipa3_clk, ipa3_ctx->curr_ipa_clk_rate);
-		if (msm_bus_scale_client_update_request(ipa3_ctx->ipa_bus_hdl,
-				ipa3_get_bus_vote()))
+		if (ipa3_ctx->ctrl->use_icc) {
+			if (ipa3_vote_icc_path(ipa3_get_bus_vote()))
+				WARN_ON(1);
+		} else if (msm_bus_scale_client_update_request(ipa3_ctx->ipa_bus_hdl,
+				ipa3_get_bus_vote())) {
 			WARN_ON(1);
+		}
 	} else {
 		IPADBG_LOW("clocks are gated, not setting rate\n");
 	}
@@ -5519,9 +5555,13 @@ int ipa3_set_required_perf_profile(enum ipa_voltage_level floor_voltage,
 	if (atomic_read(&ipa3_ctx->ipa3_active_clients.cnt) > 0) {
 		if (ipa3_clk)
 			clk_set_rate(ipa3_clk, ipa3_ctx->curr_ipa_clk_rate);
-		if (msm_bus_scale_client_update_request(ipa3_ctx->ipa_bus_hdl,
-				ipa3_get_bus_vote()))
+		if (ipa3_ctx->ctrl->use_icc) {
+			if (ipa3_vote_icc_path(ipa3_get_bus_vote()))
+				WARN_ON(1);
+		} else if (msm_bus_scale_client_update_request(ipa3_ctx->ipa_bus_hdl,
+				ipa3_get_bus_vote())) {
 			WARN_ON(1);
+		}
 	} else {
 		IPADBG_LOW("clocks are gated, not setting rate\n");
 	}
@@ -6845,6 +6885,9 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 
 	if (ipa3_ctx->ipa3_hw_mode != IPA_HW_MODE_VIRTUAL &&
 	    ipa3_ctx->ipa3_hw_mode != IPA_HW_MODE_EMULATION) {
+		int i, num_icc_paths;
+		const char *icc_name;
+
 		ipa3_ctx->ctrl->msm_bus_data_ptr =
 			msm_bus_cl_get_pdata(ipa3_ctx->master_pdev);
 		if (ipa3_ctx->ctrl->msm_bus_data_ptr == NULL) {
@@ -6854,15 +6897,56 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 		IPADBG("Use bus scaling info from device tree #usecases=%d\n",
 			ipa3_ctx->ctrl->msm_bus_data_ptr->num_usecases);
 
-		/* get BUS handle */
-		ipa3_ctx->ipa_bus_hdl =
-			msm_bus_scale_register_client(
-				ipa3_ctx->ctrl->msm_bus_data_ptr);
-		if (!ipa3_ctx->ipa_bus_hdl) {
-			IPAERR("fail to register with bus mgr!\n");
-			ipa3_ctx->ctrl->msm_bus_data_ptr = NULL;
-			result = -EPROBE_DEFER;
-			goto fail_bus_reg;
+		num_icc_paths = of_count_phandle_with_args(pdev->dev.of_node,
+						      "interconnects",
+						      "#interconnect-cells");
+		if (num_icc_paths > 0 &&
+		    num_icc_paths ==
+		    ipa3_ctx->ctrl->msm_bus_data_ptr->usecase[0].num_paths) {
+			result = 0;
+			ipa3_ctx->ctrl->icc_paths = kcalloc(num_icc_paths,
+						       sizeof(*ipa3_ctx->ctrl->icc_paths),
+						       GFP_KERNEL);
+			if (!ipa3_ctx->ctrl->icc_paths) {
+				result = -ENOMEM;
+				goto fail_bus_reg;
+			}
+
+			for (i = 0; i < num_icc_paths; i++) {
+				result = of_property_read_string_index(pdev->dev.of_node, "interconnect-names",
+							      i, &icc_name);
+				if (result)
+					break;
+				ipa3_ctx->ctrl->icc_paths[i] =
+					devm_of_icc_get(&pdev->dev, icc_name);
+				if (IS_ERR(ipa3_ctx->ctrl->icc_paths[i])) {
+					result = PTR_ERR(ipa3_ctx->ctrl->icc_paths[i]);
+					ipa3_ctx->ctrl->icc_paths[i] = NULL;
+					break;
+				}
+			}
+
+			if (!result) {
+				ipa3_ctx->ctrl->num_icc_paths = num_icc_paths;
+				ipa3_ctx->ctrl->use_icc = true;
+				if (ipa3_vote_icc_path(0))
+					ipa3_ctx->ctrl->use_icc = false;
+			}
+
+			if (!ipa3_ctx->ctrl->use_icc)
+				IPAERR("ICC setup failed (%d), falling back to msm-bus\n", result);
+		}
+
+		if (!ipa3_ctx->ctrl->use_icc) {
+			/* get BUS handle */
+			ipa3_ctx->ipa_bus_hdl =
+				msm_bus_scale_register_client(ipa3_ctx->ctrl->msm_bus_data_ptr);
+			if (!ipa3_ctx->ipa_bus_hdl) {
+				IPAERR("fail to register with bus mgr!\n");
+				ipa3_ctx->ctrl->msm_bus_data_ptr = NULL;
+				result = -EPROBE_DEFER;
+				goto fail_bus_reg;
+			}
 		}
 	}
 
@@ -7259,6 +7343,8 @@ fail_clk:
 	if (ipa3_ctx->ipa_bus_hdl)
 		msm_bus_scale_unregister_client(ipa3_ctx->ipa_bus_hdl);
 fail_bus_reg:
+	kfree(ipa3_ctx->ctrl->icc_paths);
+	ipa3_ctx->ctrl->icc_paths = NULL;
 	if (ipa3_ctx->ctrl->msm_bus_data_ptr)
 		msm_bus_cl_clear_pdata(ipa3_ctx->ctrl->msm_bus_data_ptr);
 fail_init_mem_partition:

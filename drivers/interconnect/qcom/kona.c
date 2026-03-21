@@ -1137,6 +1137,41 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.ib = "CPU_MEM_IB",
 		.role = KONA_ROLE_GENERIC,
 	},
+	{
+		.id = KONA_ICC_IPA_TO_LLCC,
+		.name = "ipa-llcc",
+		.ab = "CPU_LLCC_AB",
+		.ib = "CPU_LLCC_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
+	{
+		.id = KONA_ICC_IPA_TO_MEM,
+		.name = "ipa-ddr",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
+	{
+		.id = KONA_ICC_IPA_TO_IMEM,
+		.name = "ipa-imem",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
+	{
+		.id = KONA_ICC_IPA_CFG,
+		.name = "ipa-cfg",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
+	{
+		.id = KONA_ICC_IPA_CORE,
+		.name = "ipa-core",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
 };
 
 static inline int kona_icc_validate_node_count(void)

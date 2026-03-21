@@ -3606,6 +3606,13 @@
 		qcom,bandwidth-vote-for-ipa;
 		qcom,use-64-bit-dma-mask;
 		qcom,ipa-endp-delay-wa;
+		interconnects = <&kona_icc KONA_ICC_IPA_TO_LLCC>,
+				<&kona_icc KONA_ICC_IPA_TO_MEM>,
+				<&kona_icc KONA_ICC_IPA_TO_IMEM>,
+				<&kona_icc KONA_ICC_IPA_CFG>,
+				<&kona_icc KONA_ICC_IPA_CORE>;
+		interconnect-names = "ipa-llcc", "ipa-ddr", "ipa-imem",
+				      "ipa-cfg", "ipa-core";
 		qcom,msm-bus,name = "ipa";
 		qcom,msm-bus,num-cases = <5>;
 		qcom,msm-bus,num-paths = <5>;

@@ -36,6 +36,7 @@
 #include <linux/mailbox_client.h>
 #include <linux/mailbox/qmp.h>
 #include <linux/rmnet_ipa_fd_ioctl.h>
+#include <linux/interconnect.h>
 
 #define IPA_DEV_NAME_MAX_LEN 15
 #define DRV_NAME "ipa"
@@ -2343,6 +2344,9 @@ struct ipa3_controller {
 	void (*ipa3_enable_clks)(void);
 	void (*ipa3_disable_clks)(void);
 	struct msm_bus_scale_pdata *msm_bus_data_ptr;
+	struct icc_path **icc_paths;
+	u32 num_icc_paths;
+	bool use_icc;
 };
 
 extern struct ipa3_context *ipa3_ctx;
