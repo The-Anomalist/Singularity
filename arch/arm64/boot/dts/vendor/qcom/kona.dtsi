@@ -889,6 +889,9 @@
 
 	bus_proxy_client: qcom,bus_proxy_client {
 		compatible = "qcom,bus-proxy-client";
+		interconnects = <&kona_icc KONA_ICC_CPU_TO_LLCC>,
+				<&kona_icc KONA_ICC_CPU_TO_MEM>;
+		interconnect-names = "cpu-llcc", "cpu-ddr";
 		qcom,msm-bus,name = "bus-proxy-client";
 		qcom,msm-bus,num-cases = <2>;
 		qcom,msm-bus,num-paths = <2>;
