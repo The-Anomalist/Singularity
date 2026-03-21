@@ -299,8 +299,14 @@
 			qcom,msm-bus,num-paths = <2>;
 			qcom,msm-bus,vectors-KBps =
 				<22 512 0 0>, <23 512 0 0>,
-				<22 512 0 6400000>, <23 512 0 6400000>,
-				<22 512 0 6400000>, <23 512 0 6400000>;
+				/*
+				 * Keep a modest sustaining floor on active
+				 * display usecases so UI bursts do not need to
+				 * re-ramp from an all-zero average vote between
+				 * composition passes.
+				 */
+				<22 512 256000 7200000>, <23 512 256000 7200000>,
+				<22 512 256000 7200000>, <23 512 256000 7200000>;
 		};
 
 		qcom,sde-reg-bus {
@@ -543,8 +549,12 @@
 		qcom,msm-bus,num-paths = <1>;
 		qcom,msm-bus,vectors-KBps =
 			<25 512 0 0>,
-			<25 512 0 6400000>,
-			<25 512 0 6400000>;
+			/*
+			 * Mirror the display data bus floor so image rotation
+			 * and upload passes do not stall on short bursts.
+			 */
+			<25 512 256000 7200000>,
+			<25 512 256000 7200000>;
 
 		rot-vdd-supply = <&mdss_core_gdsc>;
 		qcom,supply-names = "rot-vdd";

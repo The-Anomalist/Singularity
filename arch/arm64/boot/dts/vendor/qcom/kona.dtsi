@@ -3265,8 +3265,12 @@
 		<123 512 8388608 0>, <1 757 409600 0>, /* HS G4 RA L2 */
 		<123 512 149422 0>, <1 757 1000 0>,  /* HS G1 RB */
 		<123 512 298189 0>, <1 757 1000 0>,  /* HS G2 RB */
-		<123 512 2097152 0>, <1 757 102400 0>,  /* HS G3 RB */
-		<123 512 4194304 0>, <1 757 204800 0>,  /* HS G4 RB */
+		/*
+		 * Keep stronger CNOC burst votes on high-speed Rate-B modes so
+		 * storage benchmarks do not stall while ramping the memory path.
+		 */
+		<123 512 2097152 0>, <1 757 153600 307200>,  /* HS G3 RB */
+		<123 512 4194304 0>, <1 757 307200 614400>,  /* HS G4 RB */
 		<123 512 298189 0>, <1 757 1000 0>,  /* HS G1 RB L2 */
 		<123 512 596378 0>, <1 757 1000 0>,  /* HS G2 RB L2 */
 		/* As UFS working in HS G3 RB L2 mode, aggregated
@@ -3276,8 +3280,8 @@
 		 * bindwidth (IB) needs to be given a proper value too.
 		 */
 		<123 512 4194304 0>, <1 757 204800 409600>, /* HS G3 RB L2 */
-		<123 512 8388608 0>, <1 757 409600 409600>, /* HS G4 RB L2 */
-		<123 512 7643136 0>, <1 757 307200 0>; /* Max. bandwidth */
+		<123 512 8388608 0>, <1 757 512000 819200>, /* HS G4 RB L2 */
+		<123 512 8388608 0>, <1 757 512000 819200>; /* Max. bandwidth */
 
 		qcom,bus-vector-names = "MIN",
 		"PWM_G1_L1", "PWM_G2_L1", "PWM_G3_L1", "PWM_G4_L1",
