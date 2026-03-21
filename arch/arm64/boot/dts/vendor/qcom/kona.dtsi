@@ -2669,6 +2669,10 @@
 		qcom,mccc = <&clock_mccc>;
 		clock-names = "xo_clk_src";
 		clocks = <&clock_rpmh RPMH_CXO_CLK>;
+		interconnects = <&kona_icc KONA_ICC_CAM_CFG>,
+				<&kona_icc KONA_ICC_VIDEO_CFG>,
+				<&kona_icc KONA_ICC_DISP_CFG>;
+		interconnect-names = "cam-cfg", "video-cfg", "disp-cfg";
 		#clock-cells = <1>;
 	};
 

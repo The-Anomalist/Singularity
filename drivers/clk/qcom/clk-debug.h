@@ -9,6 +9,8 @@
 
 struct icc_path;
 
+#define CLK_DEBUG_MAX_ICC_PATHS 3
+
 /**
  * struct mux_regmap_names - Structure of mux regmap mapping
  * @mux:		pointer to a clock debug mux
@@ -81,6 +83,8 @@ struct clk_debug_mux {
 	u32 post_div_val;
 	u32 period_offset;
 	u32 bus_cl_id;
+	u32 num_icc_paths;
+	struct icc_path *icc_paths[CLK_DEBUG_MAX_ICC_PATHS];
 	struct icc_path *icc_path;
 	struct clk_hw hw;
 };

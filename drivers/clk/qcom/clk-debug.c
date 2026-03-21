@@ -131,26 +131,43 @@ static unsigned long clk_debug_mux_measure_rate(struct clk_hw *hw)
 }
 
 
-static int clk_debug_icc_bus_vote(struct icc_path *icc_path, u32 bus_cl_id, bool enable)
+static int clk_debug_icc_bus_vote(struct clk_debug_mux *meas, bool enable)
 {
-	if (icc_path) {
-		int ret;
+	u32 i, num_icc_paths;
 
-		ret = icc_set_bw(icc_path, 0, enable ? 1 : 0);
-		if (!ret)
-			return 0;
+	num_icc_paths = meas->num_icc_paths;
+	if (!num_icc_paths && meas->icc_path)
+		num_icc_paths = 1;
 
-		/*
-		 * If ICC accepted the path but cannot apply an immediate vote
-		 * (provider not ready / transient RPMh backpressure), allow the
-		 * legacy msm-bus vote path to keep clock debug consumers functional.
-		 */
-		if (ret != -EAGAIN || !bus_cl_id)
-			return ret;
+	if (num_icc_paths) {
+		for (i = 0; i < num_icc_paths; i++) {
+			struct icc_path *icc_path = num_icc_paths == 1 ?
+				meas->icc_path : meas->icc_paths[i];
+			int ret;
+
+			ret = icc_set_bw(icc_path, 0, enable ? 1 : 0);
+			if (!ret)
+				continue;
+
+			/*
+			 * If ICC accepted the path but cannot apply an
+			 * immediate vote (provider not ready / transient RPMh
+			 * backpressure), allow the legacy msm-bus vote path to
+			 * keep clock debug consumers functional.
+			 */
+			if (ret != -EAGAIN || !meas->bus_cl_id)
+				return ret;
+
+			goto fallback_to_msm_bus;
+		}
+
+		return 0;
 	}
 
-	if (bus_cl_id)
-		return msm_bus_scale_client_update_request(bus_cl_id, enable);
+fallback_to_msm_bus:
+	if (meas->bus_cl_id)
+		return msm_bus_scale_client_update_request(meas->bus_cl_id,
+							   enable);
 
 	return 0;
 }
@@ -290,7 +307,7 @@ static int clk_debug_measure_get(void *data, u64 *val)
 	 * Vote for bandwidth to re-connect config ports
 	 * to multimedia clock controllers.
 	 */
-	clk_debug_icc_bus_vote(meas->icc_path, meas->bus_cl_id, true);
+	clk_debug_icc_bus_vote(meas, true);
 
 	ret = clk_find_and_set_parent(measure, hw);
 	if (ret) {
@@ -307,7 +324,7 @@ static int clk_debug_measure_get(void *data, u64 *val)
 	trace_clk_measure(clk_hw_get_name(hw), *val);
 	disable_debug_clks(measure);
 exit:
-	clk_debug_icc_bus_vote(meas->icc_path, meas->bus_cl_id, false);
+	clk_debug_icc_bus_vote(meas, false);
 	mutex_unlock(&clk_debug_lock);
 	return ret;
 }
@@ -366,7 +383,7 @@ void clk_debug_measure_add(struct clk_hw *hw, struct dentry *dentry)
 	}
 
 	meas = to_clk_measure(measure);
-	clk_debug_icc_bus_vote(meas->icc_path, meas->bus_cl_id, true);
+	clk_debug_icc_bus_vote(meas, true);
 	ret = clk_find_and_set_parent(measure, hw);
 	if (ret) {
 		pr_debug("Unable to set %s as %s's parent, ret=%d\n",
@@ -386,7 +403,7 @@ void clk_debug_measure_add(struct clk_hw *hw, struct dentry *dentry)
 		debugfs_create_file("clk_measure", 0444, dentry, hw,
 				&clk_measure_fops);
 err:
-	clk_debug_icc_bus_vote(meas->icc_path, meas->bus_cl_id, false);
+	clk_debug_icc_bus_vote(meas, false);
 }
 EXPORT_SYMBOL(clk_debug_measure_add);
 
@@ -406,7 +423,9 @@ EXPORT_SYMBOL(clk_debug_measure_register);
 
 void clk_debug_bus_vote(struct clk_hw *hw, bool enable)
 {
-	clk_debug_icc_bus_vote(hw->init->icc_path, hw->init->bus_cl_id, enable);
+	struct clk_debug_mux *meas = to_clk_measure(hw);
+
+	clk_debug_icc_bus_vote(meas, enable);
 }
 
 /**

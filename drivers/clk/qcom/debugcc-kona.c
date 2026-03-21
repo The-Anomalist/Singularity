@@ -1021,6 +1021,11 @@ static const struct of_device_id clk_debug_match_table[] = {
 
 static int clk_debug_kona_probe(struct platform_device *pdev)
 {
+	static const char * const icc_names[] = {
+		"cam-cfg",
+		"video-cfg",
+		"disp-cfg",
+	};
 	struct clk *clk;
 	int ret = 0, i;
 
@@ -1047,9 +1052,23 @@ static int clk_debug_kona_probe(struct platform_device *pdev)
 	}
 
 	debug_mux_priv.cxo = clk;
-	gcc_debug_mux.icc_path = devm_of_icc_get(&pdev->dev, NULL);
-	if (IS_ERR(gcc_debug_mux.icc_path)) {
-		gcc_debug_mux.icc_path = NULL;
+	for (i = 0; i < ARRAY_SIZE(icc_names); i++) {
+		gcc_debug_mux.icc_paths[i] = devm_of_icc_get(&pdev->dev,
+							     icc_names[i]);
+		if (IS_ERR(gcc_debug_mux.icc_paths[i])) {
+			dev_dbg(&pdev->dev,
+				"ICC path %s unavailable (%ld), using msm_bus fallback\n",
+				icc_names[i],
+				PTR_ERR(gcc_debug_mux.icc_paths[i]));
+			gcc_debug_mux.icc_paths[i] = NULL;
+			break;
+		}
+	}
+
+	if (i == ARRAY_SIZE(icc_names)) {
+		gcc_debug_mux.num_icc_paths = ARRAY_SIZE(icc_names);
+	} else {
+		gcc_debug_mux.num_icc_paths = 0;
 		gcc_debug_mux.bus_cl_id =
 			msm_bus_scale_register_client(&clk_measure_scale_table);
 		if (!gcc_debug_mux.bus_cl_id)
