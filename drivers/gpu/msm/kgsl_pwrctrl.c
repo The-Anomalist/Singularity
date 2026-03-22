@@ -2561,6 +2561,9 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 	struct platform_device *p2dev;
 
 	bus_scale_table = kgsl_get_bus_scale_table(device);
+	if (bus_scale_table == NULL)
+		return -EINVAL;
+
 	pwr->bus_scale_table = bus_scale_table;
 
 	result = _get_clocks(device);
@@ -2699,17 +2702,6 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 		 * is not enabled and gpu bus voting is to be done
 		 * from the driver.
 		 */
-		if (!bus_scale_table) {
-			if (pwr->num_icc_paths) {
-				dev_info(device->dev,
-					"No legacy gpu msm_bus table, using ICC-only bus voting\n");
-				goto done_bus_levels;
-			}
-
-			result = -EINVAL;
-			goto error_cleanup_gpu_cfg;
-		}
-
 		pwr->pcl = msm_bus_scale_register_client(bus_scale_table);
 		if (pwr->pcl == 0) {
 			if (pwr->num_icc_paths) {
@@ -2721,9 +2713,6 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 			}
 		}
 	}
-
-	if (!bus_scale_table)
-		goto done_bus_levels;
 
 	pwr->bus_ib = kzalloc(bus_scale_table->num_usecases *
 		sizeof(*pwr->bus_ib), GFP_KERNEL);
@@ -2772,7 +2761,6 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 		}
 	}
 
-done_bus_levels:
 	INIT_LIST_HEAD(&pwr->limits);
 	spin_lock_init(&pwr->limits_lock);
 
