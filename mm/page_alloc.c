@@ -343,6 +343,26 @@ int watermark_scale_factor = 10;
  */
 int extra_free_kbytes = 0;
 
+static void __meminit tune_mobile_zone_wmarks(unsigned long lowmem_kbytes)
+{
+	/*
+	 * Keep more free memory on mid/high-memory phones so bursty
+	 * allocations do not immediately fall into direct reclaim or swap.
+	 * That improves RAM benchmarks as well as flash-backed mixed I/O runs
+	 * that tend to regress when the VM starts reclaiming too eagerly.
+	 */
+	if (lowmem_kbytes >= 6UL * 1024 * 1024) {
+		watermark_scale_factor = 125;
+		extra_free_kbytes = min_t(int, lowmem_kbytes / 100, 65536);
+	} else if (lowmem_kbytes >= 3UL * 1024 * 1024) {
+		watermark_scale_factor = 75;
+		extra_free_kbytes = min_t(int, lowmem_kbytes / 128, 32768);
+	} else {
+		watermark_scale_factor = 10;
+		extra_free_kbytes = 0;
+	}
+}
+
 static unsigned long nr_kernel_pages __meminitdata;
 static unsigned long nr_all_pages __meminitdata;
 static unsigned long dma_reserve __meminitdata;
@@ -7938,6 +7958,7 @@ int __meminit init_per_zone_wmark_min(void)
 
 	lowmem_kbytes = nr_free_buffer_pages() * (PAGE_SIZE >> 10);
 	new_min_free_kbytes = int_sqrt(lowmem_kbytes * 16);
+	tune_mobile_zone_wmarks(lowmem_kbytes);
 
 	if (new_min_free_kbytes > user_min_free_kbytes) {
 		min_free_kbytes = new_min_free_kbytes;

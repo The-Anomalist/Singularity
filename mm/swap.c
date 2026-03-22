@@ -1034,11 +1034,17 @@ void __init swap_setup(void)
 {
 	unsigned long megs = totalram_pages >> (20 - PAGE_SHIFT);
 
-	/* Use a smaller cluster for small-memory machines */
+	/*
+	 * Mobile devices with plenty of RAM are more sensitive to swap read
+	 * amplification than to swap seek overhead. Use smaller clusters there
+	 * to reduce read latency spikes and unnecessary flash traffic.
+	 */
 	if (megs < 16)
 		page_cluster = 2;
-	else
+	else if (megs < 1024)
 		page_cluster = 3;
+	else
+		page_cluster = 0;
 	/*
 	 * Right now other parts of the system means that we
 	 * _really_ don't want to cluster much more
