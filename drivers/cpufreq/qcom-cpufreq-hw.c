@@ -68,6 +68,7 @@ struct skipped_freq {
 
 struct cpufreq_qcom {
 	struct cpufreq_frequency_table *table;
+	u32 *voltages;
 	void __iomem *reg_bases[REG_ARRAY_SIZE];
 	cpumask_t related_cpus;
 	unsigned int max_cores;
@@ -75,6 +76,7 @@ struct cpufreq_qcom {
 	unsigned long xo_rate;
 	unsigned long cpu_hw_rate;
 	unsigned long dcvsh_freq_limit;
+	u32 max_freq_offset_khz;
 	struct delayed_work freq_poll_work;
 	struct mutex dcvsh_lock;
 	struct device_attribute freq_limit_attr;
@@ -455,6 +457,11 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 	if (!c->table)
 		return -ENOMEM;
 
+	c->voltages = devm_kcalloc(dev, lut_max_entries,
+				sizeof(*c->voltages), GFP_KERNEL);
+	if (!c->voltages)
+		return -ENOMEM;
+
 	spin_lock_init(&c->skip_data.lock);
 	base_freq = c->reg_bases[REG_FREQ_LUT_TABLE];
 	base_volt = c->reg_bases[REG_VOLT_LUT_TABLE];
@@ -469,6 +476,7 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 
 		data = readl_relaxed(base_volt + i * lut_row_size);
 		volt = (data & GENMASK(11, 0)) * 1000;
+		c->voltages[i] = volt;
 		vc = data & GENMASK(21, 16);
 
 		if (src)
@@ -523,18 +531,26 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 
 		prev_cc = core_count;
 		prev_freq = cur_freq;
+	}
 
+	c->lut_max_entries = i;
+	c->table[i].frequency = CPUFREQ_TABLE_END;
+
+	if (c->max_freq_offset_khz && c->lut_max_entries) {
+		unsigned int max_index = c->lut_max_entries - 1;
+
+		c->table[max_index].frequency += c->max_freq_offset_khz;
+	}
+
+	for (i = 0; i < c->lut_max_entries; i++) {
 		for_each_cpu(cpu, &c->related_cpus) {
 			cpu_dev = get_cpu_device(cpu);
 			if (!cpu_dev)
 				continue;
 			dev_pm_opp_add(cpu_dev, c->table[i].frequency * 1000,
-							volt);
+							c->voltages[i]);
 		}
 	}
-
-	c->lut_max_entries = i;
-	c->table[i].frequency = CPUFREQ_TABLE_END;
 
 	if (c->skip_data.skip) {
 		pr_info("%s Skip: Index[%u], Frequency[%u], Core Count %u, Final Index %u Actual Index %u Prev_Freq[%u] Prev_Index[%u] Prev_CC[%u]\n",
@@ -627,6 +643,10 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 	c->max_cores = max_cores;
 	if (!c->max_cores)
 		return -ENOENT;
+
+	of_property_read_u32_index(dev->of_node,
+				   "qcom,max-frequency-offset-khz",
+				   index, &c->max_freq_offset_khz);
 
 	c->xo_rate = xo_rate;
 	c->cpu_hw_rate = cpu_hw_rate;
