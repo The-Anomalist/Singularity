@@ -475,51 +475,74 @@ static int kgsl_pwrctrl_icc_init(struct kgsl_device *device)
 	struct device *dev = device->dev;
 	const char *icc_name;
 	int i, ret;
-	int num_icc_paths;
+	int total_icc_paths;
+	unsigned int path_count = 0;
+	bool named_paths;
 
-	num_icc_paths = of_count_phandle_with_args(dev->of_node,
+	total_icc_paths = of_count_phandle_with_args(dev->of_node,
 					   "interconnects",
 					   "#interconnect-cells");
-	if (num_icc_paths <= 0)
+	if (total_icc_paths <= 0)
 		return 0;
 
-	if (num_icc_paths > ARRAY_SIZE(pwr->icc_paths)) {
-		dev_warn(dev, "Ignoring unexpected number of ICC paths: %d\n",
-			num_icc_paths);
-		return 0;
-	}
-
-	if (of_find_property(dev->of_node, "interconnect-names", NULL)) {
-		for (i = 0; i < num_icc_paths; i++) {
+	named_paths = of_find_property(dev->of_node, "interconnect-names", NULL);
+	if (named_paths) {
+		for (i = 0; i < total_icc_paths; i++) {
 			ret = of_property_read_string_index(dev->of_node,
 							    "interconnect-names",
 							    i, &icc_name);
 			if (ret)
 				goto clear_icc;
 
-			pwr->icc_paths[i] = devm_of_icc_get(dev, icc_name);
-			if (IS_ERR(pwr->icc_paths[i])) {
-				ret = PTR_ERR(pwr->icc_paths[i]);
-				pwr->icc_paths[i] = NULL;
+			/*
+			 * The CPU-to-GPU config path is attached later via
+			 * pwr->gpu_cfg_icc_path. Filter it out here so DTs
+			 * that expose gpu-llcc, gpu-ddr and cpu-gpu-cfg
+			 * together keep the main KGSL bandwidth votes enabled.
+			 */
+			if (!strcmp(icc_name, "cpu-gpu-cfg"))
+				continue;
+
+			if (path_count >= ARRAY_SIZE(pwr->icc_paths)) {
+				dev_warn(dev,
+					"Ignoring extra KGSL ICC data path '%s' beyond %zu supported entries\n",
+					icc_name, ARRAY_SIZE(pwr->icc_paths));
+				continue;
+			}
+
+			pwr->icc_paths[path_count] = devm_of_icc_get(dev, icc_name);
+			if (IS_ERR(pwr->icc_paths[path_count])) {
+				ret = PTR_ERR(pwr->icc_paths[path_count]);
+				pwr->icc_paths[path_count] = NULL;
 				goto clear_icc;
 			}
+
+			path_count++;
 		}
-	} else if (num_icc_paths == 1) {
+	} else if (total_icc_paths == 1) {
 		pwr->icc_paths[0] = devm_of_icc_get(dev, NULL);
 		if (IS_ERR(pwr->icc_paths[0])) {
 			ret = PTR_ERR(pwr->icc_paths[0]);
 			pwr->icc_paths[0] = NULL;
 			goto clear_icc;
 		}
+		path_count = 1;
 	} else {
 		dev_warn(dev,
 			"Missing interconnect-names for %d paths, disabling KGSL ICC votes\n",
-			num_icc_paths);
+			total_icc_paths);
 		return 0;
 	}
 
-	pwr->num_icc_paths = num_icc_paths;
-	dev_info(dev, "Enabled %u KGSL ICC path(s)\n", pwr->num_icc_paths);
+	pwr->num_icc_paths = path_count;
+	if (!pwr->num_icc_paths) {
+		dev_warn(dev,
+			"No KGSL data ICC paths attached after filtering DT interconnects, using msm_bus fallback\n");
+		return 0;
+	}
+
+	dev_info(dev, "Enabled %u KGSL ICC data path(s) from %d DT interconnect(s)\n",
+		pwr->num_icc_paths, total_icc_paths);
 	return 0;
 
 clear_icc:
@@ -2960,6 +2983,21 @@ static int kgsl_pwrctrl_enable(struct kgsl_device *device)
 		level = pwr->max_pwrlevel;
 		pwr->wakeup_maxpwrlevel = 0;
 	} else if (kgsl_popp_check(device)) {
+		level = pwr->active_pwrlevel;
+	} else if ((device->active_context_count > 0) &&
+			(pwr->active_pwrlevel < pwr->default_pwrlevel)) {
+		/*
+		 * Bursty graphics workloads can briefly fall into SLUMBER even
+		 * while a context remains hot in the recent activity window.
+		 * Resuming those warm workloads at the low default level forces
+		 * an avoidable re-ramp through devfreq and delays restoring the
+		 * last proven-good performance point.
+		 *
+		 * Reuse the most recent active power level when it is faster than
+		 * the default and we still see recent context activity. Thermal
+		 * and user limits are still enforced by
+		 * kgsl_pwrctrl_pwrlevel_change().
+		 */
 		level = pwr->active_pwrlevel;
 	} else {
 		level = pwr->default_pwrlevel;
