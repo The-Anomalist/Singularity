@@ -996,13 +996,12 @@
 		interconnects = <&kona_icc KONA_ICC_CPU_TO_LLCC>;
 		interconnect-names = "cpu-llcc";
 		/*
-		 * Keep a stronger floor for memory-heavy burst traffic
-		 * (AnTuTu/LPDDR random tests) so LLCC does not oscillate
-		 * around mid OPPs while CPU is already at peak clocks.
+		 * Add a small ICC headroom bump so perf governors can better hold
+		 * LLCC bandwidth under bursty memory benchmark traffic.
 		 */
-		qcom,icc-boost-percent = <130>;
-		qcom,icc-min-avg-kbps = <8060000>;
-		qcom,icc-min-peak-kbps = <16120000>;
+		qcom,icc-boost-percent = <125>;
+		qcom,icc-min-avg-kbps = <6881000>;
+		qcom,icc-min-peak-kbps = <13763000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_LLCC>;
 		qcom,active-only;
@@ -1027,9 +1026,9 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 		interconnect-names = "cpu-ddr";
-		qcom,icc-boost-percent = <135>;
-		qcom,icc-min-avg-kbps = <6881000>;
-		qcom,icc-min-peak-kbps = <13763000>;
+		qcom,icc-boost-percent = <130>;
+		qcom,icc-min-avg-kbps = <5161000>;
+		qcom,icc-min-peak-kbps = <10322000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
@@ -1164,9 +1163,9 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU0_TO_LLCC>;
 		interconnect-names = "cpu-llcc";
-		qcom,icc-boost-percent = <130>;
-		qcom,icc-min-avg-kbps = <3879000>;
-		qcom,icc-min-peak-kbps = <7758000>;
+		qcom,icc-boost-percent = <125>;
+		qcom,icc-min-avg-kbps = <3048000>;
+		qcom,icc-min-peak-kbps = <6096000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_LLCC>;
 		qcom,active-only;
@@ -1178,9 +1177,9 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU4_TO_LLCC>;
 		interconnect-names = "cpu-llcc";
-		qcom,icc-boost-percent = <135>;
-		qcom,icc-min-avg-kbps = <6881000>;
-		qcom,icc-min-peak-kbps = <13763000>;
+		qcom,icc-boost-percent = <130>;
+		qcom,icc-min-avg-kbps = <5161000>;
+		qcom,icc-min-peak-kbps = <10322000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_LLCC>;
 		qcom,active-only;
@@ -1192,9 +1191,9 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU0_TO_MEM>;
 		interconnect-names = "cpu-ddr";
-		qcom,icc-boost-percent = <130>;
-		qcom,icc-min-avg-kbps = <2597000>;
-		qcom,icc-min-peak-kbps = <5194000>;
+		qcom,icc-boost-percent = <125>;
+		qcom,icc-min-avg-kbps = <2086000>;
+		qcom,icc-min-peak-kbps = <4173000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
@@ -1206,9 +1205,9 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU4_TO_MEM>;
 		interconnect-names = "cpu-ddr";
-		qcom,icc-boost-percent = <135>;
-		qcom,icc-min-avg-kbps = <5161000>;
-		qcom,icc-min-peak-kbps = <10322000>;
+		qcom,icc-boost-percent = <130>;
+		qcom,icc-min-avg-kbps = <3879000>;
+		qcom,icc-min-peak-kbps = <7758000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
@@ -1279,11 +1278,11 @@
 			qcom,core-dev-table =
 				<  300000 MHZ_TO_MBPS( 150, 16) >,
 				<  729600 MHZ_TO_MBPS( 300, 16) >,
-				< 1036800 MHZ_TO_MBPS( 600, 16) >,
-				< 1228800 MHZ_TO_MBPS( 680, 16) >,
-				< 1497600 MHZ_TO_MBPS( 806, 16) >,
-				< 1670400 MHZ_TO_MBPS( 933, 16) >,
-				< 1770400 MHZ_TO_MBPS(1000, 16) >;
+				< 1036800 MHZ_TO_MBPS( 466, 16) >,
+				< 1228800 MHZ_TO_MBPS( 550, 16) >,
+				< 1497600 MHZ_TO_MBPS( 600, 16) >,
+				< 1670400 MHZ_TO_MBPS( 680, 16) >,
+				< 1770400 MHZ_TO_MBPS( 680, 16) >;
 			};
 
 		cpu0_llcc_ddr_latmon: qcom,cpu0-llcc-ddr-latmon {
@@ -1296,11 +1295,11 @@
 				qcom,core-dev-table =
 					<  300000 MHZ_TO_MBPS(  220, 4) >,
 					<  729600 MHZ_TO_MBPS(  500, 4) >,
-					< 1036800 MHZ_TO_MBPS(  768, 4) >,
-					< 1228800 MHZ_TO_MBPS( 1017, 4) >,
-					< 1497600 MHZ_TO_MBPS( 1353, 4) >,
-					< 1670400 MHZ_TO_MBPS( 1555, 4) >,
-					< 1770400 MHZ_TO_MBPS( 1804, 4) >;
+					< 1036800 MHZ_TO_MBPS(  650, 4) >,
+					< 1228800 MHZ_TO_MBPS(  768, 4) >,
+					< 1497600 MHZ_TO_MBPS( 1017, 4) >,
+					< 1670400 MHZ_TO_MBPS( 1353, 4) >,
+					< 1770400 MHZ_TO_MBPS( 1353, 4) >;
 				};
 
 				ddr5-map {
@@ -1308,11 +1307,11 @@
 					qcom,core-dev-table =
 						<  300000 MHZ_TO_MBPS(  220, 4) >,
 						<  729600 MHZ_TO_MBPS(  500, 4) >,
-						< 1036800 MHZ_TO_MBPS(  768, 4) >,
-						< 1228800 MHZ_TO_MBPS( 1017, 4) >,
-						< 1497600 MHZ_TO_MBPS( 1353, 4) >,
-						< 1670400 MHZ_TO_MBPS( 1555, 4) >,
-						< 1770400 MHZ_TO_MBPS( 1804, 4) >;
+						< 1036800 MHZ_TO_MBPS(  650, 4) >,
+						< 1228800 MHZ_TO_MBPS(  768, 4) >,
+						< 1497600 MHZ_TO_MBPS( 1017, 4) >,
+						< 1670400 MHZ_TO_MBPS( 1353, 4) >,
+						< 1770400 MHZ_TO_MBPS( 1353, 4) >;
 					};
 			};
 
@@ -1366,8 +1365,8 @@
 				< 1228800 MHZ_TO_MBPS(  600, 16) >,
 				< 1804800 MHZ_TO_MBPS(  806, 16) >,
 				< 2227200 MHZ_TO_MBPS(  933, 16) >,
-				< 2476800 MHZ_TO_MBPS( 1100, 16) >,
-				< 2576800 MHZ_TO_MBPS( 1200, 16) >;
+				< 2476800 MHZ_TO_MBPS( 1000, 16) >,
+				< 2576800 MHZ_TO_MBPS( 1000, 16) >;
 		};
 
 		cpu4_llcc_ddr_latmon: qcom,cpu4-llcc-ddr-latmon {
@@ -3293,8 +3292,8 @@
 		 * Keep stronger CNOC burst votes on high-speed Rate-B modes so
 		 * storage benchmarks do not stall while ramping the memory path.
 		 */
-		<123 512 3145728 0>, <1 757 256000 512000>,  /* HS G3 RB */
-		<123 512 6291456 0>, <1 757 512000 1024000>, /* HS G4 RB */
+		<123 512 2097152 0>, <1 757 153600 307200>,  /* HS G3 RB */
+		<123 512 4194304 0>, <1 757 307200 614400>,  /* HS G4 RB */
 		<123 512 298189 0>, <1 757 1000 0>,  /* HS G1 RB L2 */
 		<123 512 596378 0>, <1 757 1000 0>,  /* HS G2 RB L2 */
 		/* As UFS working in HS G3 RB L2 mode, aggregated
@@ -3303,9 +3302,9 @@
 		 * in order to scale up CNOC clock, instantaneous
 		 * bindwidth (IB) needs to be given a proper value too.
 		 */
-		<123 512 6291456 0>, <1 757 512000 1024000>, /* HS G3 RB L2 */
-		<123 512 10485760 0>, <1 757 640000 1280000>, /* HS G4 RB L2 */
-		<123 512 10485760 0>, <1 757 640000 1280000>; /* Max. bandwidth */
+		<123 512 4194304 0>, <1 757 204800 409600>, /* HS G3 RB L2 */
+		<123 512 8388608 0>, <1 757 512000 819200>, /* HS G4 RB L2 */
+		<123 512 8388608 0>, <1 757 512000 819200>; /* Max. bandwidth */
 
 		qcom,bus-vector-names = "MIN",
 		"PWM_G1_L1", "PWM_G2_L1", "PWM_G3_L1", "PWM_G4_L1",
