@@ -981,12 +981,17 @@ int register_bw_hwmon(struct device *dev, struct bw_hwmon *hwmon)
 	node->decay_rate = 90;
 	node->io_percent = 16;
 	node->bw_step = 190;
-	node->sample_ms = 50;
-	node->up_scale = 0;
+	/*
+	 * Faster samples + modest headroom help short synthetic memory tests
+	 * trigger bandwidth ramps before they complete, while staying below
+	 * aggressive always-high behavior.
+	 */
+	node->sample_ms = 20;
+	node->up_scale = 20;
 	node->up_thres = 10;
 	node->down_thres = 0;
 	node->down_count = 3;
-	node->hist_memory = 0;
+	node->hist_memory = 10;
 	node->hyst_trigger_count = 3;
 	node->hyst_length = 0;
 	node->idle_mbps = 400;
