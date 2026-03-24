@@ -169,34 +169,34 @@ MODULE_PARM_DESC(kona_display_topology_strict,
  * workloads (Antutu/gaming) fed. These are intentionally biased a bit high to
  * avoid under-voting critical CPU/GPU/NPU traffic.
  */
-#define KONA_CPU_DDR_AB_FLOOR_KB	(19000000ULL) /* ~19 GB/s */
-#define KONA_CPU_DDR_IB_FLOOR_KB	(35000000ULL) /* ~35 GB/s */
-#define KONA_CPU_LLCC_AB_FLOOR_KB	(12000000ULL) /* ~12 GB/s */
-#define KONA_CPU_LLCC_IB_FLOOR_KB	(20000000ULL) /* ~20 GB/s */
-#define KONA_CPU_PRIME_DDR_AB_FLOOR_KB	(21000000ULL) /* ~21 GB/s */
-#define KONA_CPU_PRIME_DDR_IB_FLOOR_KB	(37000000ULL) /* ~37 GB/s */
-#define KONA_CPU_PRIME_LLCC_AB_FLOOR_KB	(13000000ULL) /* ~13 GB/s */
-#define KONA_CPU_PRIME_LLCC_IB_FLOOR_KB	(22000000ULL) /* ~22 GB/s */
-#define KONA_GPU_DDR_AB_FLOOR_KB	(19000000ULL) /* ~19 GB/s */
-#define KONA_GPU_DDR_IB_FLOOR_KB	(36000000ULL) /* ~36 GB/s */
-#define KONA_GPU_LLCC_AB_FLOOR_KB	(14000000ULL) /* ~14 GB/s */
-#define KONA_GPU_LLCC_IB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
+#define KONA_CPU_DDR_AB_FLOOR_KB	(22000000ULL) /* ~22 GB/s */
+#define KONA_CPU_DDR_IB_FLOOR_KB	(38000000ULL) /* ~38 GB/s */
+#define KONA_CPU_LLCC_AB_FLOOR_KB	(15000000ULL) /* ~15 GB/s */
+#define KONA_CPU_LLCC_IB_FLOOR_KB	(23000000ULL) /* ~23 GB/s */
+#define KONA_CPU_PRIME_DDR_AB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
+#define KONA_CPU_PRIME_DDR_IB_FLOOR_KB	(40000000ULL) /* ~40 GB/s */
+#define KONA_CPU_PRIME_LLCC_AB_FLOOR_KB	(16000000ULL) /* ~16 GB/s */
+#define KONA_CPU_PRIME_LLCC_IB_FLOOR_KB	(25000000ULL) /* ~25 GB/s */
+#define KONA_GPU_DDR_AB_FLOOR_KB	(22000000ULL) /* ~22 GB/s */
+#define KONA_GPU_DDR_IB_FLOOR_KB	(39000000ULL) /* ~39 GB/s */
+#define KONA_GPU_LLCC_AB_FLOOR_KB	(17000000ULL) /* ~17 GB/s */
+#define KONA_GPU_LLCC_IB_FLOOR_KB	(27000000ULL) /* ~27 GB/s */
 /*
  * Keep GMU floors at least as high as GPU by default.
  *
  * GMU traffic can be bursty around perf-level transitions, so leave explicit
  * constants in place to allow easy tuning above GPU floors if needed later.
  */
-#define KONA_GMU_DDR_AB_FLOOR_KB	(20000000ULL) /* ~20 GB/s */
-#define KONA_GMU_DDR_IB_FLOOR_KB	(34000000ULL) /* ~34 GB/s */
-#define KONA_GMU_LLCC_AB_FLOOR_KB	(14000000ULL) /* ~14 GB/s */
-#define KONA_GMU_LLCC_IB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
-#define KONA_NPU_DDR_AB_FLOOR_KB	(11000000ULL) /* ~11 GB/s */
-#define KONA_NPU_DDR_IB_FLOOR_KB	(19000000ULL) /* ~19 GB/s */
-#define KONA_NPU_LLCC_AB_FLOOR_KB	(8000000ULL)  /* ~8 GB/s */
-#define KONA_NPU_LLCC_IB_FLOOR_KB	(14000000ULL) /* ~14 GB/s */
-#define KONA_UX_DDR_AB_FLOOR_KB	(9000000ULL)  /* ~9 GB/s */
-#define KONA_UX_DDR_IB_FLOOR_KB	(20000000ULL) /* ~20 GB/s */
+#define KONA_GMU_DDR_AB_FLOOR_KB	(23000000ULL) /* ~23 GB/s */
+#define KONA_GMU_DDR_IB_FLOOR_KB	(37000000ULL) /* ~37 GB/s */
+#define KONA_GMU_LLCC_AB_FLOOR_KB	(17000000ULL) /* ~17 GB/s */
+#define KONA_GMU_LLCC_IB_FLOOR_KB	(27000000ULL) /* ~27 GB/s */
+#define KONA_NPU_DDR_AB_FLOOR_KB	(14000000ULL) /* ~14 GB/s */
+#define KONA_NPU_DDR_IB_FLOOR_KB	(22000000ULL) /* ~22 GB/s */
+#define KONA_NPU_LLCC_AB_FLOOR_KB	(11000000ULL)  /* ~11 GB/s */
+#define KONA_NPU_LLCC_IB_FLOOR_KB	(17000000ULL) /* ~17 GB/s */
+#define KONA_UX_DDR_AB_FLOOR_KB	(12000000ULL)  /* ~12 GB/s */
+#define KONA_UX_DDR_IB_FLOOR_KB	(23000000ULL) /* ~23 GB/s */
 
 /*
  * Global minimum floors for any non-zero bandwidth vote. This protects
