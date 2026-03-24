@@ -475,17 +475,18 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 	u32 vc;
 	unsigned long cpu;
 
-	c->table = devm_kcalloc(dev, lut_max_entries + 1,
+	c->table = devm_kcalloc(dev, lut_max_entries + 2,
 				sizeof(*c->table), GFP_KERNEL);
 	if (!c->table)
 		return -ENOMEM;
 
-	c->freqs = devm_kcalloc(dev, lut_max_entries, sizeof(*c->freqs),
+	c->freqs = devm_kcalloc(dev, lut_max_entries + 1,
+				sizeof(*c->freqs),
 				GFP_KERNEL);
 	if (!c->freqs)
 		return -ENOMEM;
 
-	c->voltages = devm_kcalloc(dev, lut_max_entries,
+	c->voltages = devm_kcalloc(dev, lut_max_entries + 1,
 				sizeof(*c->voltages), GFP_KERNEL);
 	if (!c->voltages)
 		return -ENOMEM;
@@ -563,13 +564,25 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 	}
 
 	c->lut_max_entries = i;
-	c->table[i].frequency = CPUFREQ_TABLE_END;
 
+	/*
+	 * Keep the HW max frequency exposed as a normal OPP and append the
+	 * offset clock as an additional boost-only OPP. This preserves the
+	 * original max bin while still exposing the optional overclock level.
+	 */
 	if (c->max_freq_offset_khz && c->lut_max_entries) {
 		unsigned int max_index = c->lut_max_entries - 1;
+		unsigned int boost_index = c->lut_max_entries;
 
-		c->table[max_index].frequency += c->max_freq_offset_khz;
+		c->table[boost_index].frequency =
+			c->table[max_index].frequency + c->max_freq_offset_khz;
+		c->table[boost_index].flags = CPUFREQ_BOOST_FREQ;
+		c->freqs[boost_index] = c->table[boost_index].frequency;
+		c->voltages[boost_index] = c->voltages[max_index];
+		c->lut_max_entries++;
 	}
+
+	c->table[c->lut_max_entries].frequency = CPUFREQ_TABLE_END;
 
 	for (i = 0; i < c->lut_max_entries; i++) {
 		for_each_cpu(cpu, &c->related_cpus) {
@@ -578,19 +591,6 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 				continue;
 			dev_pm_opp_add(cpu_dev, c->freqs[i] * 1000,
 							c->voltages[i]);
-		}
-	}
-
-	if (c->max_freq_offset_khz && c->lut_max_entries) {
-		unsigned int max_index = c->lut_max_entries - 1;
-
-		for_each_cpu(cpu, &c->related_cpus) {
-			cpu_dev = get_cpu_device(cpu);
-			if (!cpu_dev)
-				continue;
-			dev_pm_opp_add(cpu_dev,
-				       c->table[max_index].frequency * 1000,
-				       c->voltages[max_index]);
 		}
 	}
 
