@@ -68,6 +68,7 @@ struct skipped_freq {
 
 struct cpufreq_qcom {
 	struct cpufreq_frequency_table *table;
+	u32 *freqs;
 	u32 *voltages;
 	void __iomem *reg_bases[REG_ARRAY_SIZE];
 	cpumask_t related_cpus;
@@ -85,6 +86,7 @@ struct cpufreq_qcom {
 	char dcvsh_irq_name[MAX_FN_SIZE];
 	bool is_irq_enabled;
 	bool is_irq_requested;
+	bool has_hw_freq_status;
 };
 
 struct cpufreq_counter {
@@ -281,11 +283,26 @@ static u64 qcom_cpufreq_get_cpu_cycle_counter(int cpu)
 	return cycle_counter_ret;
 }
 
+static unsigned int qcom_cpufreq_hw_get_actual_rate(struct cpufreq_qcom *c)
+{
+	unsigned long freq;
+
+	if (!c->has_hw_freq_status)
+		return 0;
+
+	freq = readl_relaxed(c->reg_bases[REG_DOMAIN_STATE]) & GENMASK(7, 0);
+	if (!freq)
+		return 0;
+
+	return DIV_ROUND_CLOSEST_ULL(freq * c->xo_rate, 1000);
+}
+
 static int
 qcom_cpufreq_hw_target_index(struct cpufreq_policy *policy,
 			     unsigned int index)
 {
 	struct cpufreq_qcom *c = policy->driver_data;
+	unsigned int actual_freq;
 	unsigned long flags;
 
 	if (c->skip_data.skip && index == c->skip_data.high_temp_index) {
@@ -297,8 +314,11 @@ qcom_cpufreq_hw_target_index(struct cpufreq_policy *policy,
 		writel_relaxed(index, c->reg_bases[REG_PERF_STATE]);
 	}
 
-	arch_set_freq_scale(policy->related_cpus,
-			    policy->freq_table[index].frequency,
+	actual_freq = qcom_cpufreq_hw_get_actual_rate(c);
+	if (!actual_freq)
+		actual_freq = policy->freq_table[index].frequency;
+
+	arch_set_freq_scale(policy->related_cpus, actual_freq,
 			    policy->cpuinfo.max_freq);
 
 	return 0;
@@ -308,13 +328,16 @@ static unsigned int qcom_cpufreq_hw_get(unsigned int cpu)
 {
 	struct cpufreq_qcom *c;
 	struct cpufreq_policy *policy;
-	unsigned int index;
+	unsigned int actual_freq, index;
 
 	policy = cpufreq_cpu_get_raw(cpu);
 	if (!policy)
 		return 0;
 
 	c = policy->driver_data;
+	actual_freq = qcom_cpufreq_hw_get_actual_rate(c);
+	if (actual_freq)
+		return actual_freq;
 
 	index = readl_relaxed(c->reg_bases[REG_PERF_STATE]);
 	index = min(index, c->lut_max_entries - 1);
@@ -335,7 +358,7 @@ qcom_cpufreq_hw_fast_switch(struct cpufreq_policy *policy,
 	if (qcom_cpufreq_hw_target_index(policy, index))
 		return 0;
 
-	return policy->freq_table[index].frequency;
+	return qcom_cpufreq_hw_get(policy->cpu);
 }
 
 static int qcom_cpufreq_hw_cpu_init(struct cpufreq_policy *policy)
@@ -457,6 +480,11 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 	if (!c->table)
 		return -ENOMEM;
 
+	c->freqs = devm_kcalloc(dev, lut_max_entries, sizeof(*c->freqs),
+				GFP_KERNEL);
+	if (!c->freqs)
+		return -ENOMEM;
+
 	c->voltages = devm_kcalloc(dev, lut_max_entries,
 				sizeof(*c->voltages), GFP_KERNEL);
 	if (!c->voltages)
@@ -484,6 +512,7 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		else
 			c->table[i].frequency = c->cpu_hw_rate / 1000;
 
+		c->freqs[i] = c->table[i].frequency;
 		cur_freq = c->table[i].frequency;
 
 		dev_dbg(dev, "index=%d freq=%d, core_count %d\n",
@@ -547,8 +576,21 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 			cpu_dev = get_cpu_device(cpu);
 			if (!cpu_dev)
 				continue;
-			dev_pm_opp_add(cpu_dev, c->table[i].frequency * 1000,
+			dev_pm_opp_add(cpu_dev, c->freqs[i] * 1000,
 							c->voltages[i]);
+		}
+	}
+
+	if (c->max_freq_offset_khz && c->lut_max_entries) {
+		unsigned int max_index = c->lut_max_entries - 1;
+
+		for_each_cpu(cpu, &c->related_cpus) {
+			cpu_dev = get_cpu_device(cpu);
+			if (!cpu_dev)
+				continue;
+			dev_pm_opp_add(cpu_dev,
+				       c->table[max_index].frequency * 1000,
+				       c->voltages[max_index]);
 		}
 	}
 
@@ -621,6 +663,8 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 
 	for (i = REG_ENABLE; i < REG_ARRAY_SIZE; i++)
 		c->reg_bases[i] = base + offsets[i];
+
+	c->has_hw_freq_status = offsets[REG_DOMAIN_STATE] != 0;
 
 	if (!of_property_read_bool(dev->of_node, "qcom,skip-enable-check")) {
 		/* HW should be in enabled state to proceed */
