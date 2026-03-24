@@ -390,9 +390,6 @@ static ssize_t f2fs_sbi_show(struct f2fs_attr *a,
 		return snprintf(buf, PAGE_SIZE, "%llu\n",
 			sbi->revoked_atomic_block);
 
-	ui = (unsigned int *)(ptr + a->offset);
-
-	return sprintf(buf, "%u\n", *ui);
 	return __sbi_show_value(a, sbi, buf, ptr + a->offset);
 }
 
@@ -415,7 +412,7 @@ static void __sbi_store_value(struct f2fs_attr *a,
 		break;
 	default:
 		f2fs_bug_on(sbi, 1);
-		f2fs_msg(sbi->sb, KERN_ERR, "store sysfs node value with wrong type");
+		pr_err("F2FS-fs (%s): store sysfs node value with wrong type\n", sbi->sb->s_id);
 	}
 }
 
@@ -847,10 +844,11 @@ static struct f2fs_attr f2fs_attr_##_name = {			\
 	.size = _size						\
 }
 
-#define F2FS_RO_ATTR(struct_type, struct_name, name, elname)	\
-	F2FS_ATTR_OFFSET(struct_type, name, 0444,		\
-		f2fs_sbi_show, NULL,				\
-		offsetof(struct struct_name, elname))
+#define F2FS_RO_ATTR(struct_type, struct_name, name, elname)\
+	F2FS_ATTR_OFFSET(struct_type, name, 0444,\
+		f2fs_sbi_show, NULL,\
+		offsetof(struct struct_name, elname),\
+		sizeof_field(struct struct_name, elname))
 
 #define F2FS_RW_ATTR(struct_type, struct_name, name, elname)	\
 	F2FS_ATTR_OFFSET(struct_type, name, 0644,		\
