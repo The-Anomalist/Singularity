@@ -997,12 +997,12 @@
 		interconnect-names = "cpu-llcc";
 		/*
 		 * Keep a stronger floor for memory-heavy burst traffic
-		 * (AnTuTu/LPDDR random tests) so LLCC does not oscillate
+		 * so LLCC does not oscillate
 		 * around mid OPPs while CPU is already at peak clocks.
 		 */
-		qcom,icc-boost-percent = <130>;
+		qcom,icc-boost-percent = <140>;
 		qcom,icc-min-avg-kbps = <8060000>;
-		qcom,icc-min-peak-kbps = <16120000>;
+		qcom,icc-min-peak-kbps = <17763000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_LLCC>;
 		qcom,active-only;
@@ -1027,9 +1027,9 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 		interconnect-names = "cpu-ddr";
-		qcom,icc-boost-percent = <135>;
+		qcom,icc-boost-percent = <140>;
 		qcom,icc-min-avg-kbps = <6881000>;
-		qcom,icc-min-peak-kbps = <13763000>;
+		qcom,icc-min-peak-kbps = <17763000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
@@ -1053,7 +1053,7 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_NPU_TO_LLCC>;
 		interconnect-names = "npu-llcc";
-		qcom,icc-boost-percent = <125>;
+		qcom,icc-boost-percent = <140>;
 		qcom,icc-min-avg-kbps = <2288000>;
 		qcom,icc-min-peak-kbps = <4576000>;
 		qcom,src-dst-ports = <MSM_BUS_MASTER_NPU MSM_BUS_SLAVE_LLCC>;
@@ -1084,9 +1084,9 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_NPU_TO_MEM>;
 		interconnect-names = "npu-ddr";
-		qcom,icc-boost-percent = <125>;
+		qcom,icc-boost-percent = <140>;
 		qcom,icc-min-avg-kbps = <1144000>;
-		qcom,icc-min-peak-kbps = <2288000>;
+		qcom,icc-min-peak-kbps = <2488000>;
 		qcom,src-dst-ports = <MSM_BUS_SLAVE_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		operating-points-v2 = <&suspendable_ddr_bw_opp_table>;
 	};
@@ -1108,9 +1108,9 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_NPUDSP_TO_MEM>;
 		interconnect-names = "npudsp-ddr";
-		qcom,icc-boost-percent = <125>;
+		qcom,icc-boost-percent = <140>;
 		qcom,icc-min-avg-kbps = <1144000>;
-		qcom,icc-min-peak-kbps = <2288000>;
+		qcom,icc-min-peak-kbps = <2488000>;
 		qcom,src-dst-ports = <MSM_BUS_MASTER_NPU MSM_BUS_SLAVE_EBI_CH0>;
 		operating-points-v2 = <&suspendable_ddr_bw_opp_table>;
 	};
@@ -1164,7 +1164,7 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU0_TO_LLCC>;
 		interconnect-names = "cpu-llcc";
-		qcom,icc-boost-percent = <130>;
+		qcom,icc-boost-percent = <140>;
 		qcom,icc-min-avg-kbps = <3879000>;
 		qcom,icc-min-peak-kbps = <7758000>;
 		qcom,src-dst-ports =
@@ -1178,9 +1178,9 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU4_TO_LLCC>;
 		interconnect-names = "cpu-llcc";
-		qcom,icc-boost-percent = <135>;
+		qcom,icc-boost-percent = <140>;
 		qcom,icc-min-avg-kbps = <6881000>;
-		qcom,icc-min-peak-kbps = <13763000>;
+		qcom,icc-min-peak-kbps = <17763000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_LLCC>;
 		qcom,active-only;
@@ -1192,9 +1192,9 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU0_TO_MEM>;
 		interconnect-names = "cpu-ddr";
-		qcom,icc-boost-percent = <130>;
+		qcom,icc-boost-percent = <140>;
 		qcom,icc-min-avg-kbps = <2597000>;
-		qcom,icc-min-peak-kbps = <5194000>;
+		qcom,icc-min-peak-kbps = <7758000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
@@ -1206,9 +1206,9 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU4_TO_MEM>;
 		interconnect-names = "cpu-ddr";
-		qcom,icc-boost-percent = <135>;
+		qcom,icc-boost-percent = <140>;
 		qcom,icc-min-avg-kbps = <5161000>;
-		qcom,icc-min-peak-kbps = <10322000>;
+		qcom,icc-min-peak-kbps = <17763000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
@@ -1220,9 +1220,9 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU4_TO_MEM>;
 		interconnect-names = "cpu-ddr";
-		qcom,icc-boost-percent = <130>;
+		qcom,icc-boost-percent = <140>;
 		qcom,icc-min-avg-kbps = <5161000>;
-		qcom,icc-min-peak-kbps = <10322000>;
+		qcom,icc-min-peak-kbps = <17763000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
