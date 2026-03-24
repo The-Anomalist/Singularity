@@ -3796,7 +3796,13 @@ static inline unsigned long _task_util_est(struct task_struct *p)
 unsigned long task_util_est(struct task_struct *p)
 {
 #ifdef CONFIG_SCHED_WALT
-	return p->ravg.demand_scaled;
+	/*
+	 * WALT demand is excellent at tracking short-term bursts, while PELT and
+	 * util_est provide smoother medium-term signal quality. Blend them to
+	 * make placement and frequency selection more responsive without losing
+	 * stability.
+	 */
+	return max3(task_util(p), _task_util_est(p), (unsigned long)p->ravg.demand_scaled);
 #endif
 	return max(task_util(p), _task_util_est(p));
 }
