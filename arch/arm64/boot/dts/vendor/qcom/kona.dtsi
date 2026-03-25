@@ -960,9 +960,9 @@
 		BW_OPP_ENTRY_DDR( 1555, 4, 0x180); /*  5931 MB/s */
 		BW_OPP_ENTRY_DDR( 1804, 4, 0x180); /*  6881 MB/s */
 		BW_OPP_ENTRY_DDR( 2092, 4, 0x180); /*  7980 MB/s */
-		BW_OPP_ENTRY_DDR( 2736, 4, 0x100); /* 10437 MB/s */
-		BW_OPP_ENTRY_DDR( 3200, 4, 0x100); /* 12207 MB/s */
-		BW_OPP_ENTRY_DDR( 3600, 4, 0x100); /* 13732 MB/s */
+		BW_OPP_ENTRY_DDR( 2736, 4, 0x180); /* 10437 MB/s */
+		BW_OPP_ENTRY_DDR( 3200, 4, 0x180); /* 12207 MB/s */
+		BW_OPP_ENTRY_DDR( 3600, 4, 0x180); /* 13732 MB/s */
 	};
 
 	suspendable_ddr_bw_opp_table: suspendable-ddr-bw-opp-table {
@@ -979,9 +979,9 @@
 		BW_OPP_ENTRY_DDR( 1555, 4, 0x180); /*  5931 MB/s */
 		BW_OPP_ENTRY_DDR( 1804, 4, 0x180); /*  6881 MB/s */
 		BW_OPP_ENTRY_DDR( 2092, 4, 0x180); /*  7980 MB/s */
-		BW_OPP_ENTRY_DDR( 2736, 4, 0x100); /* 10437 MB/s */
-		BW_OPP_ENTRY_DDR( 3200, 4, 0x100); /* 12207 MB/s */
-		BW_OPP_ENTRY_DDR( 3600, 4, 0x100); /* 13732 MB/s */
+		BW_OPP_ENTRY_DDR( 2736, 4, 0x180); /* 10437 MB/s */
+		BW_OPP_ENTRY_DDR( 3200, 4, 0x180); /* 12207 MB/s */
+		BW_OPP_ENTRY_DDR( 3600, 4, 0x180); /* 13732 MB/s */
 	};
 
 	llcc_pmu: llcc-pmu@9095000 {
