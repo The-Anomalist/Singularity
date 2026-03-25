@@ -72,6 +72,12 @@ struct devfreq_msm_adreno_tz_data {
 	u32 singularity_transition_boost_pct;
 	u32 singularity_transition_contexts;
 	unsigned long singularity_downscale_blocked_till;
+	u32 singularity_upthreshold_pct;
+	u32 singularity_downthreshold_pct;
+	u32 singularity_load_filter_pct;
+	u32 singularity_hispeed_load;
+	u32 singularity_hispeed_level;
+	u32 singularity_smoothed_busy_pct;
 };
 
 struct msm_adreno_extended_profile {

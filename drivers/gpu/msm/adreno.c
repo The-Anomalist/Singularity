@@ -47,6 +47,11 @@ static struct devfreq_msm_adreno_tz_data adreno_tz_data = {
 	.singularity_downscale_delay_ms = 70,
 	.singularity_transition_boost_pct = 28,
 	.singularity_transition_contexts = 2,
+	.singularity_upthreshold_pct = 85,
+	.singularity_downthreshold_pct = 15,
+	.singularity_load_filter_pct = 60,
+	.singularity_hispeed_load = 92,
+	.singularity_hispeed_level = 1,
 };
 
 /*
