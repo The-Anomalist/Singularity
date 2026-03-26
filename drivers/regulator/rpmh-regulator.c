@@ -1227,6 +1227,43 @@ static int rpmh_regulator_arc_list_voltage(struct regulator_dev *rdev,
 	return vreg->aggr_vreg->level[selector];
 }
 
+/**
+ * rpmh_regulator_arc_map_voltage() - map a requested ARC consumer voltage
+ * level to a hardware selector
+ * @rdev:	Regulator device pointer for the rpmh-regulator
+ * @min_uv:	Minimum requested voltage level
+ * @max_uv:	Maximum requested voltage level
+ *
+ * Prefer an exact/in-range selector first.  If there is no exact ARC
+ * consumer level match (common when DT requests a new symbolic level that
+ * older command-db mappings do not expose), fall back to the highest
+ * supported level below @min_uv so the consumer can still come up instead of
+ * failing the vote outright.
+ *
+ * Return: ARC selector index or -EINVAL if no valid selector exists
+ */
+static int rpmh_regulator_arc_map_voltage(struct regulator_dev *rdev,
+					int min_uv, int max_uv)
+{
+	struct rpmh_vreg *vreg = rdev_get_drvdata(rdev);
+	int i, best = -EINVAL;
+	u32 level;
+
+	for (i = 0; i < vreg->aggr_vreg->level_count; i++) {
+		level = vreg->aggr_vreg->level[i];
+		if (level >= min_uv && level <= max_uv)
+			return i;
+		if (level < min_uv)
+			best = i;
+	}
+
+	if (best >= 0)
+		vreg_info(vreg, "requested ARC level %d unavailable, falling back to %u\n",
+			min_uv, vreg->aggr_vreg->level[best]);
+
+	return best;
+}
+
 static const struct regulator_ops rpmh_regulator_vrm_ops = {
 	.enable			= rpmh_regulator_enable,
 	.disable		= rpmh_regulator_disable,
@@ -1242,6 +1279,7 @@ static const struct regulator_ops rpmh_regulator_arc_ops = {
 	.enable			= rpmh_regulator_enable,
 	.disable		= rpmh_regulator_disable,
 	.is_enabled		= rpmh_regulator_is_enabled,
+	.map_voltage		= rpmh_regulator_arc_map_voltage,
 	.set_voltage_sel	= rpmh_regulator_arc_set_voltage_sel,
 	.get_voltage_sel	= rpmh_regulator_arc_get_voltage_sel,
 	.list_voltage		= rpmh_regulator_arc_list_voltage,
