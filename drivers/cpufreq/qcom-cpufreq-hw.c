@@ -78,6 +78,7 @@ struct cpufreq_qcom {
 	unsigned long cpu_hw_rate;
 	unsigned long dcvsh_freq_limit;
 	u32 max_freq_offset_khz;
+	u32 max_volt_offset_uv;
 	struct delayed_work freq_poll_work;
 	struct mutex dcvsh_lock;
 	struct device_attribute freq_limit_attr;
@@ -566,19 +567,20 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 	c->lut_max_entries = i;
 
 	/*
-	 * Keep the HW max frequency exposed as a normal OPP and append the
-	 * offset clock as an additional boost-only OPP. This preserves the
-	 * original max bin while still exposing the optional overclock level.
+	 * Append the optional offset clock as a normal OPP so cpufreq governors
+	 * can actually select it during regular load tracking instead of exposing
+	 * it as boost-only with zero residency.
 	 */
 	if (c->max_freq_offset_khz && c->lut_max_entries) {
 		unsigned int max_index = c->lut_max_entries - 1;
-		unsigned int boost_index = c->lut_max_entries;
+		unsigned int offset_index = c->lut_max_entries;
 
-		c->table[boost_index].frequency =
+		c->table[offset_index].frequency =
 			c->table[max_index].frequency + c->max_freq_offset_khz;
-		c->table[boost_index].flags = CPUFREQ_BOOST_FREQ;
-		c->freqs[boost_index] = c->table[boost_index].frequency;
-		c->voltages[boost_index] = c->voltages[max_index];
+		c->table[offset_index].flags = 0;
+		c->freqs[offset_index] = c->table[offset_index].frequency;
+		c->voltages[offset_index] = c->voltages[max_index] +
+					  c->max_volt_offset_uv;
 		c->lut_max_entries++;
 	}
 
@@ -691,6 +693,9 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 	of_property_read_u32_index(dev->of_node,
 				   "qcom,max-frequency-offset-khz",
 				   index, &c->max_freq_offset_khz);
+	of_property_read_u32_index(dev->of_node,
+				   "qcom,max-voltage-offset-uv",
+				   index, &c->max_volt_offset_uv);
 
 	c->xo_rate = xo_rate;
 	c->cpu_hw_rate = cpu_hw_rate;
