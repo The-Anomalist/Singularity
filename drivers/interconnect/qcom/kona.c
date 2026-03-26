@@ -196,7 +196,7 @@ MODULE_PARM_DESC(kona_display_topology_strict,
 #define KONA_NPU_LLCC_AB_FLOOR_KB	(11000000ULL)  /* ~11 GB/s */
 #define KONA_NPU_LLCC_IB_FLOOR_KB	(17000000ULL) /* ~17 GB/s */
 #define KONA_UX_DDR_AB_FLOOR_KB	(12000000ULL)  /* ~12 GB/s */
-#define KONA_UX_DDR_IB_FLOOR_KB	(23000000ULL) /* ~23 GB/s */
+#define KONA_UX_DDR_IB_FLOOR_KB	(26000000ULL) /* ~26 GB/s */
 
 /*
  * Global minimum floors for any non-zero bandwidth vote. This protects
@@ -230,7 +230,7 @@ static unsigned int kona_perf_bias_light = 105;
 static unsigned int kona_perf_bias_turbo = 140;
 #define KONA_PRIME_EXTRA_BIAS_PERCENT	10
 static unsigned long kona_perf_light_kb = 1000000;   /* 1 GB/s */
-static unsigned long kona_perf_turbo_kb = 16000000;  /* 16 GB/s */
+static unsigned long kona_perf_turbo_kb = 18000000;  /* 18 GB/s */
 module_param(kona_perf_bias, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias,
         "Percent headroom added on CPU/DDR/LLCC/GPU/NPU paths (default: 122)");
