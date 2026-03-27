@@ -799,7 +799,6 @@ config ARM64_VA_BITS_42
 
 config ARM64_VA_BITS_47
 	bool "47-bit"
-	depends on ARM64_16K_PAGES
 
 config ARM64_VA_BITS_48
 	bool "48-bit"
@@ -1039,6 +1038,12 @@ endif
 
 config ARCH_ENABLE_SPLIT_PMD_PTLOCK
 	def_bool y if PGTABLE_LEVELS > 2
+
+config AUTOFDO_CLANG
+	bool "Using AutoFDO"
+	default y
+	help
+	  Enable Clang’s AutoFDO support for Android 16.
 
 config SECCOMP
 	bool "Enable seccomp to safely compute untrusted bytecode"
