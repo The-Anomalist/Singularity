@@ -213,6 +213,10 @@ MODULE_PARM_DESC(kona_display_topology_strict,
 #define KONA_HYST_PERCENT			5      /* tolerate small 5% dips */
 #define KONA_HYST_AB_STEP_KB		 100000 /* or 100 MB/s, whichever is smaller */
 #define KONA_HYST_IB_STEP_KB		 150000 /* or 150 MB/s, whichever is smaller */
+static unsigned int kona_max_downscale_percent = 35;
+module_param(kona_max_downscale_percent, uint, 0644);
+MODULE_PARM_DESC(kona_max_downscale_percent,
+	"Maximum AB/IB percent drop allowed per vote for non-zero downvotes (default: 35)");
 
 /*
  * Performance bias lets us intentionally over-vote for critical paths so CPU
@@ -571,6 +575,8 @@ static void kona_icc_apply_hysteresis(struct kona_icc_provider *qp,
 			     unsigned int index, u64 *ab, u64 *ib)
 {
 	u64 prev_ab, prev_ib, ab_drop, ib_drop, ab_win, ib_win;
+	u64 min_next_ab, min_next_ib;
+	unsigned int max_drop;
 
 	if (!qp->last_ab || !qp->last_ib)
 		return;
@@ -597,6 +603,28 @@ static void kona_icc_apply_hysteresis(struct kona_icc_provider *qp,
 			       KONA_HYST_IB_STEP_KB);
 		if (ib_drop < ib_win)
 			*ib = prev_ib;
+	}
+
+	/*
+	 * Multi-client paths can emit very large non-zero downvotes in a single
+	 * update, then bounce back on the next frame/tick. Limit per-update
+	 * downscale to smooth node behavior and reduce RPMh corner thrash.
+	 *
+	 * 0/0 votes remain untouched so idle collapse still works.
+	 */
+	max_drop = min_t(unsigned int, kona_max_downscale_percent, 95);
+	if (max_drop) {
+		if (prev_ab && *ab && *ab < prev_ab) {
+			min_next_ab = mul_u64_u32_div(prev_ab, 100 - max_drop, 100);
+			if (*ab < min_next_ab)
+				*ab = min_next_ab;
+		}
+
+		if (prev_ib && *ib && *ib < prev_ib) {
+			min_next_ib = mul_u64_u32_div(prev_ib, 100 - max_drop, 100);
+			if (*ib < min_next_ib)
+				*ib = min_next_ib;
+		}
 	}
 
 	pr_debug("kona-icc: hysteresis %s prev ab/ib=%llu/%llu new=%llu/%llu\n",
