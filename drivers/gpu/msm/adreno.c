@@ -52,6 +52,7 @@ static struct devfreq_msm_adreno_tz_data adreno_tz_data = {
 	.singularity_load_filter_pct = 60,
 	.singularity_hispeed_load = 92,
 	.singularity_hispeed_level = 1,
+	.singularity_perf_boost_level = 0,
 };
 
 /*

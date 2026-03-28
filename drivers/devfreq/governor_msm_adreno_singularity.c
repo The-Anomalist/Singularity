@@ -138,6 +138,60 @@ static void singularity_update_devfreq(struct devfreq *devfreq)
 	mutex_unlock(&devfreq->lock);
 }
 
+static void singularity_apply_perf_boost_level(
+	struct devfreq_msm_adreno_tz_data *priv, u32 level)
+{
+	switch (level) {
+	case 0:
+		priv->singularity_aggressiveness = 195;
+		priv->singularity_upthreshold_pct = 85;
+		priv->singularity_downthreshold_pct = 15;
+		priv->singularity_hispeed_load = 92;
+		priv->singularity_hispeed_level = 1;
+		priv->singularity_boost_enable = true;
+		priv->singularity_boost_level = 0;
+		priv->singularity_boost_ms = 120;
+		break;
+	case 1:
+		priv->singularity_aggressiveness = 200;
+		priv->singularity_upthreshold_pct = 82;
+		priv->singularity_downthreshold_pct = 13;
+		priv->singularity_hispeed_load = 90;
+		priv->singularity_hispeed_level = 1;
+		priv->singularity_boost_enable = true;
+		priv->singularity_boost_level = 0;
+		priv->singularity_boost_ms = 140;
+		break;
+	case 2:
+		priv->singularity_aggressiveness = 200;
+		priv->singularity_upthreshold_pct = 78;
+		priv->singularity_downthreshold_pct = 10;
+		priv->singularity_hispeed_load = 85;
+		priv->singularity_hispeed_level = 0;
+		priv->singularity_boost_enable = true;
+		priv->singularity_boost_level = 0;
+		priv->singularity_boost_ms = 180;
+		break;
+	default:
+		priv->singularity_aggressiveness = 200;
+		priv->singularity_upthreshold_pct = 72;
+		priv->singularity_downthreshold_pct = 8;
+		priv->singularity_hispeed_load = 80;
+		priv->singularity_hispeed_level = 0;
+		priv->singularity_boost_enable = true;
+		priv->singularity_boost_level = 0;
+		priv->singularity_boost_ms = 220;
+		break;
+	}
+	priv->singularity_perf_boost_level = level;
+	if (!priv->singularity_boost_enable) {
+		spin_lock(&boost_lock);
+		priv->singularity_boost_end = 0;
+		priv->singularity_downscale_blocked_till = 0;
+		spin_unlock(&boost_lock);
+	}
+}
+
 static ssize_t singularity_boost_enable_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -169,6 +223,34 @@ static ssize_t singularity_boost_enable_store(struct device *dev,
 		priv->singularity_downscale_blocked_till = 0;
 		spin_unlock(&boost_lock);
 	}
+	singularity_update_devfreq(devfreq);
+	return count;
+}
+
+static ssize_t singularity_perf_boost_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct devfreq *devfreq = to_devfreq(dev);
+	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
+
+	return snprintf(buf, PAGE_SIZE, "%u\n", priv->singularity_perf_boost_level);
+}
+
+static ssize_t singularity_perf_boost_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct devfreq *devfreq = to_devfreq(dev);
+	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
+	unsigned long val;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret)
+		return ret;
+	if (val > 3)
+		return -EINVAL;
+
+	singularity_apply_perf_boost_level(priv, val);
 	singularity_update_devfreq(devfreq);
 	return count;
 }
@@ -529,6 +611,7 @@ static DEVICE_ATTR_RO(gpu_load);
 
 static DEVICE_ATTR_RO(suspend_time);
 static DEVICE_ATTR_RW(singularity_boost_enable);
+static DEVICE_ATTR_RW(singularity_perf_boost);
 static DEVICE_ATTR_RW(singularity_boost_level);
 static DEVICE_ATTR_RW(singularity_boost_ms);
 static DEVICE_ATTR_RW(singularity_aggressiveness);
@@ -547,6 +630,7 @@ static const struct device_attribute *singularity_attr_list[] = {
 		&dev_attr_gpu_load,
 		&dev_attr_suspend_time,
 		&dev_attr_singularity_boost_enable,
+		&dev_attr_singularity_perf_boost,
 		&dev_attr_singularity_boost_level,
 		&dev_attr_singularity_boost_ms,
 		&dev_attr_singularity_aggressiveness,

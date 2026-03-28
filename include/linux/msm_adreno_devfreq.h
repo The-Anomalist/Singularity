@@ -77,6 +77,7 @@ struct devfreq_msm_adreno_tz_data {
 	u32 singularity_load_filter_pct;
 	u32 singularity_hispeed_load;
 	u32 singularity_hispeed_level;
+	u32 singularity_perf_boost_level;
 	u32 singularity_smoothed_busy_pct;
 };
 
