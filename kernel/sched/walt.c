@@ -2684,8 +2684,10 @@ unsigned int __read_mostly sysctl_sched_group_downmigrate_pct = 95;
 
 static inline
 void update_best_cluster(struct related_thread_group *grp,
-				   u64 demand, bool boost)
+				   u64 demand, u64 projected_demand, bool boost)
 {
+	u64 effective_demand = max(demand, projected_demand);
+
 	if (boost) {
 		/*
 		 * since we are in boost, we can keep grp on min, the boosts
@@ -2696,15 +2698,19 @@ void update_best_cluster(struct related_thread_group *grp,
 	}
 
 	if (is_suh_max())
-		demand = sched_group_upmigrate;
+		effective_demand = sched_group_upmigrate;
 
 	if (!grp->skip_min) {
-		if (demand >= sched_group_upmigrate) {
+		if (effective_demand >= sched_group_upmigrate) {
 			grp->skip_min = true;
 		}
 		return;
 	}
 	if (demand < sched_group_downmigrate) {
+		if (effective_demand >= sched_group_upmigrate) {
+			grp->downmigrate_ts = 0;
+			return;
+		}
 		if (!sysctl_sched_coloc_downmigrate_ns) {
 			grp->skip_min = false;
 			return;
@@ -2742,6 +2748,7 @@ static void _set_preferred_cluster(struct related_thread_group *grp)
 {
 	struct task_struct *p;
 	u64 combined_demand = 0;
+	u64 combined_pred_demand = 0;
 	bool group_boost = false;
 	u64 wallclock;
 	bool prev_skip_min = grp->skip_min;
@@ -2778,6 +2785,7 @@ static void _set_preferred_cluster(struct related_thread_group *grp)
 			continue;
 
 		combined_demand += p->ravg.coloc_demand;
+		combined_pred_demand += p->ravg.pred_demand;
 		if (!trace_sched_set_preferred_cluster_enabled()) {
 			if (combined_demand > sched_group_upmigrate)
 				break;
@@ -2785,7 +2793,8 @@ static void _set_preferred_cluster(struct related_thread_group *grp)
 	}
 
 	grp->last_update = wallclock;
-	update_best_cluster(grp, combined_demand, group_boost);
+	update_best_cluster(grp, combined_demand, combined_pred_demand,
+			    group_boost);
 	trace_sched_set_preferred_cluster(grp, combined_demand);
 out:
 	if (grp->id == DEFAULT_CGROUP_COLOC_ID
@@ -2807,6 +2816,8 @@ int update_preferred_cluster(struct related_thread_group *grp,
 		struct task_struct *p, u32 old_load, bool from_tick)
 {
 	u32 new_load = task_load(p);
+	u32 pred_load = task_pl(p);
+	u32 smart_switch_delta = sched_ravg_window / 8;
 
 	if (!grp)
 		return 0;
@@ -2819,6 +2830,7 @@ int update_preferred_cluster(struct related_thread_group *grp,
 	 * has passed since we last updated preference
 	 */
 	if (abs(new_load - old_load) > sched_ravg_window / 4 ||
+		(!grp->skip_min && pred_load > new_load + smart_switch_delta) ||
 		sched_ktime_clock() - grp->last_update > sched_ravg_window)
 		return 1;
 
