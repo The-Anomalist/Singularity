@@ -350,23 +350,32 @@ static void kgsl_sync_timeline_signal(struct kgsl_sync_timeline *ktimeline,
 {
 	unsigned long flags;
 	struct kgsl_sync_fence *kfence, *next;
+	struct list_head signaled;
 
 	if (!kref_get_unless_zero(&ktimeline->kref))
 		return;
+
+	INIT_LIST_HEAD(&signaled);
 
 	spin_lock_irqsave(&ktimeline->lock, flags);
 	if (timestamp_cmp(timestamp, ktimeline->last_timestamp) > 0)
 		ktimeline->last_timestamp = timestamp;
 
 	list_for_each_entry_safe(kfence, next, &ktimeline->child_list_head,
-				child_list) {
+					child_list) {
 		if (dma_fence_is_signaled_locked(&kfence->fence)) {
 			list_del_init(&kfence->child_list);
-			dma_fence_put(&kfence->fence);
+			list_add_tail(&kfence->child_list, &signaled);
 		}
 	}
 
 	spin_unlock_irqrestore(&ktimeline->lock, flags);
+
+	list_for_each_entry_safe(kfence, next, &signaled, child_list) {
+		list_del_init(&kfence->child_list);
+		dma_fence_put(&kfence->fence);
+	}
+
 	kgsl_sync_timeline_put(ktimeline);
 }
 
@@ -480,6 +489,11 @@ struct kgsl_sync_fence_cb *kgsl_sync_fence_async_wait(int fd,
 	fence = sync_file_get_fence(fd);
 	if (fence == NULL)
 		return ERR_PTR(-EINVAL);
+
+	if (dma_fence_is_signaled(fence)) {
+		dma_fence_put(fence);
+		return NULL;
+	}
 
 	/* create the callback */
 	kcb = kzalloc(sizeof(*kcb), GFP_ATOMIC);
@@ -881,4 +895,3 @@ static const struct dma_fence_ops kgsl_syncsource_fence_ops = {
 
 	.fence_value_str = kgsl_syncsource_fence_value_str,
 };
-

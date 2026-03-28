@@ -102,6 +102,7 @@ struct kgsl_dma_buf_meta {
 	struct dma_buf_attachment *attach;
 	struct dma_buf *dmabuf;
 	struct sg_table *table;
+	enum dma_data_direction dir;
 	struct dmabuf_list_entry *dle;
 	struct list_head node;
 };
@@ -342,7 +343,7 @@ static void kgsl_destroy_ion(struct kgsl_memdesc *memdesc)
 	if (meta != NULL) {
 		remove_dmabuf_list(meta);
 		dma_buf_unmap_attachment(meta->attach, meta->table,
-			DMA_BIDIRECTIONAL);
+			meta->dir);
 		dma_buf_detach(meta->dmabuf, meta->attach);
 		dma_buf_put(meta->dmabuf);
 		kfree(meta);
@@ -3115,6 +3116,7 @@ static int kgsl_setup_dma_buf(struct kgsl_device *device,
 	struct sg_table *sg_table;
 	struct dma_buf_attachment *attach = NULL;
 	struct kgsl_dma_buf_meta *meta;
+	enum dma_data_direction dir;
 
 	meta = kzalloc(sizeof(*meta), GFP_KERNEL);
 	if (!meta)
@@ -3147,7 +3149,9 @@ static int kgsl_setup_dma_buf(struct kgsl_device *device,
 	entry->memdesc.flags &= ~((uint64_t) KGSL_MEMFLAGS_USE_CPU_MAP);
 	entry->memdesc.flags |= (uint64_t)KGSL_MEMFLAGS_USERMEM_ION;
 
-	sg_table = dma_buf_map_attachment(attach, DMA_BIDIRECTIONAL);
+	dir = (entry->memdesc.flags & KGSL_MEMFLAGS_GPUREADONLY) ?
+		DMA_TO_DEVICE : DMA_BIDIRECTIONAL;
+	sg_table = dma_buf_map_attachment(attach, dir);
 
 	if (IS_ERR_OR_NULL(sg_table)) {
 		ret = PTR_ERR(sg_table);
@@ -3155,6 +3159,7 @@ static int kgsl_setup_dma_buf(struct kgsl_device *device,
 	}
 
 	meta->table = sg_table;
+	meta->dir = dir;
 	entry->priv_data = meta;
 	entry->memdesc.sgt = sg_table;
 
@@ -3612,9 +3617,41 @@ long kgsl_ioctl_gpuobj_sync(struct kgsl_device_private *dev_priv,
 		ptr += sizeof(*objs);
 	}
 
-	for (i = 0; !ret && i < param->count; i++)
-		ret = _kgsl_gpumem_sync_cache(entries[i],
-			objs[i].offset, objs[i].length, objs[i].op);
+	for (i = 0; !ret && i < param->count; i++) {
+		struct kgsl_mem_entry *entry = entries[i];
+		u64 offset = objs[i].offset;
+		u64 length = objs[i].length;
+		u32 op = objs[i].op;
+		u64 end = offset + length;
+
+		if (entry == NULL)
+			continue;
+
+		/*
+		 * Merge adjacent cache ops for the same object and operation
+		 * type to reduce repeated cache maintenance work in the hot path.
+		 */
+		if (end < offset)
+			continue;
+
+		while ((i + 1) < param->count &&
+			entries[i + 1] == entry &&
+			(objs[i + 1].op == op) &&
+			(op & KGSL_GPUMEM_CACHE_RANGE) &&
+			(objs[i + 1].offset <= end)) {
+			u64 next_end = objs[i + 1].offset + objs[i + 1].length;
+
+			if (next_end > end) {
+				if (next_end < objs[i + 1].offset)
+					break;
+				length = next_end - offset;
+				end = next_end;
+			}
+			i++;
+		}
+
+		ret = _kgsl_gpumem_sync_cache(entry, offset, length, op);
+	}
 
 out:
 	for (i = 0; i < param->count; i++)

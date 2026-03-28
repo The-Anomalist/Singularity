@@ -485,6 +485,12 @@ static int drawobj_add_sync_timeline(struct kgsl_device *device,
 	if (IS_ERR(fence))
 		return PTR_ERR(fence);
 
+	if (dma_fence_is_signaled(fence)) {
+		trace_syncpoint_fence_expire(syncobj, "signaled");
+		dma_fence_put(fence);
+		return 0;
+	}
+
 	kref_get(&drawobj->refcount);
 
 	id = syncobj->numsyncs++;
