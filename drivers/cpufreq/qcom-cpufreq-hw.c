@@ -567,21 +567,72 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 	c->lut_max_entries = i;
 
 	/*
-	 * Append the optional offset clock as a normal OPP so cpufreq governors
-	 * can actually select it during regular load tracking instead of exposing
-	 * it as boost-only with zero residency.
+	 * If there is room in the HW LUT, materialize the offset clock as a real
+	 * LUT row so it behaves like factory bins (normal OPP with residency and
+	 * proper perf-state programming). If we cannot back it with HW, skip
+	 * exposing the offset OPP entirely.
 	 */
 	if (c->max_freq_offset_khz && c->lut_max_entries) {
 		unsigned int max_index = c->lut_max_entries - 1;
 		unsigned int offset_index = c->lut_max_entries;
+		u32 max_freq_data, max_volt_data, max_src, max_lval;
+		u32 new_lval, new_mv;
+		u64 new_freq_khz;
+		bool hw_backed = false;
 
-		c->table[offset_index].frequency =
-			c->table[max_index].frequency + c->max_freq_offset_khz;
-		c->table[offset_index].flags = 0;
-		c->freqs[offset_index] = c->table[offset_index].frequency;
-		c->voltages[offset_index] = c->voltages[max_index] +
-					  c->max_volt_offset_uv;
-		c->lut_max_entries++;
+		max_freq_data = readl_relaxed(base_freq + max_index * lut_row_size);
+		max_volt_data = readl_relaxed(base_volt + max_index * lut_row_size);
+		max_src = (max_freq_data & GENMASK(31, 30)) >> 30;
+		max_lval = max_freq_data & GENMASK(7, 0);
+		/*
+		 * Only src=1 rows are programmable through the LUT L value. src=0
+		 * represents fixed-rate entries where an offset cannot be applied.
+		 */
+		if (max_src && offset_index < lut_max_entries) {
+			new_freq_khz = c->table[max_index].frequency +
+				       c->max_freq_offset_khz;
+			new_lval = DIV_ROUND_CLOSEST_ULL(new_freq_khz * 1000,
+							 c->xo_rate);
+			new_mv = DIV_ROUND_UP(c->voltages[max_index] +
+					      c->max_volt_offset_uv, 1000);
+
+			/* L value and mV fields are 8-bit and 12-bit respectively. */
+			if (new_lval <= GENMASK(7, 0) && new_lval > max_lval &&
+			    new_mv <= GENMASK(11, 0)) {
+				max_freq_data &= ~GENMASK(7, 0);
+				max_freq_data |= new_lval;
+				max_volt_data &= ~GENMASK(11, 0);
+				max_volt_data |= new_mv;
+
+				writel_relaxed(max_freq_data,
+					       base_freq +
+					       offset_index * lut_row_size);
+				writel_relaxed(max_volt_data,
+					       base_volt +
+					       offset_index * lut_row_size);
+				hw_backed = true;
+			}
+		}
+
+		if (hw_backed) {
+			c->table[offset_index].frequency =
+				c->table[max_index].frequency +
+				c->max_freq_offset_khz;
+			c->table[offset_index].flags = 0;
+			c->freqs[offset_index] = c->table[offset_index].frequency;
+			c->voltages[offset_index] = new_mv * 1000;
+			c->lut_max_entries++;
+
+			dev_info(dev,
+				 "offset OPP materialized in HW LUT for domain cpus%*pbl: %u kHz @ %u uV\n",
+				 cpumask_pr_args(&c->related_cpus),
+				 c->table[offset_index].frequency,
+				 c->voltages[offset_index]);
+		} else {
+			dev_warn(dev,
+				 "offset OPP skipped for domain cpus%*pbl: no programmable HW LUT slot\n",
+				 cpumask_pr_args(&c->related_cpus));
+		}
 	}
 
 	c->table[c->lut_max_entries].frequency = CPUFREQ_TABLE_END;
