@@ -41,6 +41,11 @@ struct sugov_tunables {
 	unsigned int		auto_boost_min_util;
 	unsigned int		auto_boost_max_util;
 	unsigned int		auto_boost_decay_us;
+	unsigned int		auto_boost_heavy_util;
+	unsigned int		auto_boost_heavy_tasks;
+	unsigned int		auto_boost_prime_util;
+	unsigned int		auto_boost_efficiency_load;
+	unsigned int		auto_boost_efficiency_util;
 	bool			uclamp_helper;
 	bool			auto_boost;
 	bool			pl;
@@ -83,7 +88,9 @@ struct sugov_policy {
 	u64			freq_hold_until_ns;
 	u64			mem_boost_until_ns;
 	u64			auto_boost_until_ns;
+	u64			efficiency_until_ns;
 	unsigned long		auto_boost_avg_util;
+	bool			has_prime_cpu;
 
 	/* The next fields are only needed if fast switch cannot be used: */
 	struct			irq_work irq_work;
@@ -767,6 +774,27 @@ static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #define DEFAULT_AUTO_BOOST_MAX_UTIL_PELT 192
 #define DEFAULT_AUTO_BOOST_DECAY_US_PELT 10000
 #define DEFAULT_ICC_BOOST_UTIL_PELT 128
+#define DEFAULT_AUTO_BOOST_HEAVY_TASKS 4
+#define DEFAULT_AUTO_BOOST_HEAVY_UTIL 92
+#define DEFAULT_AUTO_BOOST_PRIME_UTIL 300
+#define DEFAULT_AUTO_BOOST_EFFICIENCY_LOAD 35
+#define DEFAULT_AUTO_BOOST_EFFICIENCY_UTIL 128
+
+static bool sugov_policy_has_prime_cpu(struct sugov_policy *sg_policy)
+{
+	unsigned long policy_max_cap = 0, system_max_cap = 0;
+	unsigned int cpu;
+
+	for_each_possible_cpu(cpu)
+		system_max_cap = max(system_max_cap,
+			arch_scale_cpu_capacity(NULL, cpu));
+
+	for_each_cpu(cpu, sg_policy->policy->cpus)
+		policy_max_cap = max(policy_max_cap,
+			arch_scale_cpu_capacity(NULL, cpu));
+
+	return policy_max_cap && (policy_max_cap == system_max_cap);
+}
 static void sugov_walt_adjust(struct sugov_cpu *sg_cpu, unsigned long *util,
 			      unsigned long *max)
 {
@@ -859,7 +887,7 @@ static void sugov_apply_tunable_boosts(struct sugov_cpu *sg_cpu, u64 time,
 }
 
 static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
-				   unsigned int flags,
+				   unsigned int flags, unsigned int nr_running,
 				   unsigned long *util,
 				   unsigned long max)
 {
@@ -867,6 +895,8 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	unsigned long avg_util, floor_util, cap_util;
 	unsigned int util_pct;
 	u64 decay_ns;
+	bool transition = sugov_is_transition_event(flags);
+	bool heavy_load;
 
 	if (!tunables->auto_boost || !max)
 		return;
@@ -876,12 +906,25 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		avg_util = *util;
 	else
 		avg_util = ((avg_util * 3) + *util) >> 2;
-	sg_policy->auto_boost_avg_util = avg_util;
 
 	util_pct = mult_frac(*util, 100, max);
 	decay_ns = tunables->auto_boost_decay_us * NSEC_PER_USEC;
+	heavy_load = util_pct >= tunables->auto_boost_heavy_util ||
+		     nr_running >= tunables->auto_boost_heavy_tasks;
 
-	if (sugov_is_transition_event(flags) || (flags & SCHED_CPUFREQ_IOWAIT))
+	if (heavy_load) {
+		sg_policy->auto_boost_until_ns = max_t(u64,
+			sg_policy->auto_boost_until_ns, time + (decay_ns << 1));
+		avg_util = ((avg_util << 1) + (*util << 1)) >> 2;
+	} else if (util_pct <= tunables->auto_boost_efficiency_load &&
+		   !transition && !(flags & SCHED_CPUFREQ_IOWAIT)) {
+		sg_policy->efficiency_until_ns = max_t(u64,
+			sg_policy->efficiency_until_ns, time + decay_ns);
+	}
+
+	sg_policy->auto_boost_avg_util = avg_util;
+
+	if (transition || (flags & SCHED_CPUFREQ_IOWAIT))
 		sg_policy->auto_boost_until_ns = max_t(u64,
 			sg_policy->auto_boost_until_ns, time + decay_ns);
 
@@ -893,14 +936,26 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		sg_policy->auto_boost_until_ns = max_t(u64,
 			sg_policy->auto_boost_until_ns, time + decay_ns);
 
+	if (time < sg_policy->efficiency_until_ns && !heavy_load &&
+	    !transition && !(flags & SCHED_CPUFREQ_IOWAIT))
+		return;
+
 	if (time >= sg_policy->auto_boost_until_ns)
 		return;
 
 	floor_util = max_t(unsigned long, avg_util,
 			  mult_frac(max, tunables->auto_boost_min_util,
 				    SCHED_CAPACITY_SCALE));
+	if (heavy_load && sg_policy->has_prime_cpu)
+		floor_util = max_t(unsigned long, floor_util,
+			mult_frac(max, tunables->auto_boost_prime_util,
+				  SCHED_CAPACITY_SCALE));
 	cap_util = mult_frac(max, tunables->auto_boost_max_util,
 			    SCHED_CAPACITY_SCALE);
+	if (!heavy_load)
+		cap_util = min_t(unsigned long, cap_util,
+			mult_frac(max, tunables->auto_boost_efficiency_util,
+				  SCHED_CAPACITY_SCALE));
 
 	*util = max(*util, min(floor_util, cap_util));
 }
@@ -956,7 +1011,8 @@ static void sugov_update_single(struct update_util_data *hook, u64 time,
 
 	sugov_walt_adjust(sg_cpu, &util, &max);
 	sugov_apply_tunable_boosts(sg_cpu, time, flags, &util, max);
-	sugov_apply_auto_boost(sg_policy, time, flags, &util, max);
+	sugov_apply_auto_boost(sg_policy, time, flags,
+			       cpu_rq(sg_cpu->cpu)->nr_running, &util, max);
 	next_f = get_next_freq(sg_policy, util, max);
 	/*
 	 * Do not reduce the frequency if the CPU has not been idle
@@ -990,6 +1046,7 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time,
 	struct cpufreq_policy *policy = sg_policy->policy;
 	u64 last_freq_update_time = sg_policy->last_freq_update_time;
 	unsigned long util = 0, max = 1;
+	unsigned int nr_running = 0;
 	unsigned int j;
 
 	for_each_cpu(j, policy->cpus) {
@@ -1026,13 +1083,14 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time,
 			util = j_util;
 			max = j_max;
 		}
+		nr_running = max(nr_running, cpu_rq(j)->nr_running);
 
 		sugov_walt_adjust(j_sg_cpu, &util, &max);
 		sugov_apply_tunable_boosts(j_sg_cpu, time, j_sg_cpu->flags,
 					  &util, max);
 	}
 
-	sugov_apply_auto_boost(sg_policy, time, flags, &util, max);
+	sugov_apply_auto_boost(sg_policy, time, flags, nr_running, &util, max);
 
 	return get_next_freq(sg_policy, util, max);
 }
@@ -1496,6 +1554,115 @@ static ssize_t auto_boost_decay_us_store(struct gov_attr_set *attr_set,
 	return count;
 }
 
+static ssize_t auto_boost_heavy_util_show(struct gov_attr_set *attr_set,
+					  char *buf)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", tunables->auto_boost_heavy_util);
+}
+
+static ssize_t auto_boost_heavy_util_store(struct gov_attr_set *attr_set,
+					   const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	if (kstrtouint(buf, 10, &tunables->auto_boost_heavy_util))
+		return -EINVAL;
+
+	tunables->auto_boost_heavy_util = min(100U,
+					      tunables->auto_boost_heavy_util);
+	return count;
+}
+
+static ssize_t auto_boost_heavy_tasks_show(struct gov_attr_set *attr_set,
+					   char *buf)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", tunables->auto_boost_heavy_tasks);
+}
+
+static ssize_t auto_boost_heavy_tasks_store(struct gov_attr_set *attr_set,
+					    const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	if (kstrtouint(buf, 10, &tunables->auto_boost_heavy_tasks))
+		return -EINVAL;
+
+	tunables->auto_boost_heavy_tasks = max(1U,
+					       tunables->auto_boost_heavy_tasks);
+	return count;
+}
+
+static ssize_t auto_boost_prime_util_show(struct gov_attr_set *attr_set,
+					  char *buf)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", tunables->auto_boost_prime_util);
+}
+
+static ssize_t auto_boost_prime_util_store(struct gov_attr_set *attr_set,
+					   const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	if (kstrtouint(buf, 10, &tunables->auto_boost_prime_util))
+		return -EINVAL;
+
+	tunables->auto_boost_prime_util = min_t(unsigned int,
+				tunables->auto_boost_prime_util,
+				SCHED_CAPACITY_SCALE);
+	return count;
+}
+
+static ssize_t auto_boost_efficiency_load_show(struct gov_attr_set *attr_set,
+					       char *buf)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 tunables->auto_boost_efficiency_load);
+}
+
+static ssize_t auto_boost_efficiency_load_store(struct gov_attr_set *attr_set,
+						const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	if (kstrtouint(buf, 10, &tunables->auto_boost_efficiency_load))
+		return -EINVAL;
+
+	tunables->auto_boost_efficiency_load = min(100U,
+			tunables->auto_boost_efficiency_load);
+	return count;
+}
+
+static ssize_t auto_boost_efficiency_util_show(struct gov_attr_set *attr_set,
+					       char *buf)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 tunables->auto_boost_efficiency_util);
+}
+
+static ssize_t auto_boost_efficiency_util_store(struct gov_attr_set *attr_set,
+						const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	if (kstrtouint(buf, 10, &tunables->auto_boost_efficiency_util))
+		return -EINVAL;
+
+	tunables->auto_boost_efficiency_util = min_t(unsigned int,
+			tunables->auto_boost_efficiency_util,
+			SCHED_CAPACITY_SCALE);
+	return count;
+}
+
 static ssize_t uclamp_helper_show(struct gov_attr_set *attr_set, char *buf)
 {
 	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
@@ -1666,6 +1833,11 @@ static struct governor_attr auto_boost_low_load = __ATTR_RW(auto_boost_low_load)
 static struct governor_attr auto_boost_min_util = __ATTR_RW(auto_boost_min_util);
 static struct governor_attr auto_boost_max_util = __ATTR_RW(auto_boost_max_util);
 static struct governor_attr auto_boost_decay_us = __ATTR_RW(auto_boost_decay_us);
+static struct governor_attr auto_boost_heavy_util = __ATTR_RW(auto_boost_heavy_util);
+static struct governor_attr auto_boost_heavy_tasks = __ATTR_RW(auto_boost_heavy_tasks);
+static struct governor_attr auto_boost_prime_util = __ATTR_RW(auto_boost_prime_util);
+static struct governor_attr auto_boost_efficiency_load = __ATTR_RW(auto_boost_efficiency_load);
+static struct governor_attr auto_boost_efficiency_util = __ATTR_RW(auto_boost_efficiency_util);
 static struct governor_attr uclamp_helper = __ATTR_RW(uclamp_helper);
 #ifdef OPLUS_FEATURE_POWER_CPUFREQ
 static struct governor_attr target_loads =
@@ -1690,6 +1862,11 @@ static struct attribute *sugov_attributes[] = {
 	&auto_boost_min_util.attr,
 	&auto_boost_max_util.attr,
 	&auto_boost_decay_us.attr,
+	&auto_boost_heavy_util.attr,
+	&auto_boost_heavy_tasks.attr,
+	&auto_boost_prime_util.attr,
+	&auto_boost_efficiency_load.attr,
+	&auto_boost_efficiency_util.attr,
 	&uclamp_helper.attr,
 #ifdef OPLUS_FEATURE_POWER_CPUFREQ
 	&target_loads.attr,
@@ -1825,6 +2002,13 @@ static void sugov_tunables_save(struct cpufreq_policy *policy,
 	cached->auto_boost_min_util = tunables->auto_boost_min_util;
 	cached->auto_boost_max_util = tunables->auto_boost_max_util;
 	cached->auto_boost_decay_us = tunables->auto_boost_decay_us;
+	cached->auto_boost_heavy_util = tunables->auto_boost_heavy_util;
+	cached->auto_boost_heavy_tasks = tunables->auto_boost_heavy_tasks;
+	cached->auto_boost_prime_util = tunables->auto_boost_prime_util;
+	cached->auto_boost_efficiency_load =
+		tunables->auto_boost_efficiency_load;
+	cached->auto_boost_efficiency_util =
+		tunables->auto_boost_efficiency_util;
 #ifdef OPLUS_FEATURE_POWER_CPUFREQ
 	cached->above_hispeed_delay = tunables->above_hispeed_delay;
 	cached->nabove_hispeed_delay = tunables->nabove_hispeed_delay;
@@ -1858,6 +2042,13 @@ static void sugov_tunables_restore(struct cpufreq_policy *policy)
 	tunables->auto_boost_min_util = cached->auto_boost_min_util;
 	tunables->auto_boost_max_util = cached->auto_boost_max_util;
 	tunables->auto_boost_decay_us = cached->auto_boost_decay_us;
+	tunables->auto_boost_heavy_util = cached->auto_boost_heavy_util;
+	tunables->auto_boost_heavy_tasks = cached->auto_boost_heavy_tasks;
+	tunables->auto_boost_prime_util = cached->auto_boost_prime_util;
+	tunables->auto_boost_efficiency_load =
+		cached->auto_boost_efficiency_load;
+	tunables->auto_boost_efficiency_util =
+		cached->auto_boost_efficiency_util;
 #ifdef OPLUS_FEATURE_POWER_CPUFREQ
 	tunables->above_hispeed_delay = cached->above_hispeed_delay;
 	tunables->nabove_hispeed_delay = cached->nabove_hispeed_delay;
@@ -1919,6 +2110,13 @@ static int sugov_init(struct cpufreq_policy *policy)
 	tunables->mem_boost_util = 0;
 	tunables->mem_boost_hyst_us = 2000;
 	tunables->auto_boost = true;
+	tunables->auto_boost_heavy_tasks = DEFAULT_AUTO_BOOST_HEAVY_TASKS;
+	tunables->auto_boost_heavy_util = DEFAULT_AUTO_BOOST_HEAVY_UTIL;
+	tunables->auto_boost_prime_util = DEFAULT_AUTO_BOOST_PRIME_UTIL;
+	tunables->auto_boost_efficiency_load =
+		DEFAULT_AUTO_BOOST_EFFICIENCY_LOAD;
+	tunables->auto_boost_efficiency_util =
+		DEFAULT_AUTO_BOOST_EFFICIENCY_UTIL;
 	if (use_pelt()) {
 		tunables->down_rate_limit_us = 1000;
 		tunables->auto_boost_high_load = DEFAULT_AUTO_BOOST_HIGH_LOAD_PELT;
@@ -2040,7 +2238,9 @@ static int sugov_start(struct cpufreq_policy *policy)
 	sg_policy->freq_hold_until_ns		= 0;
 	sg_policy->mem_boost_until_ns		= 0;
 	sg_policy->auto_boost_until_ns		= 0;
+	sg_policy->efficiency_until_ns		= 0;
 	sg_policy->auto_boost_avg_util		= 0;
+	sg_policy->has_prime_cpu		= sugov_policy_has_prime_cpu(sg_policy);
 #ifdef OPLUS_FEATURE_POWER_CPUFREQ
 	sg_policy->hispeed_validate_time	= 0;
 	sg_policy->update_time	= 0;
