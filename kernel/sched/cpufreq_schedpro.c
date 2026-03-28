@@ -760,11 +760,13 @@ static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #define DEFAULT_AUTO_BOOST_MIN_UTIL_WALT 96
 #define DEFAULT_AUTO_BOOST_MAX_UTIL_WALT 224
 #define DEFAULT_AUTO_BOOST_DECAY_US_WALT 12000
+#define DEFAULT_ICC_BOOST_UTIL_WALT 192
 #define DEFAULT_AUTO_BOOST_HIGH_LOAD_PELT 90
 #define DEFAULT_AUTO_BOOST_LOW_LOAD_PELT 65
 #define DEFAULT_AUTO_BOOST_MIN_UTIL_PELT 64
 #define DEFAULT_AUTO_BOOST_MAX_UTIL_PELT 192
 #define DEFAULT_AUTO_BOOST_DECAY_US_PELT 10000
+#define DEFAULT_ICC_BOOST_UTIL_PELT 128
 static void sugov_walt_adjust(struct sugov_cpu *sg_cpu, unsigned long *util,
 			      unsigned long *max)
 {
@@ -833,6 +835,8 @@ static void sugov_apply_tunable_boosts(struct sugov_cpu *sg_cpu, u64 time,
 {
 	struct sugov_policy *sg_policy = sg_cpu->sg_policy;
 	struct sugov_tunables *tunables = sg_policy->tunables;
+	unsigned int icc_boost_util = use_pelt() ?
+		DEFAULT_ICC_BOOST_UTIL_PELT : DEFAULT_ICC_BOOST_UTIL_WALT;
 
 	if (tunables->mem_boost_util) {
 		if (flags & SCHED_CPUFREQ_IOWAIT)
@@ -843,6 +847,10 @@ static void sugov_apply_tunable_boosts(struct sugov_cpu *sg_cpu, u64 time,
 			*util = max(*util, mult_frac(max, tunables->mem_boost_util,
 						     SCHED_CAPACITY_SCALE));
 	}
+
+	if (flags & (SCHED_CPUFREQ_MIGRATION | SCHED_CPUFREQ_INTERCLUSTER_MIG))
+		*util = max(*util, mult_frac(max, icc_boost_util,
+					     SCHED_CAPACITY_SCALE));
 
 	/* WALT path does not pass through schedutil_cpu_util(). */
 	if (tunables->uclamp_helper && !use_pelt())
