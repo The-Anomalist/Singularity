@@ -568,9 +568,10 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 
 	/*
 	 * If there is room in the HW LUT, materialize the offset clock as a real
-	 * LUT row so it behaves like factory bins (normal OPP with residency and
-	 * proper perf-state programming). If we cannot back it with HW, skip
-	 * exposing the offset OPP entirely.
+	 * LUT row so it behaves like a factory bin (residency + perf-state
+	 * programming). Keep it boost-only so the regular governor path still
+	 * targets stock bins and avoids unnecessary thermal/power contention.
+	 * If we cannot back it with HW, skip exposing the offset OPP entirely.
 	 */
 	if (c->max_freq_offset_khz && c->lut_max_entries) {
 		unsigned int max_index = c->lut_max_entries - 1;
@@ -618,13 +619,13 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 			c->table[offset_index].frequency =
 				c->table[max_index].frequency +
 				c->max_freq_offset_khz;
-			c->table[offset_index].flags = 0;
+			c->table[offset_index].flags = CPUFREQ_BOOST_FREQ;
 			c->freqs[offset_index] = c->table[offset_index].frequency;
 			c->voltages[offset_index] = new_mv * 1000;
 			c->lut_max_entries++;
 
 			dev_info(dev,
-				 "offset OPP materialized in HW LUT for domain cpus%*pbl: %u kHz @ %u uV\n",
+				 "offset boost OPP materialized in HW LUT for domain cpus%*pbl: %u kHz @ %u uV\n",
 				 cpumask_pr_args(&c->related_cpus),
 				 c->table[offset_index].frequency,
 				 c->voltages[offset_index]);
