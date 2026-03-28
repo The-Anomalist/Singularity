@@ -259,14 +259,14 @@ static struct dev_config ext_disp_rx_cfg[] = {
 };
 
 static struct dev_config usb_rx_cfg = {
-	.sample_rate = SAMPLING_RATE_48KHZ,
-	.bit_format = SNDRV_PCM_FORMAT_S16_LE,
+	.sample_rate = SAMPLING_RATE_96KHZ,
+	.bit_format = SNDRV_PCM_FORMAT_S24_LE,
 	.channels = 2,
 };
 
 static struct dev_config usb_tx_cfg = {
-	.sample_rate = SAMPLING_RATE_48KHZ,
-	.bit_format = SNDRV_PCM_FORMAT_S16_LE,
+	.sample_rate = SAMPLING_RATE_96KHZ,
+	.bit_format = SNDRV_PCM_FORMAT_S24_LE,
 	.channels = 1,
 };
 
