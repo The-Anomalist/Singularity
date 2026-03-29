@@ -39,6 +39,7 @@ enum kona_icc_role {
         KONA_ROLE_GPU,
         KONA_ROLE_NPU,
         KONA_ROLE_DSP,
+        KONA_ROLE_MEDIA,
         KONA_ROLE_DISPLAY,
         KONA_ROLE_GENERIC,
 };
@@ -195,6 +196,10 @@ MODULE_PARM_DESC(kona_display_topology_strict,
 #define KONA_NPU_DDR_IB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
 #define KONA_NPU_LLCC_AB_FLOOR_KB	(12000000ULL)  /* ~12 GB/s */
 #define KONA_NPU_LLCC_IB_FLOOR_KB	(19000000ULL) /* ~19 GB/s */
+#define KONA_MEDIA_DDR_AB_FLOOR_KB	(18000000ULL) /* ~18 GB/s */
+#define KONA_MEDIA_DDR_IB_FLOOR_KB	(30000000ULL) /* ~30 GB/s */
+#define KONA_MEDIA_LLCC_AB_FLOOR_KB	(13000000ULL) /* ~13 GB/s */
+#define KONA_MEDIA_LLCC_IB_FLOOR_KB	(21000000ULL) /* ~21 GB/s */
 #define KONA_UX_DDR_AB_FLOOR_KB	(12000000ULL)  /* ~12 GB/s */
 #define KONA_UX_DDR_IB_FLOOR_KB	(26000000ULL) /* ~26 GB/s */
 
@@ -282,6 +287,9 @@ static unsigned long kona_npu_keepalive_ib_kb = 896000;   /* 896 MB/s */
 static bool kona_dsp_keepalive_enable = true;
 static unsigned long kona_dsp_keepalive_ab_kb = 256000;   /* 256 MB/s */
 static unsigned long kona_dsp_keepalive_ib_kb = 768000;   /* 768 MB/s */
+static bool kona_media_keepalive_enable = true;
+static unsigned long kona_media_keepalive_ab_kb = 512000;  /* 512 MB/s */
+static unsigned long kona_media_keepalive_ib_kb = 1200000; /* 1.2 GB/s */
 static bool kona_disp_keepalive_enable = true;
 static unsigned long kona_disp_keepalive_ab_kb = 120000;   /* 120 MB/s */
 static unsigned long kona_disp_keepalive_ib_kb = 240000;   /* 240 MB/s */
@@ -347,6 +355,15 @@ MODULE_PARM_DESC(kona_dsp_keepalive_ab_kb,
 module_param(kona_dsp_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_dsp_keepalive_ib_kb,
         "dsp keepalive IB floor in KB/s (default: 768000)");
+module_param(kona_media_keepalive_enable, bool, 0644);
+MODULE_PARM_DESC(kona_media_keepalive_enable,
+	"Keep non-zero floor for video/cvp/camera data paths between short idle gaps");
+module_param(kona_media_keepalive_ab_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_media_keepalive_ab_kb,
+	"media keepalive AB floor in KB/s (default: 512000)");
+module_param(kona_media_keepalive_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_media_keepalive_ib_kb,
+	"media keepalive IB floor in KB/s (default: 1200000)");
 module_param(kona_disp_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_disp_keepalive_enable,
 	"Keep non-zero floor for disp0/disp1 DDR AB/IB between idle/off transitions");
@@ -530,6 +547,13 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 		keepalive_ab = kona_dsp_keepalive_ab_kb;
 		keepalive_ib = kona_dsp_keepalive_ib_kb;
 		break;
+	case KONA_ROLE_MEDIA:
+		if (!kona_media_keepalive_enable)
+			break;
+		keepalive = true;
+		keepalive_ab = kona_media_keepalive_ab_kb;
+		keepalive_ib = kona_media_keepalive_ib_kb;
+		break;
 	case KONA_ROLE_DISPLAY:
 		if (!kona_disp_keepalive_enable)
 			break;
@@ -594,6 +618,7 @@ static unsigned int kona_icc_pick_bias(const struct kona_icc_node_desc *desc,
         case KONA_ROLE_GPU:
         case KONA_ROLE_NPU:
         case KONA_ROLE_DSP:
+        case KONA_ROLE_MEDIA:
         case KONA_ROLE_GENERIC:
                 if (vote >= kona_perf_turbo_kb)
                         bias = kona_perf_bias_turbo;
@@ -731,8 +756,13 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		if (*ib && *ib < KONA_CPU_DDR_IB_FLOOR_KB)
 			*ib = KONA_CPU_DDR_IB_FLOOR_KB;
 		break;
-	case KONA_ICC_DISP_CFG:
 	case KONA_ICC_VIDEO_CFG:
+		if (*ab && *ab < KONA_MEDIA_DDR_AB_FLOOR_KB)
+			*ab = KONA_MEDIA_DDR_AB_FLOOR_KB;
+		if (*ib && *ib < KONA_MEDIA_DDR_IB_FLOOR_KB)
+			*ib = KONA_MEDIA_DDR_IB_FLOOR_KB;
+		break;
+	case KONA_ICC_DISP_CFG:
 		/*
 		 * UX-sensitive config paths share CPU_* BCMs but often vote low.
 		 * Keep moderate floors so register/config bursts don't collapse DDR.
@@ -777,7 +807,6 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		break;
 	case KONA_ICC_NPU_TO_MEM:
 	case KONA_ICC_NPUDSP_TO_MEM:
-	case KONA_ICC_CVP_TO_MEM:
 		if (npu_pin_active) {
 			if (*ab && *ab < kona_npu_oc_floor_ab_kb)
 				*ab = kona_npu_oc_floor_ab_kb;
@@ -797,6 +826,12 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 			*ib = mul_u64_u32_div(*ab,
 				     kona_npu_ib_min_ratio_percent, 100);
 		break;
+	case KONA_ICC_CVP_TO_MEM:
+		if (*ab && *ab < KONA_MEDIA_DDR_AB_FLOOR_KB)
+			*ab = KONA_MEDIA_DDR_AB_FLOOR_KB;
+		if (*ib && *ib < KONA_MEDIA_DDR_IB_FLOOR_KB)
+			*ib = KONA_MEDIA_DDR_IB_FLOOR_KB;
+		break;
 	case KONA_ICC_PAS_TO_MEM:
 		/* PAS/CDSP bring-up must not start from an effective 0/0 vote. */
 		if (*ab < KONA_NPU_DDR_AB_FLOOR_KB)
@@ -805,7 +840,6 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 			*ib = KONA_NPU_DDR_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_NPU_TO_LLCC:
-	case KONA_ICC_VIDEO_TO_LLCC:
 		if (npu_pin_active) {
 			if (*ab && *ab < kona_npu_oc_llcc_floor_ab_kb)
 				*ab = kona_npu_oc_llcc_floor_ab_kb;
@@ -824,6 +858,12 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 						kona_npu_ib_min_ratio_percent, 100))
 			*ib = mul_u64_u32_div(*ab,
 				     kona_npu_ib_min_ratio_percent, 100);
+		break;
+	case KONA_ICC_VIDEO_TO_LLCC:
+		if (*ab && *ab < KONA_MEDIA_LLCC_AB_FLOOR_KB)
+			*ab = KONA_MEDIA_LLCC_AB_FLOOR_KB;
+		if (*ib && *ib < KONA_MEDIA_LLCC_IB_FLOOR_KB)
+			*ib = KONA_MEDIA_LLCC_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_GPU_TO_MEM:
 		if (gpu_pin_active) {
@@ -1141,21 +1181,21 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.name = "video-llcc",
 		.ab = "CPU_LLCC_AB",
 		.ib = "CPU_LLCC_IB",
-		.role = KONA_ROLE_DSP,
+		.role = KONA_ROLE_MEDIA,
 	},
 	{
 		.id = KONA_ICC_VIDEO_TO_MEM,
 		.name = "video-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_DSP,
+		.role = KONA_ROLE_MEDIA,
 	},
 	{
 		.id = KONA_ICC_CVP_TO_MEM,
 		.name = "cvp-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_DSP,
+		.role = KONA_ROLE_MEDIA,
 	},
 	{
 		.id = KONA_ICC_PAS_TO_MEM,
@@ -1218,7 +1258,7 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.name = "cam-cfg",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_DSP,
+		.role = KONA_ROLE_MEDIA,
 	},
 	{
 		.id = KONA_ICC_DISP_CFG,
@@ -1233,8 +1273,8 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.name = "video-cfg",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		/* Video/camera/CDSP path is latency sensitive during bring-up. */
-		.role = KONA_ROLE_DISPLAY,
+		/* Video/camera path is latency sensitive and bandwidth hungry. */
+		.role = KONA_ROLE_MEDIA,
 	},
 	{
 		.id = KONA_ICC_PCIE0_TO_MEM,
@@ -1332,7 +1372,6 @@ static bool kona_icc_is_display_critical_id(u32 id)
 	case KONA_ICC_DISP0_TO_MEM:
 	case KONA_ICC_DISP1_TO_MEM:
 	case KONA_ICC_DISP_CFG:
-	case KONA_ICC_VIDEO_CFG:
 		return true;
 	default:
 		return false;
@@ -1343,7 +1382,6 @@ static bool kona_icc_is_display_cfg_id(u32 id)
 {
 	switch (id) {
 	case KONA_ICC_DISP_CFG:
-	case KONA_ICC_VIDEO_CFG:
 		return true;
 	default:
 		return false;
@@ -1378,7 +1416,6 @@ static int kona_icc_validate_display_nodes(struct kona_icc_provider *qp)
 		KONA_ICC_DISP0_TO_MEM,
 		KONA_ICC_DISP1_TO_MEM,
 		KONA_ICC_DISP_CFG,
-		KONA_ICC_VIDEO_CFG,
 	};
 	int i;
 
@@ -1741,6 +1778,7 @@ static bool kona_icc_replay_req_votes_phased(struct kona_icc_provider *qp)
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_CPU_PRIME, false);
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_NPU, false);
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_DSP, false);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_MEDIA, false);
 		qp->resume_phase = 2;
 		schedule_delayed_work(&qp->retry_work,
 				      msecs_to_jiffies(KONA_RESUME_PHASE2_DELAY_MS));
