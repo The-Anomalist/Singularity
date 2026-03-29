@@ -213,10 +213,10 @@ MODULE_PARM_DESC(kona_display_topology_strict,
 #define KONA_HYST_PERCENT			5      /* tolerate small 5% dips */
 #define KONA_HYST_AB_STEP_KB		 100000 /* or 100 MB/s, whichever is smaller */
 #define KONA_HYST_IB_STEP_KB		 150000 /* or 150 MB/s, whichever is smaller */
-static unsigned int kona_max_downscale_percent = 35;
+static unsigned int kona_max_downscale_percent = 25;
 module_param(kona_max_downscale_percent, uint, 0644);
 MODULE_PARM_DESC(kona_max_downscale_percent,
-	"Maximum AB/IB percent drop allowed per vote for non-zero downvotes (default: 35)");
+	"Maximum AB/IB percent drop allowed per vote for non-zero downvotes (default: 25)");
 
 /*
  * Performance bias lets us intentionally over-vote for critical paths so CPU
@@ -229,27 +229,39 @@ MODULE_PARM_DESC(kona_max_downscale_percent,
  * - kona_perf_bias_turbo: extra bias for very large votes (race-to-performance).
  * - kona_perf_light_kb / kona_perf_turbo_kb: thresholds for selecting a profile.
  */
-static unsigned int kona_perf_bias = 122;
-static unsigned int kona_perf_bias_light = 105;
-static unsigned int kona_perf_bias_turbo = 140;
+static unsigned int kona_perf_bias = 126;
+static unsigned int kona_perf_bias_light = 106;
+static unsigned int kona_perf_bias_turbo = 150;
 #define KONA_PRIME_EXTRA_BIAS_PERCENT	10
 static unsigned long kona_perf_light_kb = 1000000;   /* 1 GB/s */
-static unsigned long kona_perf_turbo_kb = 18000000;  /* 18 GB/s */
+static unsigned long kona_perf_turbo_kb = 14000000;  /* 14 GB/s */
+static bool kona_perf_sustain_boost_enable = true;
+static unsigned long kona_perf_sustain_kb = 4200000; /* 4.2 GB/s */
+static unsigned int kona_perf_sustain_extra_bias = 8;
 module_param(kona_perf_bias, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias,
-        "Percent headroom added on CPU/DDR/LLCC/GPU/NPU paths (default: 122)");
+        "Percent headroom added on CPU/DDR/LLCC/GPU/NPU paths (default: 126)");
 module_param(kona_perf_bias_light, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias_light,
-        "Percent headroom added for light requests to save power (default: 105)");
+        "Percent headroom added for light requests to save power (default: 106)");
 module_param(kona_perf_bias_turbo, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias_turbo,
-        "Percent headroom added for very large votes (default: 140)");
+        "Percent headroom added for very large votes (default: 150)");
 module_param(kona_perf_light_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_perf_light_kb,
         "Threshold KB/s for light-load bias selection (default: 1000000)");
 module_param(kona_perf_turbo_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_perf_turbo_kb,
-        "Threshold KB/s for turbo bias selection (default: 16000000)");
+        "Threshold KB/s for turbo bias selection (default: 14000000)");
+module_param(kona_perf_sustain_boost_enable, bool, 0644);
+MODULE_PARM_DESC(kona_perf_sustain_boost_enable,
+	"Apply extra sustained-performance headroom on heavy CPU/GPU/NPU traffic");
+module_param(kona_perf_sustain_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_perf_sustain_kb,
+	"Threshold KB/s where sustained-performance extra headroom begins");
+module_param(kona_perf_sustain_extra_bias, uint, 0644);
+MODULE_PARM_DESC(kona_perf_sustain_extra_bias,
+	"Additional headroom percent added above sustained-performance threshold");
 
 /*
  * GPU keep-alive floor and IB prioritization for gpu-ddr path.
@@ -584,10 +596,12 @@ static unsigned int kona_icc_pick_bias(const struct kona_icc_node_desc *desc,
         case KONA_ROLE_DSP:
         case KONA_ROLE_GENERIC:
                 if (vote >= kona_perf_turbo_kb)
-                        return kona_perf_bias_turbo;
-                if (vote <= kona_perf_light_kb)
-                        return kona_perf_bias_light;
-                return kona_perf_bias;
+                        bias = kona_perf_bias_turbo;
+                else if (vote <= kona_perf_light_kb)
+                        bias = kona_perf_bias_light;
+                else
+                        bias = kona_perf_bias;
+                break;
         case KONA_ROLE_CPU_PRIME:
                 if (vote >= kona_perf_turbo_kb)
                         bias = kona_perf_bias_turbo;
@@ -595,11 +609,18 @@ static unsigned int kona_icc_pick_bias(const struct kona_icc_node_desc *desc,
                         bias = kona_perf_bias_light;
                 else
                         bias = kona_perf_bias;
-                return min_t(unsigned int, bias + KONA_PRIME_EXTRA_BIAS_PERCENT, 200);
+                bias = min_t(unsigned int, bias + KONA_PRIME_EXTRA_BIAS_PERCENT, 200);
+                break;
         case KONA_ROLE_DISPLAY:
         default:
                 return 100;
         }
+
+	if (kona_perf_sustain_boost_enable && vote >= kona_perf_sustain_kb &&
+	    desc->role != KONA_ROLE_DISPLAY)
+		bias = min_t(unsigned int, bias + kona_perf_sustain_extra_bias, 200);
+
+	return bias;
 }
 
 static void kona_icc_apply_hysteresis(struct kona_icc_provider *qp,
