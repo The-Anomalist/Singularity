@@ -49,9 +49,12 @@ struct dev_data {
 	bool use_icc;
 	bool icc_share_ab;
 	bool icc_share_peak;
+	bool icc_strict;
 	u32 icc_boost_percent;
 	u32 icc_min_avg_kbps;
 	u32 icc_min_peak_kbps;
+	u32 icc_upscale_percent;
+	u32 polling_ms;
 	long gov_ab;
 	bool freeze_bw_blocked;
 	struct devfreq *df;
@@ -127,6 +130,26 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 			peak_bw = 1;
 		if (new_ab && !avg_bw)
 			avg_bw = 1;
+
+		/*
+		 * Ramp-up assist: on upward transitions apply an optional temporary
+		 * uplift so short bursts can reach sustainable DDR corners faster.
+		 */
+		if (d->icc_upscale_percent > 100 && new_ib > d->cur_ib) {
+			u64 boosted;
+
+			if (avg_bw) {
+				boosted = mult_frac((u64)avg_bw,
+						d->icc_upscale_percent, 100);
+				avg_bw = min_t(u64, boosted, U32_MAX);
+			}
+
+			if (peak_bw) {
+				boosted = mult_frac((u64)peak_bw,
+						d->icc_upscale_percent, 100);
+				peak_bw = min_t(u64, boosted, U32_MAX);
+			}
+		}
 
 		/*
 		 * Optional DT controlled headroom for benchmark-heavy or latency
@@ -291,6 +314,7 @@ int devfreq_add_devbw(struct device *dev)
 	d->icc_share_ab = true;
 	d->icc_share_peak = of_property_read_bool(dev->of_node,
 						 "qcom,icc-split-peak-kbps");
+	d->icc_strict = of_property_read_bool(dev->of_node, "qcom,icc-strict");
 	if (of_find_property(dev->of_node, "qcom,icc-no-split-ab-kbps", NULL))
 		d->icc_share_ab = false;
 	of_property_read_u32(dev->of_node, "qcom,icc-min-avg-kbps",
@@ -299,17 +323,30 @@ int devfreq_add_devbw(struct device *dev)
 			     &d->icc_min_peak_kbps);
 	of_property_read_u32(dev->of_node, "qcom,icc-boost-percent",
 			     &d->icc_boost_percent);
+	of_property_read_u32(dev->of_node, "qcom,icc-upscale-percent",
+			     &d->icc_upscale_percent);
+	of_property_read_u32(dev->of_node, "qcom,polling-ms", &d->polling_ms);
 	if (d->icc_boost_percent && d->icc_boost_percent < 100)
 		d->icc_boost_percent = 100;
 	if (d->icc_boost_percent > 400)
 		d->icc_boost_percent = 400;
+	if (d->icc_upscale_percent && d->icc_upscale_percent < 100)
+		d->icc_upscale_percent = 100;
+	if (d->icc_upscale_percent > 300)
+		d->icc_upscale_percent = 300;
+	if (!d->polling_ms)
+		d->polling_ms = 50;
+	if (d->polling_ms < 5)
+		d->polling_ms = 5;
+	if (d->polling_ms > 100)
+		d->polling_ms = 100;
 	ret = 0;
 	if (num_icc_paths < 0) {
 		devbw_log_icc_dt(dev, num_icc_paths);
 
 		if (!of_find_property(dev->of_node, "interconnects", NULL))
 			num_icc_paths = 0;
-		else if (have_ports) {
+		else if (have_ports && !d->icc_strict) {
 			dev_warn(dev,
 				 "Invalid ICC description (%d), falling back to msm-bus\n",
 				 num_icc_paths);
@@ -323,7 +360,7 @@ int devfreq_add_devbw(struct device *dev)
 		devbw_log_icc_dt(dev, num_icc_paths);
 
 		if (num_icc_paths > MAX_PATHS) {
-			if (have_ports) {
+			if (have_ports && !d->icc_strict) {
 				dev_warn(dev,
 					 "Unexpected number of ICC paths, falling back to msm-bus\n");
 				num_icc_paths = 0;
@@ -375,7 +412,7 @@ int devfreq_add_devbw(struct device *dev)
 				dev_dbg(dev, "Attached ICC unnamed single path\n");
 			}
 		} else {
-			if (have_ports) {
+			if (have_ports && !d->icc_strict) {
 				dev_err_ratelimited(dev,
 					"ICC attach failed: missing interconnect-names for %d paths, falling back to msm-bus\n",
 					num_icc_paths);
@@ -409,7 +446,7 @@ int devfreq_add_devbw(struct device *dev)
 	}
 
 	if (ret) {
-		if (!have_ports)
+		if (!have_ports || d->icc_strict)
 			return ret;
 
 		dev_err_ratelimited(dev,
@@ -459,7 +496,7 @@ use_msm_bus:
 	devbw_log_icc_state(dev, d);
 
 	p = &d->dp;
-	p->polling_ms = 50;
+	p->polling_ms = d->polling_ms;
 	p->target = devbw_target;
 	p->get_dev_status = devbw_get_dev_status;
 

@@ -1002,8 +1002,11 @@
 		 * around mid OPPs while CPU is already at peak clocks.
 		 */
 		qcom,icc-boost-percent = <130>;
+		qcom,icc-upscale-percent = <145>;
 		qcom,icc-min-avg-kbps = <8060000>;
 		qcom,icc-min-peak-kbps = <16120000>;
+		qcom,icc-strict;
+		qcom,polling-ms = <10>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_LLCC>;
 		qcom,active-only;
@@ -1029,8 +1032,11 @@
 		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 		interconnect-names = "cpu-ddr";
 		qcom,icc-boost-percent = <135>;
+		qcom,icc-upscale-percent = <150>;
 		qcom,icc-min-avg-kbps = <6881000>;
 		qcom,icc-min-peak-kbps = <13763000>;
+		qcom,icc-strict;
+		qcom,polling-ms = <10>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
