@@ -12,7 +12,7 @@
 #include "kgsl_timeline.h"
 
 /* Number of commands that can be queued in a context before it sleeps */
-static unsigned int _context_drawqueue_size = 50;
+static unsigned int _context_drawqueue_size = 64;
 
 /* Number of milliseconds to wait for the context queue to clear */
 static unsigned int _context_queue_wait = 10000;
@@ -44,6 +44,14 @@ static unsigned int _dispatcher_q_inflight_lo = 4;
 #define A650_DISPATCH_Q_INFLIGHT_HI	24
 #define A650_DISPATCH_Q_INFLIGHT_LO	6
 #define A650_CONTEXT_DRAWOBJ_BURST	8
+
+#define A6XX_DISPATCH_Q_INFLIGHT_HI	20
+#define A6XX_DISPATCH_Q_INFLIGHT_LO	5
+#define A6XX_CONTEXT_DRAWOBJ_BURST	7
+
+#define A650_DISPATCH_Q_INFLIGHT_HI_MAX	28
+#define A650_DISPATCH_Q_INFLIGHT_LO_MAX	8
+#define A650_CONTEXT_DRAWOBJ_BURST_MAX	10
 
 /* Command batch timeout (in milliseconds) */
 unsigned int adreno_drawobj_timeout = 2000;
@@ -89,6 +97,15 @@ static void _add_context(struct adreno_device *adreno_dev,
 
 static void adreno_dispatcher_tune(struct adreno_device *adreno_dev)
 {
+	if (adreno_is_a6xx(adreno_dev)) {
+		_dispatcher_q_inflight_hi = max_t(unsigned int,
+			_dispatcher_q_inflight_hi, A6XX_DISPATCH_Q_INFLIGHT_HI);
+		_dispatcher_q_inflight_lo = max_t(unsigned int,
+			_dispatcher_q_inflight_lo, A6XX_DISPATCH_Q_INFLIGHT_LO);
+		_context_drawobj_burst = max_t(unsigned int,
+			_context_drawobj_burst, A6XX_CONTEXT_DRAWOBJ_BURST);
+	}
+
 	if (!adreno_is_a650_family(adreno_dev))
 		return;
 
@@ -98,6 +115,17 @@ static void adreno_dispatcher_tune(struct adreno_device *adreno_dev)
 		_dispatcher_q_inflight_lo, A650_DISPATCH_Q_INFLIGHT_LO);
 	_context_drawobj_burst = max_t(unsigned int,
 		_context_drawobj_burst, A650_CONTEXT_DRAWOBJ_BURST);
+
+	/*
+	 * Keep single-context throughput high for benchmark-style GPU loads while
+	 * still allowing low-latency contexts to preempt with a higher low watermark.
+	 */
+	_dispatcher_q_inflight_hi = max_t(unsigned int,
+		_dispatcher_q_inflight_hi, A650_DISPATCH_Q_INFLIGHT_HI_MAX);
+	_dispatcher_q_inflight_lo = max_t(unsigned int,
+		_dispatcher_q_inflight_lo, A650_DISPATCH_Q_INFLIGHT_LO_MAX);
+	_context_drawobj_burst = max_t(unsigned int,
+		_context_drawobj_burst, A650_CONTEXT_DRAWOBJ_BURST_MAX);
 }
 
 static void _adreno_count_active_contexts(struct adreno_device *adreno_dev,
