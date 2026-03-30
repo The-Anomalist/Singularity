@@ -1055,17 +1055,20 @@
 		qcom,count-unit = <0x10000>;
 	};
 
-	npu_npu_llcc_bw: qcom,npu-npu-llcc-bw {
-		compatible = "qcom,devbw";
-		governor = "performance";
-		interconnects = <&kona_icc KONA_ICC_NPU_TO_LLCC>;
-		interconnect-names = "npu-llcc";
-		qcom,icc-boost-percent = <125>;
-		qcom,icc-min-avg-kbps = <2288000>;
-		qcom,icc-min-peak-kbps = <4576000>;
-		qcom,src-dst-ports = <MSM_BUS_MASTER_NPU MSM_BUS_SLAVE_LLCC>;
-		operating-points-v2 = <&suspendable_llcc_bw_opp_table>;
-	};
+		npu_npu_llcc_bw: qcom,npu-npu-llcc-bw {
+			compatible = "qcom,devbw";
+			governor = "performance";
+			interconnects = <&kona_icc KONA_ICC_NPU_TO_LLCC>;
+			interconnect-names = "npu-llcc";
+			qcom,icc-boost-percent = <140>;
+			qcom,icc-upscale-percent = <155>;
+			qcom,icc-min-avg-kbps = <5161000>;
+			qcom,icc-min-peak-kbps = <10322000>;
+			qcom,icc-strict;
+			qcom,polling-ms = <10>;
+			qcom,src-dst-ports = <MSM_BUS_MASTER_NPU MSM_BUS_SLAVE_LLCC>;
+			operating-points-v2 = <&suspendable_llcc_bw_opp_table>;
+		};
 
 	npu_npu_llcc_bwmon: qcom,npu-npu-llcc-bwmon@60300 {
 		compatible = "qcom,bimc-bwmon4";
@@ -1086,17 +1089,20 @@
 		qcom,count-unit = <0x10000>;
 	};
 
-	npu_llcc_ddr_bw: qcom,npu-llcc-ddr-bw {
-		compatible = "qcom,devbw-ddr";
-		governor = "performance";
-		interconnects = <&kona_icc KONA_ICC_NPU_TO_MEM>;
-		interconnect-names = "npu-ddr";
-		qcom,icc-boost-percent = <125>;
-		qcom,icc-min-avg-kbps = <1144000>;
-		qcom,icc-min-peak-kbps = <2288000>;
-		qcom,src-dst-ports = <MSM_BUS_SLAVE_LLCC MSM_BUS_SLAVE_EBI_CH0>;
-		operating-points-v2 = <&suspendable_ddr_bw_opp_table>;
-	};
+		npu_llcc_ddr_bw: qcom,npu-llcc-ddr-bw {
+			compatible = "qcom,devbw-ddr";
+			governor = "performance";
+			interconnects = <&kona_icc KONA_ICC_NPU_TO_MEM>;
+			interconnect-names = "npu-ddr";
+			qcom,icc-boost-percent = <138>;
+			qcom,icc-upscale-percent = <152>;
+			qcom,icc-min-avg-kbps = <3600000>;
+			qcom,icc-min-peak-kbps = <7200000>;
+			qcom,icc-strict;
+			qcom,polling-ms = <10>;
+			qcom,src-dst-ports = <MSM_BUS_SLAVE_LLCC MSM_BUS_SLAVE_EBI_CH0>;
+			operating-points-v2 = <&suspendable_ddr_bw_opp_table>;
+		};
 
 	npu_llcc_ddr_bwmon: qcom,npu-llcc-ddr-bwmon@0x9093000 {
 		compatible = "qcom,bimc-bwmon5";
@@ -1110,17 +1116,20 @@
 		qcom,count-unit = <0x10000>;
 	};
 
-	npudsp_npu_ddr_bw: qcom,npudsp-npu-ddr-bw {
-		compatible = "qcom,devbw-ddr";
-		governor = "performance";
-		interconnects = <&kona_icc KONA_ICC_NPUDSP_TO_MEM>;
-		interconnect-names = "npudsp-ddr";
-		qcom,icc-boost-percent = <125>;
-		qcom,icc-min-avg-kbps = <1144000>;
-		qcom,icc-min-peak-kbps = <2288000>;
-		qcom,src-dst-ports = <MSM_BUS_MASTER_NPU MSM_BUS_SLAVE_EBI_CH0>;
-		operating-points-v2 = <&suspendable_ddr_bw_opp_table>;
-	};
+		npudsp_npu_ddr_bw: qcom,npudsp-npu-ddr-bw {
+			compatible = "qcom,devbw-ddr";
+			governor = "performance";
+			interconnects = <&kona_icc KONA_ICC_NPUDSP_TO_MEM>;
+			interconnect-names = "npudsp-ddr";
+			qcom,icc-boost-percent = <135>;
+			qcom,icc-upscale-percent = <150>;
+			qcom,icc-min-avg-kbps = <2597000>;
+			qcom,icc-min-peak-kbps = <5194000>;
+			qcom,icc-strict;
+			qcom,polling-ms = <10>;
+			qcom,src-dst-ports = <MSM_BUS_MASTER_NPU MSM_BUS_SLAVE_EBI_CH0>;
+			operating-points-v2 = <&suspendable_ddr_bw_opp_table>;
+		};
 
 	npudsp_npu_ddr_bwmon: qcom,npudsp-npu-ddr-bwmon@70200 {
 		compatible = "qcom,bimc-bwmon4";

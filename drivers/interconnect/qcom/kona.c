@@ -315,10 +315,20 @@ static unsigned int kona_keepalive_decay_min_percent = 15;
 static unsigned int kona_sleep_keepalive_percent = 8;
 static unsigned int kona_gpu_ib_boost_percent = 176;
 static unsigned int kona_gpu_ib_min_ratio_percent = 220;
+static unsigned int kona_cpu_ib_boost_percent = 145;
+static unsigned int kona_cpu_ib_min_ratio_percent = 190;
 static unsigned int kona_gpu_llcc_boost_percent = 130;
 static unsigned int kona_gpu_llcc_min_ratio_percent = 175;
 static unsigned int kona_npu_ib_boost_percent = 168;
 static unsigned int kona_npu_ib_min_ratio_percent = 220;
+static bool kona_cpu_llcc_turbo_enable = true;
+static unsigned long kona_cpu_llcc_turbo_threshold_kb = 9500000; /* 9.5 GB/s */
+static unsigned long kona_cpu_llcc_turbo_ab_kb = 21000000;       /* 21 GB/s */
+static unsigned long kona_cpu_llcc_turbo_ib_kb = 32000000;       /* 32 GB/s */
+static bool kona_npu_llcc_turbo_enable = true;
+static unsigned long kona_npu_llcc_turbo_threshold_kb = 5500000; /* 5.5 GB/s */
+static unsigned long kona_npu_llcc_turbo_ab_kb = 17000000;       /* 17 GB/s */
+static unsigned long kona_npu_llcc_turbo_ib_kb = 28000000;       /* 28 GB/s */
 static bool kona_npu_oc_mem_pinning_enable = true;
 static unsigned long kona_npu_oc_pin_threshold_kb = 21000000; /* 21 GB/s */
 static unsigned long kona_npu_oc_floor_ab_kb = 20000000;      /* 20 GB/s */
@@ -409,6 +419,12 @@ MODULE_PARM_DESC(kona_gpu_ib_boost_percent,
 module_param(kona_gpu_ib_min_ratio_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_ib_min_ratio_percent,
         "Minimum gpu-ddr IB as percent of AB (default: 220)");
+module_param(kona_cpu_ib_boost_percent, uint, 0644);
+MODULE_PARM_DESC(kona_cpu_ib_boost_percent,
+	"Percent boost applied to cpu-ddr/cpu-llcc IB after floors (default: 145)");
+module_param(kona_cpu_ib_min_ratio_percent, uint, 0644);
+MODULE_PARM_DESC(kona_cpu_ib_min_ratio_percent,
+	"Minimum cpu-ddr/cpu-llcc IB as percent of AB (default: 190)");
 module_param(kona_gpu_llcc_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_llcc_boost_percent,
         "Percent boost applied to gpu-llcc IB after floors (default: 130)");
@@ -421,6 +437,30 @@ MODULE_PARM_DESC(kona_npu_ib_boost_percent,
 module_param(kona_npu_ib_min_ratio_percent, uint, 0644);
 MODULE_PARM_DESC(kona_npu_ib_min_ratio_percent,
 	"Minimum npu-ddr/npu-llcc IB as percent of AB (default: 220)");
+module_param(kona_cpu_llcc_turbo_enable, bool, 0644);
+MODULE_PARM_DESC(kona_cpu_llcc_turbo_enable,
+	"Force elevated cpu-llcc AB/IB floor once cpu-llcc vote exceeds threshold");
+module_param(kona_cpu_llcc_turbo_threshold_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_cpu_llcc_turbo_threshold_kb,
+	"cpu-llcc turbo entry threshold in KB/s based on max(AB,IB)");
+module_param(kona_cpu_llcc_turbo_ab_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_cpu_llcc_turbo_ab_kb,
+	"Forced cpu-llcc AB floor in KB/s while turbo is active");
+module_param(kona_cpu_llcc_turbo_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_cpu_llcc_turbo_ib_kb,
+	"Forced cpu-llcc IB floor in KB/s while turbo is active");
+module_param(kona_npu_llcc_turbo_enable, bool, 0644);
+MODULE_PARM_DESC(kona_npu_llcc_turbo_enable,
+	"Force elevated npu-llcc AB/IB floor once npu-llcc vote exceeds threshold");
+module_param(kona_npu_llcc_turbo_threshold_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_npu_llcc_turbo_threshold_kb,
+	"npu-llcc turbo entry threshold in KB/s based on max(AB,IB)");
+module_param(kona_npu_llcc_turbo_ab_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_npu_llcc_turbo_ab_kb,
+	"Forced npu-llcc AB floor in KB/s while turbo is active");
+module_param(kona_npu_llcc_turbo_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_npu_llcc_turbo_ib_kb,
+	"Forced npu-llcc IB floor in KB/s while turbo is active");
 module_param(kona_npu_oc_mem_pinning_enable, bool, 0644);
 MODULE_PARM_DESC(kona_npu_oc_mem_pinning_enable,
 	"Pin elevated NPU AB/IB floors when sustained high NPU bandwidth suggests overclocked operation");
@@ -791,6 +831,12 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 			*ab = KONA_CPU_DDR_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_CPU_DDR_IB_FLOOR_KB)
 			*ib = KONA_CPU_DDR_IB_FLOOR_KB;
+		if (*ib)
+			*ib = kona_icc_add_headroom(*ib, kona_cpu_ib_boost_percent);
+		if (*ab && *ib < mul_u64_u32_div(*ab,
+						kona_cpu_ib_min_ratio_percent, 100))
+			*ib = mul_u64_u32_div(*ab,
+				     kona_cpu_ib_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_VIDEO_CFG:
 		if (*ab && *ab < KONA_MEDIA_DDR_AB_FLOOR_KB)
@@ -821,6 +867,19 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 			*ab = KONA_CPU_LLCC_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_CPU_LLCC_IB_FLOOR_KB)
 			*ib = KONA_CPU_LLCC_IB_FLOOR_KB;
+		if (kona_cpu_llcc_turbo_enable &&
+		    max(*ab, *ib) >= kona_cpu_llcc_turbo_threshold_kb) {
+			if (*ab && *ab < kona_cpu_llcc_turbo_ab_kb)
+				*ab = kona_cpu_llcc_turbo_ab_kb;
+			if (*ib && *ib < kona_cpu_llcc_turbo_ib_kb)
+				*ib = kona_cpu_llcc_turbo_ib_kb;
+		}
+		if (*ib)
+			*ib = kona_icc_add_headroom(*ib, kona_cpu_ib_boost_percent);
+		if (*ab && *ib < mul_u64_u32_div(*ab,
+						kona_cpu_ib_min_ratio_percent, 100))
+			*ib = mul_u64_u32_div(*ab,
+				     kona_cpu_ib_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_DISP0_TO_MEM:
 	case KONA_ICC_DISP1_TO_MEM:
@@ -834,12 +893,31 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 			*ab = KONA_CPU_PRIME_DDR_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_CPU_PRIME_DDR_IB_FLOOR_KB)
 			*ib = KONA_CPU_PRIME_DDR_IB_FLOOR_KB;
+		if (*ib)
+			*ib = kona_icc_add_headroom(*ib, kona_cpu_ib_boost_percent);
+		if (*ab && *ib < mul_u64_u32_div(*ab,
+						kona_cpu_ib_min_ratio_percent, 100))
+			*ib = mul_u64_u32_div(*ab,
+				     kona_cpu_ib_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_CPU7_TO_LLCC:
 		if (*ab && *ab < KONA_CPU_PRIME_LLCC_AB_FLOOR_KB)
 			*ab = KONA_CPU_PRIME_LLCC_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_CPU_PRIME_LLCC_IB_FLOOR_KB)
 			*ib = KONA_CPU_PRIME_LLCC_IB_FLOOR_KB;
+		if (kona_cpu_llcc_turbo_enable &&
+		    max(*ab, *ib) >= kona_cpu_llcc_turbo_threshold_kb) {
+			if (*ab && *ab < kona_cpu_llcc_turbo_ab_kb)
+				*ab = kona_cpu_llcc_turbo_ab_kb;
+			if (*ib && *ib < kona_cpu_llcc_turbo_ib_kb)
+				*ib = kona_cpu_llcc_turbo_ib_kb;
+		}
+		if (*ib)
+			*ib = kona_icc_add_headroom(*ib, kona_cpu_ib_boost_percent);
+		if (*ab && *ib < mul_u64_u32_div(*ab,
+						kona_cpu_ib_min_ratio_percent, 100))
+			*ib = mul_u64_u32_div(*ab,
+				     kona_cpu_ib_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_NPU_TO_MEM:
 	case KONA_ICC_NPUDSP_TO_MEM:
@@ -887,6 +965,13 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 			*ab = KONA_NPU_LLCC_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_NPU_LLCC_IB_FLOOR_KB)
 			*ib = KONA_NPU_LLCC_IB_FLOOR_KB;
+		if (kona_npu_llcc_turbo_enable &&
+		    max(*ab, *ib) >= kona_npu_llcc_turbo_threshold_kb) {
+			if (*ab && *ab < kona_npu_llcc_turbo_ab_kb)
+				*ab = kona_npu_llcc_turbo_ab_kb;
+			if (*ib && *ib < kona_npu_llcc_turbo_ib_kb)
+				*ib = kona_npu_llcc_turbo_ib_kb;
+		}
 
 		if (*ib)
 			*ib = kona_icc_add_headroom(*ib, kona_npu_ib_boost_percent);
