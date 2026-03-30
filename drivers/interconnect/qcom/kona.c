@@ -312,6 +312,7 @@ static unsigned long kona_disp_keepalive_ib_kb = 240000;   /* 240 MB/s */
 static bool kona_keepalive_decay_enable = true;
 static unsigned int kona_keepalive_decay_window_ms = 140;
 static unsigned int kona_keepalive_decay_min_percent = 15;
+static unsigned int kona_sleep_keepalive_percent = 8;
 static unsigned int kona_gpu_ib_boost_percent = 176;
 static unsigned int kona_gpu_ib_min_ratio_percent = 220;
 static unsigned int kona_gpu_llcc_boost_percent = 130;
@@ -398,6 +399,9 @@ MODULE_PARM_DESC(kona_keepalive_decay_window_ms,
 module_param(kona_keepalive_decay_min_percent, uint, 0644);
 MODULE_PARM_DESC(kona_keepalive_decay_min_percent,
 	"minimum keepalive strength percent while inside decay window (default: 15)");
+module_param(kona_sleep_keepalive_percent, uint, 0644);
+MODULE_PARM_DESC(kona_sleep_keepalive_percent,
+	"Percent of keepalive floor retained while display is inactive (default: 8)");
 
 module_param(kona_gpu_ib_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_ib_boost_percent,
@@ -514,6 +518,7 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 					 unsigned int index, u64 *ab, u64 *ib)
 {
 	bool keepalive = false;
+	bool display_inactive;
 	const struct kona_icc_node_desc *desc;
 	u64 keepalive_ab = 0, keepalive_ib = 0;
 	unsigned int decay_percent = 100;
@@ -584,6 +589,21 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 
 	if (!keepalive)
 		return false;
+
+	display_inactive = !READ_ONCE(qp->display_active);
+	if (display_inactive && desc->role != KONA_ROLE_DISPLAY) {
+		unsigned int sleep_percent;
+
+		sleep_percent = min_t(unsigned int, kona_sleep_keepalive_percent, 100);
+		if (!sleep_percent)
+			return false;
+
+		keepalive_ab = mul_u64_u32_div(keepalive_ab, sleep_percent, 100);
+		keepalive_ib = mul_u64_u32_div(keepalive_ib, sleep_percent, 100);
+
+		if (!keepalive_ab && !keepalive_ib)
+			return false;
+	}
 
 	if (kona_keepalive_decay_enable && qp->last_active_jiffies) {
 		unsigned long active_j = READ_ONCE(qp->last_active_jiffies[index]);
