@@ -18,7 +18,7 @@ static unsigned int _context_drawqueue_size = 64;
 static unsigned int _context_queue_wait = 10000;
 
 /* Number of drawobjs sent at a time from a single context */
-static unsigned int _context_drawobj_burst = 5;
+static unsigned int _context_drawobj_burst = 6;
 
 /*
  * GFT throttle parameters. If GFT recovered more than
@@ -33,13 +33,13 @@ static unsigned int _fault_throttle_burst = 3;
  * Maximum ringbuffer inflight for the single submitting context case - this
  * should be sufficiently high to keep the GPU loaded
  */
-static unsigned int _dispatcher_q_inflight_hi = 15;
+static unsigned int _dispatcher_q_inflight_hi = 18;
 
 /*
  * Minimum inflight for the multiple context case - this should sufficiently low
  * to allow for lower latency context switching
  */
-static unsigned int _dispatcher_q_inflight_lo = 4;
+static unsigned int _dispatcher_q_inflight_lo = 6;
 
 #define A650_DISPATCH_Q_INFLIGHT_HI	24
 #define A650_DISPATCH_Q_INFLIGHT_LO	6
@@ -181,6 +181,33 @@ _drawqueue_inflight(struct adreno_dispatcher_drawqueue *drawqueue)
 {
 	return (drawqueue->active_context_count > 1)
 		? _dispatcher_q_inflight_lo : _dispatcher_q_inflight_hi;
+}
+
+static inline unsigned int _drawqueue_depth(
+		struct adreno_dispatcher_drawqueue *drawqueue)
+{
+	if (drawqueue->tail >= drawqueue->head)
+		return drawqueue->tail - drawqueue->head;
+
+	return ADRENO_DISPATCH_DRAWQUEUE_SIZE -
+		(drawqueue->head - drawqueue->tail);
+}
+
+static inline unsigned int
+_drawqueue_burst(struct adreno_dispatcher_drawqueue *drawqueue, int inflight)
+{
+	unsigned int burst = _context_drawobj_burst;
+	unsigned int depth = _drawqueue_depth(drawqueue);
+
+	/*
+	 * If a single context has built up backlog, let it submit a slightly
+	 * larger chunk in one pass to reduce idle bubbles between dispatcher
+	 * wakes.
+	 */
+	if (drawqueue->active_context_count <= 1 && depth > burst)
+		burst = min_t(unsigned int, burst + 2, inflight);
+
+	return burst;
 }
 
 static void fault_detect_read(struct adreno_device *adreno_dev)
@@ -818,6 +845,7 @@ static int dispatcher_context_sendcmds(struct adreno_device *adreno_dev,
 	int count = 0;
 	int ret = 0;
 	int inflight = _drawqueue_inflight(dispatch_q);
+	unsigned int burst = _drawqueue_burst(dispatch_q, inflight);
 	unsigned int timestamp;
 
 	if (drawctxt->base.flags & KGSL_CONTEXT_SPARSE)
@@ -833,7 +861,7 @@ static int dispatcher_context_sendcmds(struct adreno_device *adreno_dev,
 	/*
 	 * Each context can send a specific number of drawobjs per cycle
 	 */
-	while ((count < _context_drawobj_burst) &&
+	while ((count < burst) &&
 		(dispatch_q->inflight < inflight)) {
 		struct kgsl_drawobj *drawobj;
 		struct kgsl_drawobj_cmd *cmdobj;
@@ -1047,8 +1075,17 @@ static void adreno_dispatcher_issuecmds(struct adreno_device *adreno_dev)
 
 	/* If the dispatcher is busy then schedule the work for later */
 	if (!mutex_trylock(&dispatcher->mutex)) {
-		_decrement_submit_now(device);
-		goto done;
+		/*
+		 * If ringbuffers drained while we were racing for the
+		 * dispatcher lock, take the lock synchronously to avoid an
+		 * avoidable idle gap.
+		 */
+		if (!READ_ONCE(dispatcher->inflight))
+			mutex_lock(&dispatcher->mutex);
+		else {
+			_decrement_submit_now(device);
+			goto done;
+		}
 	}
 
 	_adreno_dispatcher_issuecmds(adreno_dev);
