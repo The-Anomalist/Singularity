@@ -1031,12 +1031,17 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 		interconnect-names = "cpu-ddr";
-		qcom,icc-boost-percent = <135>;
-		qcom,icc-upscale-percent = <150>;
-		qcom,icc-min-avg-kbps = <6881000>;
-		qcom,icc-min-peak-kbps = <13763000>;
+		/*
+		 * Keep DDR BW voting aggressive enough to hold the top OPP
+		 * under bursty synthetic memory loads instead of repeatedly
+		 * bouncing down to mid bins.
+		 */
+		qcom,icc-boost-percent = <145>;
+		qcom,icc-upscale-percent = <170>;
+		qcom,icc-min-avg-kbps = <8060000>;
+		qcom,icc-min-peak-kbps = <13732000>;
 		qcom,icc-strict;
-		qcom,polling-ms = <10>;
+		qcom,polling-ms = <6>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
@@ -1199,9 +1204,9 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU0_TO_MEM>;
 		interconnect-names = "cpu-ddr";
-		qcom,icc-boost-percent = <130>;
-		qcom,icc-min-avg-kbps = <2597000>;
-		qcom,icc-min-peak-kbps = <5194000>;
+		qcom,icc-boost-percent = <140>;
+		qcom,icc-min-avg-kbps = <3879000>;
+		qcom,icc-min-peak-kbps = <6881000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
@@ -1213,9 +1218,9 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU4_TO_MEM>;
 		interconnect-names = "cpu-ddr";
-		qcom,icc-boost-percent = <135>;
-		qcom,icc-min-avg-kbps = <5161000>;
-		qcom,icc-min-peak-kbps = <10322000>;
+		qcom,icc-boost-percent = <145>;
+		qcom,icc-min-avg-kbps = <6881000>;
+		qcom,icc-min-peak-kbps = <12207000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
@@ -1227,9 +1232,9 @@
 		governor = "performance";
 		interconnects = <&kona_icc KONA_ICC_CPU4_TO_MEM>;
 		interconnect-names = "cpu-ddr";
-		qcom,icc-boost-percent = <130>;
-		qcom,icc-min-avg-kbps = <5161000>;
-		qcom,icc-min-peak-kbps = <10322000>;
+		qcom,icc-boost-percent = <140>;
+		qcom,icc-min-avg-kbps = <6881000>;
+		qcom,icc-min-peak-kbps = <12207000>;
 		qcom,src-dst-ports =
 			<MSM_BUS_MASTER_LLCC MSM_BUS_SLAVE_EBI_CH0>;
 		qcom,active-only;
@@ -3297,11 +3302,11 @@
 		<123 512 149422 0>, <1 757 1000 0>,  /* HS G1 RB */
 		<123 512 298189 0>, <1 757 1000 0>,  /* HS G2 RB */
 		/*
-		 * Keep stronger CNOC burst votes on high-speed Rate-B modes so
-		 * storage benchmarks do not stall while ramping the memory path.
+		 * Align high-speed Rate-B UFS votes with upper DDR bins so
+		 * storage bursts can sustain 3200/3600 DDR OPPs when needed.
 		 */
-		<123 512 3145728 0>, <1 757 256000 512000>,  /* HS G3 RB */
-		<123 512 6291456 0>, <1 757 512000 1024000>, /* HS G4 RB */
+		<123 512 4194304 0>, <1 757 320000 640000>,  /* HS G3 RB */
+		<123 512 8388608 0>, <1 757 512000 1024000>, /* HS G4 RB */
 		<123 512 298189 0>, <1 757 1000 0>,  /* HS G1 RB L2 */
 		<123 512 596378 0>, <1 757 1000 0>,  /* HS G2 RB L2 */
 		/* As UFS working in HS G3 RB L2 mode, aggregated
@@ -3310,9 +3315,9 @@
 		 * in order to scale up CNOC clock, instantaneous
 		 * bindwidth (IB) needs to be given a proper value too.
 		 */
-		<123 512 6291456 0>, <1 757 512000 1024000>, /* HS G3 RB L2 */
-		<123 512 10485760 0>, <1 757 640000 1280000>, /* HS G4 RB L2 */
-		<123 512 10485760 0>, <1 757 640000 1280000>; /* Max. bandwidth */
+		<123 512 8388608 0>, <1 757 512000 1024000>, /* HS G3 RB L2 */
+		<123 512 12207000 0>, <1 757 768000 1536000>, /* HS G4 RB L2 */
+		<123 512 13732000 0>, <1 757 768000 1536000>; /* Max. bandwidth */
 
 		qcom,bus-vector-names = "MIN",
 		"PWM_G1_L1", "PWM_G2_L1", "PWM_G3_L1", "PWM_G4_L1",
