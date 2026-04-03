@@ -384,11 +384,16 @@ int register_cache_hwmon(struct device *dev, struct cache_hwmon *hwmon)
 
 	node->cycles_per_med_req = 20;
 	node->cycles_per_high_req = 35;
+	/*
+	 * Keep some weight on low-priority requests so the cache governor can
+	 * ramp earlier instead of waiting only for MED/HIGH activity.
+	 */
+	node->cycles_per_low_req = 4;
 	node->min_busy = 100;
 	node->max_busy = 100;
-	node->tolerance_mrps = 5;
-	node->guard_band_mhz = 100;
-	node->decay_rate = 90;
+	node->tolerance_mrps = 4;
+	node->guard_band_mhz = 160;
+	node->decay_rate = 75;
 	node->hw = hwmon;
 	node->attr_grp = &dev_attr_group;
 
