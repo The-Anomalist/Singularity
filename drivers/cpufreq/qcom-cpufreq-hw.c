@@ -577,6 +577,7 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		unsigned int max_index = c->lut_max_entries - 1;
 		unsigned int offset_index = c->lut_max_entries;
 		u32 max_freq_data, max_volt_data, max_src, max_lval;
+		u32 programmed_freq_data, programmed_volt_data;
 		u32 new_lval, new_mv;
 		u64 new_freq_khz;
 		bool hw_backed = false;
@@ -611,7 +612,21 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 				writel_relaxed(max_volt_data,
 					       base_volt +
 					       offset_index * lut_row_size);
-				hw_backed = true;
+
+				/*
+				 * Read back the programmed LUT row and only expose
+				 * the OPP if the requested frequency/voltage were
+				 * really accepted by hardware.
+				 */
+				programmed_freq_data = readl_relaxed(
+					base_freq + offset_index * lut_row_size);
+				programmed_volt_data = readl_relaxed(
+					base_volt + offset_index * lut_row_size);
+				hw_backed =
+					((programmed_freq_data & GENMASK(7, 0))
+					 == new_lval) &&
+					((programmed_volt_data & GENMASK(11, 0))
+					 == new_mv);
 			}
 		}
 
@@ -631,7 +646,7 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 				 c->voltages[offset_index]);
 		} else {
 			dev_warn(dev,
-				 "offset OPP skipped for domain cpus%*pbl: no programmable HW LUT slot\n",
+				 "offset OPP skipped for domain cpus%*pbl: HW LUT rejected freq/volt programming\n",
 				 cpumask_pr_args(&c->related_cpus));
 		}
 	}
