@@ -16,15 +16,12 @@
 static struct kmem_cache *events_cache;
 static struct dentry *events_dentry;
 
-static inline void queue_event_list(struct kgsl_device *device,
-		struct list_head *events)
+static inline void signal_event(struct kgsl_device *device,
+		struct kgsl_event *event, int result)
 {
-	struct kgsl_event *event, *tmp;
-
-	list_for_each_entry_safe(event, tmp, events, node) {
-		list_del_init(&event->node);
-		queue_work(device->events_wq, &event->work);
-	}
+	list_del(&event->node);
+	event->result = result;
+	queue_work(device->events_wq, &event->work);
 }
 
 /**
@@ -71,7 +68,6 @@ static void _process_event_group(struct kgsl_device *device,
 	struct kgsl_event *event, *tmp;
 	unsigned int timestamp;
 	struct kgsl_context *context;
-	LIST_HEAD(signaled);
 
 	if (group == NULL)
 		return;
@@ -87,9 +83,6 @@ static void _process_event_group(struct kgsl_device *device,
 
 	spin_lock(&group->lock);
 
-	if (list_empty(&group->events) && !flush)
-		goto out;
-
 	group->readtimestamp(device, group->priv, KGSL_TIMESTAMP_RETIRED,
 		&timestamp);
 
@@ -97,13 +90,10 @@ static void _process_event_group(struct kgsl_device *device,
 		goto out;
 
 	list_for_each_entry_safe(event, tmp, &group->events, node) {
-		if (timestamp_cmp(event->timestamp, timestamp) <= 0) {
-			list_move_tail(&event->node, &signaled);
-			event->result = KGSL_EVENT_RETIRED;
-		} else if (flush) {
-			list_move_tail(&event->node, &signaled);
-			event->result = KGSL_EVENT_CANCELLED;
-		}
+		if (timestamp_cmp(event->timestamp, timestamp) <= 0)
+			signal_event(device, event, KGSL_EVENT_RETIRED);
+		else if (flush)
+			signal_event(device, event, KGSL_EVENT_CANCELLED);
 
 	}
 
@@ -111,7 +101,6 @@ static void _process_event_group(struct kgsl_device *device,
 
 out:
 	spin_unlock(&group->lock);
-	queue_event_list(device, &signaled);
 	kgsl_context_put(context);
 }
 
@@ -151,19 +140,15 @@ void kgsl_cancel_events_timestamp(struct kgsl_device *device,
 		struct kgsl_event_group *group, unsigned int timestamp)
 {
 	struct kgsl_event *event, *tmp;
-	LIST_HEAD(signaled);
 
 	spin_lock(&group->lock);
 
 	list_for_each_entry_safe(event, tmp, &group->events, node) {
-		if (timestamp_cmp(timestamp, event->timestamp) == 0) {
-			list_move_tail(&event->node, &signaled);
-			event->result = KGSL_EVENT_CANCELLED;
-		}
+		if (timestamp_cmp(timestamp, event->timestamp) == 0)
+			signal_event(device, event, KGSL_EVENT_CANCELLED);
 	}
 
 	spin_unlock(&group->lock);
-	queue_event_list(device, &signaled);
 }
 EXPORT_SYMBOL(kgsl_cancel_events_timestamp);
 
@@ -176,17 +161,13 @@ void kgsl_cancel_events(struct kgsl_device *device,
 		struct kgsl_event_group *group)
 {
 	struct kgsl_event *event, *tmp;
-	LIST_HEAD(signaled);
 
 	spin_lock(&group->lock);
 
-	list_for_each_entry_safe(event, tmp, &group->events, node) {
-		list_move_tail(&event->node, &signaled);
-		event->result = KGSL_EVENT_CANCELLED;
-	}
+	list_for_each_entry_safe(event, tmp, &group->events, node)
+		signal_event(device, event, KGSL_EVENT_CANCELLED);
 
 	spin_unlock(&group->lock);
-	queue_event_list(device, &signaled);
 }
 EXPORT_SYMBOL(kgsl_cancel_events);
 
@@ -203,20 +184,16 @@ void kgsl_cancel_event(struct kgsl_device *device,
 		kgsl_event_func func, void *priv)
 {
 	struct kgsl_event *event, *tmp;
-	LIST_HEAD(signaled);
 
 	spin_lock(&group->lock);
 
 	list_for_each_entry_safe(event, tmp, &group->events, node) {
 		if (timestamp == event->timestamp && func == event->func &&
-			event->priv == priv) {
-			list_move_tail(&event->node, &signaled);
-			event->result = KGSL_EVENT_CANCELLED;
-		}
+			event->priv == priv)
+			signal_event(device, event, KGSL_EVENT_CANCELLED);
 	}
 
 	spin_unlock(&group->lock);
-	queue_event_list(device, &signaled);
 }
 EXPORT_SYMBOL(kgsl_cancel_event);
 
@@ -301,13 +278,6 @@ int kgsl_add_event(struct kgsl_device *device, struct kgsl_event_group *group,
 	trace_kgsl_register_event(KGSL_CONTEXT_ID(context), timestamp, func);
 
 	spin_lock(&group->lock);
-
-	if (timestamp_cmp(group->processed, timestamp) >= 0) {
-		event->result = KGSL_EVENT_RETIRED;
-		queue_work(device->events_wq, &event->work);
-		spin_unlock(&group->lock);
-		return 0;
-	}
 
 	/*
 	 * Check to see if the requested timestamp has already retired.  If so,

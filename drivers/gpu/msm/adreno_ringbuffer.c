@@ -79,18 +79,8 @@ static void adreno_ringbuffer_wptr(struct adreno_device *adreno_dev,
 	struct adreno_gpudev *gpudev = ADRENO_GPU_DEVICE(adreno_dev);
 	unsigned long flags;
 	int ret = 0;
-	bool submit_pending;
 
 	spin_lock_irqsave(&rb->preempt_lock, flags);
-	submit_pending = rb->skip_inline_wptr || (rb->wptr != rb->_wptr);
-
-	/*
-	 * Avoid the expensive GMU fenced write path when there is no new work
-	 * to publish to the hardware.
-	 */
-	if (!submit_pending)
-		goto done;
-
 	if (adreno_in_preempt_state(adreno_dev, ADRENO_PREEMPT_NONE)) {
 
 		if (adreno_dev->cur_rb == rb) {
@@ -134,7 +124,6 @@ static void adreno_ringbuffer_wptr(struct adreno_device *adreno_dev,
 	}
 
 	rb->wptr = rb->_wptr;
-done:
 	spin_unlock_irqrestore(&rb->preempt_lock, flags);
 
 	if (ret) {
