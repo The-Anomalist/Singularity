@@ -336,7 +336,7 @@
 
 			qcom,lut-row-size = <4>;
 			qcom,max-frequency-offset-khz = <100000 100000 100000>;
-			qcom,max-voltage-offset-uv = <100000 100000 100000>;
+			qcom,max-voltage-offset-uv = <50000 50000 50000>;
 			qcom,skip-enable-check;
 
 			#freq-domain-cells = <2>;
