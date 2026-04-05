@@ -46,6 +46,7 @@ struct sugov_tunables {
 	unsigned int		auto_boost_prime_util;
 	unsigned int		auto_boost_efficiency_load;
 	unsigned int		auto_boost_efficiency_util;
+	unsigned int		auto_profile;
 	bool			uclamp_helper;
 	bool			auto_boost;
 	bool			pl;
@@ -780,6 +781,77 @@ static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #define DEFAULT_AUTO_BOOST_EFFICIENCY_LOAD 35
 #define DEFAULT_AUTO_BOOST_EFFICIENCY_UTIL 128
 
+enum sugov_auto_profile {
+	SUGOV_AUTO_PROFILE_MANUAL = 0,
+	SUGOV_AUTO_PROFILE_BALANCED = 1,
+	SUGOV_AUTO_PROFILE_BATTERY = 2,
+	SUGOV_AUTO_PROFILE_PERFORMANCE = 3,
+};
+
+static void sugov_apply_auto_profile(struct sugov_tunables *tunables,
+				     unsigned int profile)
+{
+	bool pelt = use_pelt();
+
+	tunables->auto_boost = true;
+	tunables->uclamp_helper = true;
+	tunables->mem_boost_util = 0;
+	tunables->mem_boost_hyst_us = 2000;
+	tunables->auto_boost_heavy_tasks = DEFAULT_AUTO_BOOST_HEAVY_TASKS;
+	tunables->auto_boost_heavy_util = DEFAULT_AUTO_BOOST_HEAVY_UTIL;
+	tunables->auto_boost_prime_util = DEFAULT_AUTO_BOOST_PRIME_UTIL;
+	tunables->auto_boost_efficiency_load =
+		DEFAULT_AUTO_BOOST_EFFICIENCY_LOAD;
+	tunables->auto_boost_efficiency_util =
+		DEFAULT_AUTO_BOOST_EFFICIENCY_UTIL;
+
+	if (pelt) {
+		tunables->down_rate_limit_us = 1000;
+		tunables->auto_boost_high_load = DEFAULT_AUTO_BOOST_HIGH_LOAD_PELT;
+		tunables->auto_boost_low_load = DEFAULT_AUTO_BOOST_LOW_LOAD_PELT;
+		tunables->auto_boost_min_util = DEFAULT_AUTO_BOOST_MIN_UTIL_PELT;
+		tunables->auto_boost_max_util = DEFAULT_AUTO_BOOST_MAX_UTIL_PELT;
+		tunables->auto_boost_decay_us = DEFAULT_AUTO_BOOST_DECAY_US_PELT;
+	} else {
+		tunables->down_rate_limit_us = 2000;
+		tunables->auto_boost_high_load = DEFAULT_AUTO_BOOST_HIGH_LOAD_WALT;
+		tunables->auto_boost_low_load = DEFAULT_AUTO_BOOST_LOW_LOAD_WALT;
+		tunables->auto_boost_min_util = DEFAULT_AUTO_BOOST_MIN_UTIL_WALT;
+		tunables->auto_boost_max_util = DEFAULT_AUTO_BOOST_MAX_UTIL_WALT;
+		tunables->auto_boost_decay_us = DEFAULT_AUTO_BOOST_DECAY_US_WALT;
+	}
+
+	switch (profile) {
+	case SUGOV_AUTO_PROFILE_BATTERY:
+		tunables->auto_boost_high_load = min(100U,
+			tunables->auto_boost_high_load + 4);
+		tunables->auto_boost_low_load = min(tunables->auto_boost_high_load,
+			tunables->auto_boost_low_load + 4);
+		tunables->auto_boost_min_util = mult_frac(
+			tunables->auto_boost_min_util, 9, 10);
+		tunables->auto_boost_max_util = mult_frac(
+			tunables->auto_boost_max_util, 9, 10);
+		tunables->auto_boost_decay_us = max(1000U,
+			mult_frac(tunables->auto_boost_decay_us, 3, 4));
+		break;
+	case SUGOV_AUTO_PROFILE_PERFORMANCE:
+		tunables->auto_boost_high_load = max(1U,
+			tunables->auto_boost_high_load - 4);
+		tunables->auto_boost_low_load = max(1U,
+			tunables->auto_boost_low_load - 4);
+		tunables->auto_boost_min_util = min(1024U, mult_frac(
+			tunables->auto_boost_min_util, 11, 10));
+		tunables->auto_boost_max_util = min(1024U, mult_frac(
+			tunables->auto_boost_max_util, 11, 10));
+		tunables->auto_boost_decay_us = max(tunables->auto_boost_decay_us,
+			12000U);
+		break;
+	case SUGOV_AUTO_PROFILE_BALANCED:
+	default:
+		break;
+	}
+}
+
 static bool sugov_policy_has_prime_cpu(struct sugov_policy *sg_policy)
 {
 	unsigned long policy_max_cap = 0, system_max_cap = 0;
@@ -1441,6 +1513,32 @@ static ssize_t auto_boost_store(struct gov_attr_set *attr_set,
 	return count;
 }
 
+static ssize_t auto_profile_show(struct gov_attr_set *attr_set, char *buf)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", tunables->auto_profile);
+}
+
+static ssize_t auto_profile_store(struct gov_attr_set *attr_set,
+				  const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+	unsigned int profile;
+
+	if (kstrtouint(buf, 10, &profile))
+		return -EINVAL;
+
+	if (profile > SUGOV_AUTO_PROFILE_PERFORMANCE)
+		return -EINVAL;
+
+	tunables->auto_profile = profile;
+	if (profile != SUGOV_AUTO_PROFILE_MANUAL)
+		sugov_apply_auto_profile(tunables, profile);
+
+	return count;
+}
+
 static ssize_t auto_boost_high_load_show(struct gov_attr_set *attr_set,
 					 char *buf)
 {
@@ -1828,6 +1926,7 @@ static struct governor_attr pl = __ATTR_RW(pl);
 static struct governor_attr mem_boost_util = __ATTR_RW(mem_boost_util);
 static struct governor_attr mem_boost_hyst_us = __ATTR_RW(mem_boost_hyst_us);
 static struct governor_attr auto_boost = __ATTR_RW(auto_boost);
+static struct governor_attr auto_profile = __ATTR_RW(auto_profile);
 static struct governor_attr auto_boost_high_load = __ATTR_RW(auto_boost_high_load);
 static struct governor_attr auto_boost_low_load = __ATTR_RW(auto_boost_low_load);
 static struct governor_attr auto_boost_min_util = __ATTR_RW(auto_boost_min_util);
@@ -1857,6 +1956,7 @@ static struct attribute *sugov_attributes[] = {
 	&mem_boost_util.attr,
 	&mem_boost_hyst_us.attr,
 	&auto_boost.attr,
+	&auto_profile.attr,
 	&auto_boost_high_load.attr,
 	&auto_boost_low_load.attr,
 	&auto_boost_min_util.attr,
@@ -1996,6 +2096,7 @@ static void sugov_tunables_save(struct cpufreq_policy *policy,
 	cached->hispeed_freq = tunables->hispeed_freq;
 	cached->up_rate_limit_us = tunables->up_rate_limit_us;
 	cached->down_rate_limit_us = tunables->down_rate_limit_us;
+	cached->auto_profile = tunables->auto_profile;
 	cached->auto_boost = tunables->auto_boost;
 	cached->auto_boost_high_load = tunables->auto_boost_high_load;
 	cached->auto_boost_low_load = tunables->auto_boost_low_load;
@@ -2036,6 +2137,7 @@ static void sugov_tunables_restore(struct cpufreq_policy *policy)
 	tunables->hispeed_freq = cached->hispeed_freq;
 	tunables->up_rate_limit_us = cached->up_rate_limit_us;
 	tunables->down_rate_limit_us = cached->down_rate_limit_us;
+	tunables->auto_profile = cached->auto_profile;
 	tunables->auto_boost = cached->auto_boost;
 	tunables->auto_boost_high_load = cached->auto_boost_high_load;
 	tunables->auto_boost_low_load = cached->auto_boost_low_load;
@@ -2107,32 +2209,8 @@ static int sugov_init(struct cpufreq_policy *policy)
 	tunables->down_hysteresis_us = 3000;
 	tunables->hispeed_load = DEFAULT_HISPEED_LOAD;
 	tunables->hispeed_freq = 0;
-	tunables->mem_boost_util = 0;
-	tunables->mem_boost_hyst_us = 2000;
-	tunables->auto_boost = true;
-	tunables->auto_boost_heavy_tasks = DEFAULT_AUTO_BOOST_HEAVY_TASKS;
-	tunables->auto_boost_heavy_util = DEFAULT_AUTO_BOOST_HEAVY_UTIL;
-	tunables->auto_boost_prime_util = DEFAULT_AUTO_BOOST_PRIME_UTIL;
-	tunables->auto_boost_efficiency_load =
-		DEFAULT_AUTO_BOOST_EFFICIENCY_LOAD;
-	tunables->auto_boost_efficiency_util =
-		DEFAULT_AUTO_BOOST_EFFICIENCY_UTIL;
-	if (use_pelt()) {
-		tunables->down_rate_limit_us = 1000;
-		tunables->auto_boost_high_load = DEFAULT_AUTO_BOOST_HIGH_LOAD_PELT;
-		tunables->auto_boost_low_load = DEFAULT_AUTO_BOOST_LOW_LOAD_PELT;
-		tunables->auto_boost_min_util = DEFAULT_AUTO_BOOST_MIN_UTIL_PELT;
-		tunables->auto_boost_max_util = DEFAULT_AUTO_BOOST_MAX_UTIL_PELT;
-		tunables->auto_boost_decay_us = DEFAULT_AUTO_BOOST_DECAY_US_PELT;
-	} else {
-		tunables->down_rate_limit_us = 2000;
-		tunables->auto_boost_high_load = DEFAULT_AUTO_BOOST_HIGH_LOAD_WALT;
-		tunables->auto_boost_low_load = DEFAULT_AUTO_BOOST_LOW_LOAD_WALT;
-		tunables->auto_boost_min_util = DEFAULT_AUTO_BOOST_MIN_UTIL_WALT;
-		tunables->auto_boost_max_util = DEFAULT_AUTO_BOOST_MAX_UTIL_WALT;
-		tunables->auto_boost_decay_us = DEFAULT_AUTO_BOOST_DECAY_US_WALT;
-	}
-	tunables->uclamp_helper = true;
+	tunables->auto_profile = SUGOV_AUTO_PROFILE_BALANCED;
+	sugov_apply_auto_profile(tunables, tunables->auto_profile);
 #ifdef OPLUS_FEATURE_POWER_CPUFREQ
 	tunables->target_loads = default_target_loads;
 	tunables->ntarget_loads = ARRAY_SIZE(default_target_loads);
