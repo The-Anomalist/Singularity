@@ -2672,7 +2672,11 @@ DEFINE_RWLOCK(related_thread_group_lock);
  * sched_group_upmigrate need to be up-migrated if possible.
  */
 unsigned int __read_mostly sched_group_upmigrate = 20000000;
-unsigned int __read_mostly sysctl_sched_group_upmigrate_pct = 100;
+/*
+ * Promote thread groups before a cluster is completely saturated so
+ * heterogenous systems can ramp into bigger clusters with less wakeup lag.
+ */
+unsigned int __read_mostly sysctl_sched_group_upmigrate_pct = 95;
 
 /*
  * Task groups, once up-migrated, will need to drop their aggregate
@@ -2680,7 +2684,11 @@ unsigned int __read_mostly sysctl_sched_group_upmigrate_pct = 100;
  * migrated.
  */
 unsigned int __read_mostly sched_group_downmigrate = 19000000;
-unsigned int __read_mostly sysctl_sched_group_downmigrate_pct = 95;
+/*
+ * Keep a small hysteresis band to avoid ping-pong while still allowing
+ * groups to return to efficient clusters once sustained demand drops.
+ */
+unsigned int __read_mostly sysctl_sched_group_downmigrate_pct = 90;
 
 static inline
 void update_best_cluster(struct related_thread_group *grp,
