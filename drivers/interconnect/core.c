@@ -15,6 +15,7 @@
 #include <linux/pm.h>
 #include <linux/suspend.h>
 #include <linux/property.h>
+#include <linux/rcupdate.h>
 #include <linux/slab.h>
 
 static LIST_HEAD(icc_providers);
@@ -75,63 +76,65 @@ struct class *icc_class_get(void)
 }
 EXPORT_SYMBOL_GPL(icc_class_get);
 
-static struct icc_provider *icc_find_provider(struct device_node *np)
+static struct icc_provider *icc_find_provider_rcu(struct device_node *np)
 {
-struct icc_provider *provider;
+	struct icc_provider *provider;
 
-hash_for_each_possible(icc_providers_ht, provider, hlist,
-(unsigned long)np) {
-if (provider->of_node == np)
-return provider;
-}
+	hash_for_each_possible_rcu(icc_providers_ht, provider, hlist,
+				   (unsigned long)np) {
+		if (provider->of_node == np)
+			return provider;
+	}
 
-return NULL;
+	return NULL;
 }
 
 int icc_provider_register(struct icc_provider *provider)
 {
-struct icc_provider *tmp;
-int ret = 0;
+	struct icc_provider *tmp;
+	int ret = 0;
 
-if (!provider || !provider->dev || !provider->xlate)
-return -EINVAL;
+	if (!provider || !provider->dev || !provider->xlate)
+		return -EINVAL;
 
-if (!provider->of_node)
-provider->of_node = provider->dev->of_node;
+	if (!provider->of_node)
+		provider->of_node = provider->dev->of_node;
 
-if (!provider->of_node)
-return -EINVAL;
+	if (!provider->of_node)
+		return -EINVAL;
 
-mutex_lock(&icc_lock);
-hash_for_each_possible(icc_providers_ht, tmp, hlist,
-(unsigned long)provider->of_node) {
-if (tmp->of_node == provider->of_node) {
-ret = -EEXIST;
-goto out_unlock;
-}
-}
+	mutex_lock(&icc_lock);
+	hash_for_each_possible(icc_providers_ht, tmp, hlist,
+			       (unsigned long)provider->of_node) {
+		if (tmp->of_node == provider->of_node) {
+			ret = -EEXIST;
+			goto out_unlock;
+		}
+	}
 
-INIT_HLIST_NODE(&provider->hlist);
-hash_add(icc_providers_ht, &provider->hlist,
- (unsigned long)provider->of_node);
-list_add_tail(&provider->node, &icc_providers);
+	INIT_HLIST_NODE(&provider->hlist);
+	hash_add_rcu(icc_providers_ht, &provider->hlist,
+		     (unsigned long)provider->of_node);
+	list_add_tail(&provider->node, &icc_providers);
 
 out_unlock:
-mutex_unlock(&icc_lock);
+	mutex_unlock(&icc_lock);
 
-return ret;
+	return ret;
 }
 EXPORT_SYMBOL_GPL(icc_provider_register);
 
 void icc_provider_unregister(struct icc_provider *provider)
 {
-if (!provider)
-return;
+	if (!provider)
+		return;
 
-mutex_lock(&icc_lock);
-hash_del(&provider->hlist);
-list_del(&provider->node);
-mutex_unlock(&icc_lock);
+	mutex_lock(&icc_lock);
+	hash_del_rcu(&provider->hlist);
+	list_del(&provider->node);
+	mutex_unlock(&icc_lock);
+
+	synchronize_rcu();
 }
 EXPORT_SYMBOL_GPL(icc_provider_unregister);
 
@@ -156,13 +159,13 @@ EXPORT_SYMBOL_GPL(icc_of_xlate_onecell);
 
 static struct icc_provider *icc_get_provider(struct device_node *np)
 {
-struct icc_provider *provider;
+	struct icc_provider *provider;
 
-mutex_lock(&icc_lock);
-provider = icc_find_provider(np);
-mutex_unlock(&icc_lock);
+	rcu_read_lock();
+	provider = icc_find_provider_rcu(np);
+	rcu_read_unlock();
 
-return provider;
+	return provider;
 }
 
 static struct icc_path *__of_icc_get(struct device *dev, int index)
