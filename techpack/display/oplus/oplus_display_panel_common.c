@@ -427,10 +427,8 @@ int oplus_display_panel_get_vendor(void *buf)
 	vendor = (char *)display->panel->oplus_priv.vendor_name;
 	manu_name = (char *)display->panel->oplus_priv.manufacture_name;
 
-	memcpy(p_info->version, vendor,
-	       strlen(vendor) > 31 ? 31 : (strlen(vendor) + 1));
-	memcpy(p_info->manufacture, manu_name,
-	       strlen(manu_name) > 31 ? 31 : (strlen(manu_name) + 1));
+	strscpy(p_info->version, vendor, sizeof(p_info->version));
+	strscpy(p_info->manufacture, manu_name, sizeof(p_info->manufacture));
 
 	return 0;
 }
@@ -450,9 +448,7 @@ int oplus_display_panel_get_panel_name(void *buf)
 
 	name = (char *)display->panel->name;
 
-	memcpy(p_name->name, name,
-	       strlen(name) >= (PANEL_NAME_LENS - 1) ? (PANEL_NAME_LENS - 1) :
-						       (strlen(name) + 1));
+	strscpy(p_name->name, name, sizeof(p_name->name));
 
 	return 0;
 }
