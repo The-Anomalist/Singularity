@@ -258,22 +258,6 @@ MODULE_PARM_DESC(kona_perf_light_kb,
 module_param(kona_perf_turbo_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_perf_turbo_kb,
         "Threshold KB/s for turbo bias selection (default: 14000000)");
-static bool kona_auto_vote_enable = true;
-static unsigned long kona_auto_vote_floor_ab_kb = 384000;      /* 384 MB/s */
-static unsigned long kona_auto_vote_floor_ib_kb = 768000;      /* 768 MB/s */
-static unsigned long kona_auto_vote_ceiling_kb = 600000000;    /* 600 GB/s */
-module_param(kona_auto_vote_enable, bool, 0644);
-MODULE_PARM_DESC(kona_auto_vote_enable,
-	"Enable global automatic AB/IB floor+ceiling clamping for all non-zero votes");
-module_param(kona_auto_vote_floor_ab_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_auto_vote_floor_ab_kb,
-	"Global AB floor in KB/s for all non-zero votes when auto vote is enabled");
-module_param(kona_auto_vote_floor_ib_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_auto_vote_floor_ib_kb,
-	"Global IB floor in KB/s for all non-zero votes when auto vote is enabled");
-module_param(kona_auto_vote_ceiling_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_auto_vote_ceiling_kb,
-	"Global AB/IB ceiling in KB/s for all votes when auto vote is enabled (default: 600 GB/s)");
 module_param(kona_perf_sustain_boost_enable, bool, 0644);
 MODULE_PARM_DESC(kona_perf_sustain_boost_enable,
 	"Apply extra sustained-performance headroom on heavy CPU/GPU/NPU traffic");
@@ -1094,36 +1078,6 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 
 	pr_debug("kona-icc: vote for %s after floor/bias (ab=%llu KBps, ib=%llu KBps)\n",
 		 desc->name, *ab, *ib);
-}
-
-static void __maybe_unused
-kona_icc_apply_auto_vote_limits(u64 *ab, u64 *ib)
-{
-	u64 floor_ab, floor_ib, ceiling;
-
-	if (!kona_auto_vote_enable)
-		return;
-
-	floor_ab = kona_auto_vote_floor_ab_kb;
-	floor_ib = kona_auto_vote_floor_ib_kb;
-	ceiling = kona_auto_vote_ceiling_kb;
-
-	if (*ab) {
-		if (floor_ab && *ab < floor_ab)
-			*ab = floor_ab;
-		if (ceiling && *ab > ceiling)
-			*ab = ceiling;
-	}
-
-	if (*ib) {
-		if (floor_ib && *ib < floor_ib)
-			*ib = floor_ib;
-		if (ceiling && *ib > ceiling)
-			*ib = ceiling;
-	}
-
-	if (*ab && *ib < *ab)
-		*ib = *ab;
 }
 #endif /* CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR */
 
@@ -2042,9 +1996,6 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	kona_icc_apply_gpu_llcc_turbo(qp, &qp->nodes[index], &ab, &ib);
 
 skip_perf_floor:
-#endif
-#ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
-	kona_icc_apply_auto_vote_limits(&ab, &ib);
 #endif
 
 #ifdef DEBUG
