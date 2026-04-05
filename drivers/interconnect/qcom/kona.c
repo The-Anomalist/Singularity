@@ -174,6 +174,15 @@ MODULE_PARM_DESC(kona_display_topology_strict,
 #define KONA_CPU_DDR_IB_FLOOR_KB	(38000000ULL) /* ~38 GB/s */
 #define KONA_CPU_LLCC_AB_FLOOR_KB	(15000000ULL) /* ~15 GB/s */
 #define KONA_CPU_LLCC_IB_FLOOR_KB	(23000000ULL) /* ~23 GB/s */
+/*
+ * CPU0 commonly carries foreground/scheduler work and can oscillate around
+ * 1.804 GHz in short bursts. Keep its baseline lower than generic CPU floors
+ * to avoid over-voting memory, then apply a targeted uplift near that corner.
+ */
+#define KONA_CPU0_DDR_AB_FLOOR_KB	(12000000ULL) /* ~12 GB/s */
+#define KONA_CPU0_DDR_IB_FLOOR_KB	(20000000ULL) /* ~20 GB/s */
+#define KONA_CPU0_LLCC_AB_FLOOR_KB	(9000000ULL)  /* ~9 GB/s */
+#define KONA_CPU0_LLCC_IB_FLOOR_KB	(15000000ULL) /* ~15 GB/s */
 #define KONA_CPU_PRIME_DDR_AB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
 #define KONA_CPU_PRIME_DDR_IB_FLOOR_KB	(40000000ULL) /* ~40 GB/s */
 #define KONA_CPU_PRIME_LLCC_AB_FLOOR_KB	(16000000ULL) /* ~16 GB/s */
@@ -320,6 +329,10 @@ static unsigned long kona_gpu_llcc_turbo_enter_ib_kb = 7200000; /* 7.2 GB/s */
 static unsigned long kona_gpu_llcc_turbo_exit_ib_kb = 5400000;  /* 5.4 GB/s */
 static unsigned long kona_gpu_llcc_turbo_ab_kb = 23500000;      /* 23.5 GB/s */
 static unsigned long kona_gpu_llcc_turbo_ib_kb = 28500000;      /* 28.5 GB/s */
+static bool kona_cpu0_1804_boost_enable = true;
+static unsigned long kona_cpu0_1804_trigger_kb = 1305600; /* 1.804 GHz corner */
+static unsigned int kona_cpu0_1804_boost_percent = 118;
+static unsigned int kona_cpu0_1804_min_ratio_percent = 160;
 module_param(kona_gpu_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_gpu_keepalive_enable,
         "Keep non-zero floor for gpu-ddr AB/IB between short idle gaps");
@@ -456,6 +469,18 @@ MODULE_PARM_DESC(kona_gpu_llcc_turbo_ab_kb,
 module_param(kona_gpu_llcc_turbo_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_gpu_llcc_turbo_ib_kb,
         "Forced gpu-llcc IB vote in KB/s while turbo pinning is active");
+module_param(kona_cpu0_1804_boost_enable, bool, 0644);
+MODULE_PARM_DESC(kona_cpu0_1804_boost_enable,
+	"Enable targeted CPU0 memory uplift around the 1.804 GHz BW corner");
+module_param(kona_cpu0_1804_trigger_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_cpu0_1804_trigger_kb,
+	"CPU0 BW trigger in KB/s that represents the 1.804 GHz operating corner");
+module_param(kona_cpu0_1804_boost_percent, uint, 0644);
+MODULE_PARM_DESC(kona_cpu0_1804_boost_percent,
+	"Percent boost applied to CPU0 IB once the 1.804 GHz trigger is reached");
+module_param(kona_cpu0_1804_min_ratio_percent, uint, 0644);
+MODULE_PARM_DESC(kona_cpu0_1804_min_ratio_percent,
+	"Minimum CPU0 IB as percent of AB once the 1.804 GHz trigger is reached");
 
 static void kona_icc_update_gpu_llcc_turbo(struct kona_icc_provider *qp, u64 ib)
 {
@@ -756,6 +781,38 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		max(*ab, *ib) >= kona_npu_oc_pin_threshold_kb;
 
 	switch (desc->id) {
+	case KONA_ICC_CPU0_TO_MEM:
+		if (*ab && *ab < KONA_CPU0_DDR_AB_FLOOR_KB)
+			*ab = KONA_CPU0_DDR_AB_FLOOR_KB;
+		if (*ib && *ib < KONA_CPU0_DDR_IB_FLOOR_KB)
+			*ib = KONA_CPU0_DDR_IB_FLOOR_KB;
+
+		if (kona_cpu0_1804_boost_enable &&
+		    max(*ab, *ib) >= kona_cpu0_1804_trigger_kb) {
+			if (*ib)
+				*ib = kona_icc_add_headroom(*ib, kona_cpu0_1804_boost_percent);
+			if (*ab && *ib < mul_u64_u32_div(*ab,
+						kona_cpu0_1804_min_ratio_percent, 100))
+				*ib = mul_u64_u32_div(*ab,
+						kona_cpu0_1804_min_ratio_percent, 100);
+		}
+		break;
+	case KONA_ICC_CPU0_TO_LLCC:
+		if (*ab && *ab < KONA_CPU0_LLCC_AB_FLOOR_KB)
+			*ab = KONA_CPU0_LLCC_AB_FLOOR_KB;
+		if (*ib && *ib < KONA_CPU0_LLCC_IB_FLOOR_KB)
+			*ib = KONA_CPU0_LLCC_IB_FLOOR_KB;
+
+		if (kona_cpu0_1804_boost_enable &&
+		    max(*ab, *ib) >= kona_cpu0_1804_trigger_kb) {
+			if (*ib)
+				*ib = kona_icc_add_headroom(*ib, kona_cpu0_1804_boost_percent);
+			if (*ab && *ib < mul_u64_u32_div(*ab,
+						kona_cpu0_1804_min_ratio_percent, 100))
+				*ib = mul_u64_u32_div(*ab,
+						kona_cpu0_1804_min_ratio_percent, 100);
+		}
+		break;
 	case KONA_ICC_CPU_TO_MEM:
 	case KONA_ICC_CPU_TO_GPU_CFG:
 	case KONA_ICC_UFS_TO_MEM:
@@ -764,7 +821,6 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 	case KONA_ICC_TSIF_TO_MEM:
 	case KONA_ICC_CAM_CFG:
 	case KONA_ICC_VIDEO_TO_MEM:
-	case KONA_ICC_CPU0_TO_MEM:
 	case KONA_ICC_CPU1_TO_MEM:
 	case KONA_ICC_CPU2_TO_MEM:
 	case KONA_ICC_CPU3_TO_MEM:
@@ -794,7 +850,6 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		break;
 	case KONA_ICC_CPU_TO_LLCC:
 	case KONA_ICC_UFS_TO_LLCC:
-	case KONA_ICC_CPU0_TO_LLCC:
 	case KONA_ICC_CPU1_TO_LLCC:
 	case KONA_ICC_CPU2_TO_LLCC:
 	case KONA_ICC_CPU3_TO_LLCC:
