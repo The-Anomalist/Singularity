@@ -22,7 +22,10 @@ static bool kgsl_reclaim;
  * that allowing 30MB (7680 pages) of relcaim per process will have little
  * impact and the latency will be within acceptable limit.
  */
-static u32 kgsl_reclaim_max_page_limit = 7680;
+#define KGSL_RECLAIM_DEFAULT_LIMIT_PAGES	(7680) /* 30 MB @ 4 KB pages */
+#define KGSL_RECLAIM_MAX_LIMIT_PAGES	((SZ_2G + SZ_512M) >> PAGE_SHIFT)
+
+static u32 kgsl_reclaim_max_page_limit = KGSL_RECLAIM_DEFAULT_LIMIT_PAGES;
 
 static int kgsl_memdesc_get_reclaimed_pages(struct kgsl_mem_entry *entry)
 {
@@ -178,12 +181,18 @@ ssize_t kgsl_proc_max_reclaim_limit_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int ret;
+	u32 limit;
 
 	if (!kgsl_reclaim)
 		return -EINVAL;
 
-	ret = kstrtou32(buf, 0, &kgsl_reclaim_max_page_limit);
-	return ret ? ret : count;
+	ret = kstrtou32(buf, 0, &limit);
+	if (ret)
+		return ret;
+
+	kgsl_reclaim_max_page_limit = min(limit, (u32) KGSL_RECLAIM_MAX_LIMIT_PAGES);
+
+	return count;
 }
 
 ssize_t kgsl_proc_max_reclaim_limit_show(struct device *dev,

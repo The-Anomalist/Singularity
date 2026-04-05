@@ -16,7 +16,12 @@
 
 #define KGSL_MAX_POOLS 4
 #define KGSL_MAX_POOL_ORDER 8
-#define KGSL_MAX_RESERVED_PAGES 4096
+/*
+ * Keep an upper bound for per-pool reservation requests from DT.
+ * This allows high-memory targets to opt into larger reservations
+ * (up to 2.5GB) while retaining a hard sanity limit.
+ */
+#define KGSL_MAX_RESERVED_PAGES	((SZ_2G + SZ_512M) >> PAGE_SHIFT)
 
 /**
  * struct kgsl_page_pool - Structure to hold information for the pool
@@ -571,4 +576,3 @@ void kgsl_exit_page_pools(void)
 	/* Unregister shrinker */
 	unregister_shrinker(&kgsl_pool_shrinker);
 }
-
