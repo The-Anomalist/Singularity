@@ -18,6 +18,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
+#include <linux/math64.h>
 #include <media/v4l2-mem2mem.h>
 #include <media/videobuf2-dma-sg.h>
 #include <media/v4l2-ioctl.h>
@@ -31,6 +32,10 @@
 #include "venc.h"
 
 #define NUM_B_FRAMES_MAX	4
+#define VENUS_2K_PIXELS		(2560U * 1440U)
+#define VENUS_4K_PIXELS		(3840U * 2160U)
+#define VENUS_8K_PIXELS		(7680U * 4320U)
+#define VENUS_DEFAULT_BITRATE	1000000
 
 /*
  * Three resons to keep MPLANE formats (despite that the number of planes
@@ -87,6 +92,105 @@ find_format(struct venus_inst *inst, u32 pixfmt, u32 type)
 		return NULL;
 
 	return &fmt[i];
+}
+
+static u32 venc_frame_area(const struct venus_inst *inst)
+{
+	return inst->width * inst->height;
+}
+
+static u32 venc_default_target_bitrate(const struct venus_inst *inst)
+{
+	u32 fps = max_t(u32, inst->fps, 1);
+	u32 area = venc_frame_area(inst);
+	u64 bitrate;
+
+	if (inst->fmt_cap->pixfmt == V4L2_PIX_FMT_HEVC) {
+		if (area >= VENUS_8K_PIXELS)
+			return 50000000;
+		if (area >= VENUS_4K_PIXELS)
+			return 22000000;
+		if (area >= VENUS_2K_PIXELS)
+			return 12000000;
+		if (area > 1920U * 1088U)
+			return 9000000;
+		return 5000000;
+	}
+
+	if (inst->fmt_cap->pixfmt == V4L2_PIX_FMT_H264) {
+		if (area >= VENUS_8K_PIXELS)
+			return 70000000;
+		if (area >= VENUS_4K_PIXELS)
+			return 32000000;
+		if (area >= VENUS_2K_PIXELS)
+			return 18000000;
+		if (area > 1920U * 1088U)
+			return 12000000;
+		return 8000000;
+	}
+
+	bitrate = (u64)area * fps * 7;
+	bitrate = div_u64(bitrate, 50);
+	return clamp_t(u32, bitrate, 2000000, 25000000);
+}
+
+static u32 venc_default_peak_bitrate(const struct venus_inst *inst, u32 target)
+{
+	u32 fps = max_t(u32, inst->fps, 1);
+	u32 area = venc_frame_area(inst);
+	u64 peak;
+	u32 factor = 2;
+
+	if ((area >= VENUS_4K_PIXELS && fps >= 60) || area >= VENUS_8K_PIXELS)
+		factor = 3;
+
+	peak = (u64)target * factor;
+	return min_t(u64, peak, 160000000U);
+}
+
+static u32 venc_default_h264_level(const struct venus_inst *inst)
+{
+	u32 area = venc_frame_area(inst);
+	u32 fps = max_t(u32, inst->fps, 1);
+
+	if (area > VENUS_4K_PIXELS || fps > 60)
+		return V4L2_MPEG_VIDEO_H264_LEVEL_5_1;
+	if (area > 1920U * 1088U || fps > 30)
+		return V4L2_MPEG_VIDEO_H264_LEVEL_5_0;
+	if (area > 1280U * 720U)
+		return V4L2_MPEG_VIDEO_H264_LEVEL_4_1;
+
+	return V4L2_MPEG_VIDEO_H264_LEVEL_3_1;
+}
+
+static u32 venc_default_hevc_level(const struct venus_inst *inst)
+{
+	u32 area = venc_frame_area(inst);
+	u32 fps = max_t(u32, inst->fps, 1);
+
+	if (area > VENUS_4K_PIXELS || fps > 60)
+		return V4L2_MPEG_VIDEO_HEVC_LEVEL_6_1;
+	if (area > 1920U * 1088U || fps > 30)
+		return V4L2_MPEG_VIDEO_HEVC_LEVEL_5_1;
+	if (area > 1280U * 720U)
+		return V4L2_MPEG_VIDEO_HEVC_LEVEL_4_1;
+
+	return V4L2_MPEG_VIDEO_HEVC_LEVEL_3_1;
+}
+
+static unsigned int venc_recommended_min_buffers(const struct venus_inst *inst)
+{
+	u32 area = venc_frame_area(inst);
+	unsigned int min = 4;
+
+	if (area >= VENUS_2K_PIXELS)
+		min++;
+	if (area >= VENUS_4K_PIXELS)
+		min++;
+	if (inst->controls.enc.num_b_frames)
+		min++;
+
+	return min;
 }
 
 static const struct venus_format *
@@ -654,6 +758,7 @@ static int venc_set_properties(struct venus_inst *inst)
 	struct hfi_bitrate brate;
 	struct hfi_idr_period idrp;
 	u32 ptype, rate_control, bitrate, profile = 0, level = 0;
+	u32 default_bitrate;
 	int ret;
 
 	ret = venus_helper_set_work_mode(inst, VIDC_WORK_MODE_2);
@@ -746,8 +851,9 @@ static int venc_set_properties(struct venus_inst *inst)
 	if (ret)
 		return ret;
 
-	if (!ctr->bitrate)
-		bitrate = 64000;
+	default_bitrate = venc_default_target_bitrate(inst);
+	if (!ctr->bitrate || ctr->bitrate == VENUS_DEFAULT_BITRATE)
+		bitrate = default_bitrate;
 	else
 		bitrate = ctr->bitrate;
 
@@ -759,8 +865,8 @@ static int venc_set_properties(struct venus_inst *inst)
 	if (ret)
 		return ret;
 
-	if (!ctr->bitrate_peak)
-		bitrate *= 2;
+	if (!ctr->bitrate_peak || ctr->bitrate_peak == (VENUS_DEFAULT_BITRATE * 2))
+		bitrate = venc_default_peak_bitrate(inst, brate.bitrate);
 	else
 		bitrate = ctr->bitrate_peak;
 
@@ -773,10 +879,15 @@ static int venc_set_properties(struct venus_inst *inst)
 		return ret;
 
 	if (inst->fmt_cap->pixfmt == V4L2_PIX_FMT_H264) {
+		u32 h264_level = ctr->level.h264;
+
+		if (h264_level == V4L2_MPEG_VIDEO_H264_LEVEL_1_0)
+			h264_level = venc_default_h264_level(inst);
+
 		profile = venc_v4l2_to_hfi(V4L2_CID_MPEG_VIDEO_H264_PROFILE,
 					   ctr->profile.h264);
 		level = venc_v4l2_to_hfi(V4L2_CID_MPEG_VIDEO_H264_LEVEL,
-					 ctr->level.h264);
+					 h264_level);
 	} else if (inst->fmt_cap->pixfmt == V4L2_PIX_FMT_VP8) {
 		profile = venc_v4l2_to_hfi(V4L2_CID_MPEG_VIDEO_VP8_PROFILE,
 					   ctr->profile.vpx);
@@ -790,10 +901,15 @@ static int venc_set_properties(struct venus_inst *inst)
 		profile = 0;
 		level = 0;
 	} else if (inst->fmt_cap->pixfmt == V4L2_PIX_FMT_HEVC) {
+		u32 hevc_level = ctr->level.hevc;
+
+		if (!hevc_level || hevc_level == V4L2_MPEG_VIDEO_HEVC_LEVEL_1)
+			hevc_level = venc_default_hevc_level(inst);
+
 		profile = venc_v4l2_to_hfi(V4L2_CID_MPEG_VIDEO_HEVC_PROFILE,
 					   ctr->profile.hevc);
 		level = venc_v4l2_to_hfi(V4L2_CID_MPEG_VIDEO_HEVC_LEVEL,
-					 ctr->level.hevc);
+					 hevc_level);
 	}
 
 	ptype = HFI_PROPERTY_PARAM_PROFILE_LEVEL_CURRENT;
@@ -863,8 +979,10 @@ static int venc_queue_setup(struct vb2_queue *q,
 			    unsigned int sizes[], struct device *alloc_devs[])
 {
 	struct venus_inst *inst = vb2_get_drv_priv(q);
-	unsigned int num, min = 4;
+	unsigned int num, min;
 	int ret = 0;
+
+	min = venc_recommended_min_buffers(inst);
 
 	if (*num_planes) {
 		if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE &&

@@ -30,6 +30,10 @@
 #include "helpers.h"
 #include "vdec.h"
 
+#define VENUS_1080P_PIXELS	(1920U * 1088U)
+#define VENUS_2K_PIXELS		(2560U * 1440U)
+#define VENUS_4K_PIXELS		(3840U * 2160U)
+
 /*
  * Three resons to keep MPLANE formats (despite that the number of planes
  * currently is one):
@@ -563,8 +567,8 @@ static int vdec_output_conf(struct venus_inst *inst)
 			return ret;
 	}
 
-	/* Force searching UBWC formats for bigger then HD resolutions */
-	if (width > 1920 && height > ALIGN(1080, 32))
+	/* Force searching UBWC formats for streams larger than 1080p. */
+	if ((u64)width * height > VENUS_1080P_PIXELS)
 		ubwc = true;
 
 	/* For Venus v4 UBWC format is mandatory */
@@ -644,6 +648,22 @@ static int vdec_output_conf(struct venus_inst *inst)
 	return 0;
 }
 
+static unsigned int vdec_buffer_margin(struct venus_inst *inst)
+{
+	u32 area = inst->out_width * inst->out_height;
+	unsigned int margin = 0;
+
+	if (area >= VENUS_2K_PIXELS)
+		margin++;
+	if (area >= VENUS_4K_PIXELS)
+		margin++;
+	if (inst->fmt_out->pixfmt == V4L2_PIX_FMT_H264 ||
+	    inst->fmt_out->pixfmt == V4L2_PIX_FMT_HEVC)
+		margin++;
+
+	return margin;
+}
+
 static int vdec_init_session(struct venus_inst *inst)
 {
 	int ret;
@@ -704,6 +724,7 @@ static int vdec_queue_setup(struct vb2_queue *q,
 {
 	struct venus_inst *inst = vb2_get_drv_priv(q);
 	unsigned int in_num, out_num;
+	unsigned int margin;
 	int ret = 0;
 
 	if (*num_planes) {
@@ -731,6 +752,7 @@ static int vdec_queue_setup(struct vb2_queue *q,
 	ret = vdec_num_buffers(inst, &in_num, &out_num);
 	if (ret)
 		return ret;
+	margin = vdec_buffer_margin(inst);
 
 	switch (q->type) {
 	case V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE:
@@ -739,9 +761,9 @@ static int vdec_queue_setup(struct vb2_queue *q,
 						    inst->out_width,
 						    inst->out_height);
 		inst->input_buf_size = sizes[0];
-		*num_buffers = max(*num_buffers, in_num);
+		*num_buffers = max(*num_buffers, in_num + margin);
 		inst->num_input_bufs = *num_buffers;
-		inst->num_output_bufs = out_num;
+		inst->num_output_bufs = out_num + margin;
 		break;
 	case V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE:
 		*num_planes = inst->fmt_cap->num_planes;
@@ -749,7 +771,7 @@ static int vdec_queue_setup(struct vb2_queue *q,
 						    inst->width,
 						    inst->height);
 		inst->output_buf_size = sizes[0];
-		*num_buffers = max(*num_buffers, out_num);
+		*num_buffers = max(*num_buffers, out_num + margin);
 		inst->num_output_bufs = *num_buffers;
 		break;
 	default:
