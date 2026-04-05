@@ -50,8 +50,6 @@ unsigned int adreno_drawobj_timeout = 2000;
 
 /* Interval for reading and comparing fault detection registers */
 static unsigned int _fault_timer_interval = 200;
-/* Max retirements to process per drawqueue in one dispatcher pass */
-static unsigned int _retire_drawqueue_batch = 128;
 
 #define DRAWQUEUE_RB(_drawqueue) \
 	((struct adreno_ringbuffer *) \
@@ -61,7 +59,7 @@ static unsigned int _retire_drawqueue_batch = 128;
 #define DRAWQUEUE(_ringbuffer) (&(_ringbuffer)->dispatch_q)
 
 static int adreno_dispatch_retire_drawqueue(struct adreno_device *adreno_dev,
-		struct adreno_dispatcher_drawqueue *drawqueue, bool *more);
+		struct adreno_dispatcher_drawqueue *drawqueue);
 
 static inline bool drawqueue_is_current(
 		struct adreno_dispatcher_drawqueue *drawqueue)
@@ -2272,7 +2270,7 @@ static int dispatcher_do_fault(struct adreno_device *adreno_dev)
 	 */
 	FOR_EACH_RINGBUFFER(adreno_dev, rb, i) {
 		adreno_dispatch_retire_drawqueue(adreno_dev,
-			&(rb->dispatch_q), NULL);
+			&(rb->dispatch_q));
 		/* Select the active dispatch_q */
 		if (base == rb->buffer_desc.gpuaddr) {
 			dispatch_q = &(rb->dispatch_q);
@@ -2461,14 +2459,11 @@ static void retire_cmdobj(struct adreno_device *adreno_dev,
 }
 
 static int adreno_dispatch_retire_drawqueue(struct adreno_device *adreno_dev,
-		struct adreno_dispatcher_drawqueue *drawqueue, bool *more)
+		struct adreno_dispatcher_drawqueue *drawqueue)
 {
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 	struct adreno_dispatcher *dispatcher = &adreno_dev->dispatcher;
 	int count = 0;
-
-	if (more)
-		*more = false;
 
 	while (!adreno_drawqueue_is_empty(drawqueue)) {
 		struct kgsl_drawobj_cmd *cmdobj =
@@ -2490,13 +2485,7 @@ static int adreno_dispatch_retire_drawqueue(struct adreno_device *adreno_dev,
 			ADRENO_DISPATCH_DRAWQUEUE_SIZE);
 
 		count++;
-
-		if (count >= _retire_drawqueue_batch)
-			break;
 	}
-
-	if (more)
-		*more = !adreno_drawqueue_is_empty(drawqueue);
 
 	return count;
 }
@@ -2533,9 +2522,9 @@ static void _adreno_dispatch_check_timeout(struct adreno_device *adreno_dev,
 }
 
 static int adreno_dispatch_process_drawqueue(struct adreno_device *adreno_dev,
-		struct adreno_dispatcher_drawqueue *drawqueue, bool *more)
+		struct adreno_dispatcher_drawqueue *drawqueue)
 {
-	int count = adreno_dispatch_retire_drawqueue(adreno_dev, drawqueue, more);
+	int count = adreno_dispatch_retire_drawqueue(adreno_dev, drawqueue);
 
 	/* Nothing to do if there are no pending commands */
 	if (adreno_drawqueue_is_empty(drawqueue))
@@ -2619,7 +2608,6 @@ static void adreno_dispatcher_work(struct kthread_work *work)
 	struct adreno_gpudev *gpudev = ADRENO_GPU_DEVICE(adreno_dev);
 	int count = 0;
 	unsigned int i = 0;
-	bool resubmit = false;
 
 	mutex_lock(&dispatcher->mutex);
 
@@ -2630,11 +2618,9 @@ static void adreno_dispatcher_work(struct kthread_work *work)
 	for (i = 0; i < adreno_dev->num_ringbuffers; i++) {
 		struct adreno_dispatcher_drawqueue *drawqueue =
 			DRAWQUEUE(&adreno_dev->ringbuffers[i]);
-		bool more = false;
 
 		count += adreno_dispatch_process_drawqueue(adreno_dev,
-			drawqueue, &more);
-		resubmit |= more;
+			drawqueue);
 		if (dispatcher->inflight == 0)
 			break;
 	}
@@ -2663,9 +2649,6 @@ static void adreno_dispatcher_work(struct kthread_work *work)
 		_dispatcher_update_timers(adreno_dev);
 	else
 		_dispatcher_power_down(adreno_dev);
-
-	if (resubmit && dispatcher->inflight > 0)
-		kthread_queue_work(&kgsl_driver.worker, &dispatcher->work);
 
 	mutex_unlock(&dispatcher->mutex);
 }
@@ -2893,8 +2876,6 @@ static DISPATCHER_UINT_ATTR(fault_throttle_time, 0644, 0,
 	_fault_throttle_time);
 static DISPATCHER_UINT_ATTR(fault_throttle_burst, 0644, 0,
 	_fault_throttle_burst);
-static DISPATCHER_UINT_ATTR(retire_drawqueue_batch, 0644,
-	ADRENO_DISPATCH_DRAWQUEUE_SIZE, _retire_drawqueue_batch);
 
 static struct attribute *dispatcher_attrs[] = {
 	&dispatcher_attr_inflight.attr,
@@ -2906,7 +2887,6 @@ static struct attribute *dispatcher_attrs[] = {
 	&dispatcher_attr_fault_detect_interval.attr,
 	&dispatcher_attr_fault_throttle_time.attr,
 	&dispatcher_attr_fault_throttle_burst.attr,
-	&dispatcher_attr_retire_drawqueue_batch.attr,
 	NULL,
 };
 
