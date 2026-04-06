@@ -147,6 +147,8 @@
 		qcom,gpu-bus-table-0 {
 			compatible = "qcom,gpu-bus-table",
 				"qcom,gpu-bus-table-ddr7";
+			interconnects = <&kona_icc KONA_ICC_GPU_TO_MEM>;
+			interconnect-names = "gpu-ddr";
 			qcom,msm-bus,name = "grp3d";
 			qcom,msm-bus,num-cases = <14>;
 			qcom,msm-bus,num-paths = <1>;
@@ -170,6 +172,8 @@
 		qcom,gpu-bus-table-1 {
 			compatible = "qcom,gpu-bus-table",
 				"qcom,gpu-bus-table-ddr8";
+			interconnects = <&kona_icc KONA_ICC_GPU_TO_MEM>;
+			interconnect-names = "gpu-ddr";
 			qcom,msm-bus,name = "grp3d";
 			qcom,msm-bus,num-cases = <14>;
 			qcom,msm-bus,num-paths = <1>;
