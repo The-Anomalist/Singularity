@@ -1985,11 +1985,21 @@ static int adjust_bw_freqs(void)
 	}
 
 	mutex_unlock(&core->lock);
-	rc = msm_bus_scale_update_bw(bus->client, bw_sum, 0);
-	if (rc) {
-		dprintk(CVP_ERR, "Failed voting bus %s to ab %u\n",
-			bus->name, bw_sum);
-		goto exit;
+	if (bus->use_icc && bus->icc_path) {
+		rc = icc_set_bw(bus->icc_path, bw_sum, 0);
+		if (rc)
+			dprintk(CVP_WARN,
+				"ICC vote failed for bus %s to ab %u (%d), using msm_bus fallback\n",
+				bus->name, bw_sum, rc);
+	}
+
+	if (rc || !bus->use_icc || !bus->icc_path) {
+		rc = msm_bus_scale_update_bw(bus->client, bw_sum, 0);
+		if (rc) {
+			dprintk(CVP_ERR, "Failed voting bus %s to ab %u\n",
+				bus->name, bw_sum);
+			goto exit;
+		}
 	}
 
 	rc = call_hfi_op(hdev, scale_clocks, hdev->hfi_device_data, core_sum);
