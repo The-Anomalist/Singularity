@@ -111,6 +111,16 @@
 	qcom,icc-boost-percent = <130>;
 };
 
+/*
+ * Raise CPAS/CAMNOC baseline headroom for heavy camera pipelines.
+ * This reduces under-voting during fast mode switches and helps
+ * preserve frame quality under sustained multi-stream load.
+ */
+&{/soc/qcom,cam-cpas@ac40000} {
+	camnoc-axi-min-ib-bw = <3600000000>;
+	camnoc-axi-clk-bw-margin-perc = <28>;
+};
+
 &soc {
 	gpio_keys {
 		compatible = "gpio-keys";
