@@ -3078,7 +3078,17 @@ struct hci_dev *hci_alloc_dev(void)
 		return NULL;
 
 	hdev->pkt_type  = (HCI_DM1 | HCI_DH1 | HCI_HV1);
-	hdev->esco_type = (ESCO_HV1);
+	/*
+	 * Prefer negotiating the best available eSCO transport by default.
+	 *
+	 * Restricting to HV1 only forces the most bandwidth-constrained voice
+	 * packet type and can degrade headset call quality on controllers that
+	 * support higher quality eSCO modes.
+	 */
+	hdev->esco_type = (ESCO_HV1 | ESCO_HV2 | ESCO_HV3 |
+			   ESCO_EV3 | ESCO_EV4 | ESCO_EV5 |
+			   ESCO_2EV3 | ESCO_3EV3 |
+			   ESCO_2EV5 | ESCO_3EV5);
 	hdev->link_mode = (HCI_LM_ACCEPT);
 	hdev->num_iac = 0x01;		/* One IAC support is mandatory */
 	hdev->io_capability = 0x03;	/* No Input No Output */
