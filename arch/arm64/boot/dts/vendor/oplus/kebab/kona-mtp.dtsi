@@ -100,14 +100,14 @@
  * Keep these scoped to kebab so generic kona boards are not affected.
  */
 &cpu_cpu_llcc_bw {
-	qcom,icc-min-avg-kbps = <6881000>;
-	qcom,icc-min-peak-kbps = <13762000>;
+	qcom,icc-min-avg-kbps = <4587000>;
+	qcom,icc-min-peak-kbps = <9160000>;
 	qcom,icc-boost-percent = <130>;
 };
 
 &cpu_llcc_ddr_bw {
-	qcom,icc-min-avg-kbps = <6881000>;
-	qcom,icc-min-peak-kbps = <13732000>;
+	qcom,icc-min-avg-kbps = <4587000>;
+	qcom,icc-min-peak-kbps = <9160000>;
 	qcom,icc-boost-percent = <130>;
 };
 

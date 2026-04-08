@@ -126,19 +126,19 @@
 };
 
 /*
- * Keep a higher CPU DDR floor on Oplus kona boards so the overclocked LPDDR4X
- * bandwidth steps are not just exposed in the SoC tables, but also requested
- * under sustained CPU memory load.
+ * Keep a moderate CPU DDR floor on Oplus kona boards:
+ * - high enough to preserve display stability on low-load transitions
+ * - low enough to avoid excessive idle drain on battery
  */
 &cpu_llcc_ddr_bw {
-	qcom,icc-min-avg-kbps = <6881000>;
-	qcom,icc-min-peak-kbps = <13732000>;
+	qcom,icc-min-avg-kbps = <4587000>;
+	qcom,icc-min-peak-kbps = <9160000>;
 	qcom,icc-boost-percent = <130>;
 };
 
 &cpu4_cpu_ddr_latfloor {
-	qcom,icc-min-avg-kbps = <6881000>;
-	qcom,icc-min-peak-kbps = <13732000>;
+	qcom,icc-min-avg-kbps = <4587000>;
+	qcom,icc-min-peak-kbps = <9160000>;
 	qcom,icc-boost-percent = <130>;
 };
 
