@@ -977,19 +977,24 @@ int register_bw_hwmon(struct device *dev, struct bw_hwmon *hwmon)
 		node->attr_grp = &dev_attr_group;
 	}
 
-	node->guard_band_mbps = 100;
-	node->decay_rate = 90;
-	node->io_percent = 16;
-	node->bw_step = 190;
-	node->sample_ms = 20;
-	node->up_scale = 20;
-	node->up_thres = 10;
-	node->down_thres = 0;
-	node->down_count = 3;
-	node->hist_memory = 10;
-	node->hyst_trigger_count = 3;
-	node->hyst_length = 0;
-	node->idle_mbps = 400;
+/*
+ * Bias defaults toward faster GPU/memory ramp and longer burst retention.
+ * These values remain tunable through sysfs, but the baseline should not
+ * behave like an ultra-conservative battery profile on performance kernels.
+ */
+node->guard_band_mbps = 160;
+node->decay_rate = 98;
+node->io_percent = 16;
+node->bw_step = 128;
+node->sample_ms = 10;
+node->up_scale = 60;
+node->up_thres = 8;
+node->down_thres = 30;
+node->down_count = 6;
+node->hist_memory = 14;
+node->hyst_trigger_count = 2;
+node->hyst_length = 6;
+node->idle_mbps = 600;
 	node->use_ab = 1;
 	node->mbps_zones[0] = 0;
 	node->hw = hwmon;

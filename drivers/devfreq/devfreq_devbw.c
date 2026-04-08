@@ -244,12 +244,18 @@ static int devbw_target(struct device *dev, unsigned long *freq, u32 flags)
 	/*
 	 * Performance-style governors generally drive only IB (freq) while AB
 	 * stays at zero. For ICC this leads to weak/zero aggregate visibility and
-	 * can starve paths where AB is treated as the sustaining vote. When no
-	 * governor-provided AB is available, mirror IB as AB.
+	 * can starve paths where AB is treated as the sustaining vote.
+	 *
+	 * When no governor-provided AB is available, start from the requested IB
+	 * and add modest headroom on non-decreasing transitions so short GPU bursts
+	 * do not spend their whole frame waiting for sustained bandwidth to catch up.
 	 */
 	gov_ab = d->gov_ab;
-	if (!gov_ab)
+	if (!gov_ab) {
 		gov_ab = *freq;
+		if (*freq >= d->cur_ib)
+			gov_ab = mult_frac(*freq, 5, 4);
+	}
 
 	return set_bw(dev, *freq, gov_ab);
 }
