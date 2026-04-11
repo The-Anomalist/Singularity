@@ -468,6 +468,15 @@ config SCHED_WALT
 	used to guide task placement as well as task frequency requirements
 	for cpufreq governors.
 
+config SCHED_WALT_V2
+	bool "Use the new modular WALT implementation"
+	depends on SCHED_WALT
+	default n
+	help
+	  Enable the new kernel/sched/walt/ implementation during migration.
+	  Keep this disabled to continue using the legacy in-tree WALT objects
+	  in kernel/sched/.
+
 config SCHED_WALT_COBUCK
 	bool "Support walt cobuck feature"
 	depends on SCHED_WALT
