@@ -138,58 +138,59 @@ static void singularity_update_devfreq(struct devfreq *devfreq)
 	mutex_unlock(&devfreq->lock);
 }
 
+static inline void singularity_clear_boost_window(
+	struct devfreq_msm_adreno_tz_data *priv)
+{
+	spin_lock(&boost_lock);
+	priv->singularity_boost_end = 0;
+	priv->singularity_downscale_blocked_till = 0;
+	spin_unlock(&boost_lock);
+}
+
 static void singularity_apply_perf_boost_level(
 	struct devfreq_msm_adreno_tz_data *priv, u32 level)
 {
+	static const struct {
+		u32 aggressiveness;
+		u32 upthreshold_pct;
+		u32 downthreshold_pct;
+		u32 hispeed_load;
+		u32 hispeed_level;
+		u32 boost_ms;
+		u32 scene_boost_ms;
+		u32 transition_boost_pct;
+		u32 load_filter_pct;
+		u32 downscale_delay_ms;
+	} profile[] = {
+		{ 200, 82, 12, 90, 1, 140, 240, 30, 68, 85 },
+		{ 205, 78, 10, 86, 0, 180, 280, 34, 74, 95 },
+		{ 210, 74,  8, 82, 0, 220, 320, 38, 80, 110 },
+		{ 215, 70,  6, 76, 0, 260, 360, 42, 84, 125 },
+	};
+	const unsigned int idx = min_t(unsigned int, level, ARRAY_SIZE(profile) - 1);
+
 	switch (level) {
 	case 0:
-		priv->singularity_aggressiveness = 195;
-		priv->singularity_upthreshold_pct = 85;
-		priv->singularity_downthreshold_pct = 15;
-		priv->singularity_hispeed_load = 92;
-		priv->singularity_hispeed_level = 1;
-		priv->singularity_boost_enable = true;
-		priv->singularity_boost_level = 0;
-		priv->singularity_boost_ms = 120;
-		break;
 	case 1:
-		priv->singularity_aggressiveness = 200;
-		priv->singularity_upthreshold_pct = 82;
-		priv->singularity_downthreshold_pct = 13;
-		priv->singularity_hispeed_load = 90;
-		priv->singularity_hispeed_level = 1;
-		priv->singularity_boost_enable = true;
-		priv->singularity_boost_level = 0;
-		priv->singularity_boost_ms = 140;
-		break;
 	case 2:
-		priv->singularity_aggressiveness = 200;
-		priv->singularity_upthreshold_pct = 78;
-		priv->singularity_downthreshold_pct = 10;
-		priv->singularity_hispeed_load = 85;
-		priv->singularity_hispeed_level = 0;
-		priv->singularity_boost_enable = true;
-		priv->singularity_boost_level = 0;
-		priv->singularity_boost_ms = 180;
-		break;
 	default:
-		priv->singularity_aggressiveness = 200;
-		priv->singularity_upthreshold_pct = 72;
-		priv->singularity_downthreshold_pct = 8;
-		priv->singularity_hispeed_load = 80;
-		priv->singularity_hispeed_level = 0;
 		priv->singularity_boost_enable = true;
 		priv->singularity_boost_level = 0;
-		priv->singularity_boost_ms = 220;
 		break;
 	}
+	priv->singularity_aggressiveness = profile[idx].aggressiveness;
+	priv->singularity_upthreshold_pct = profile[idx].upthreshold_pct;
+	priv->singularity_downthreshold_pct = profile[idx].downthreshold_pct;
+	priv->singularity_hispeed_load = profile[idx].hispeed_load;
+	priv->singularity_hispeed_level = profile[idx].hispeed_level;
+	priv->singularity_boost_ms = profile[idx].boost_ms;
+	priv->singularity_scene_boost_ms = profile[idx].scene_boost_ms;
+	priv->singularity_transition_boost_pct = profile[idx].transition_boost_pct;
+	priv->singularity_load_filter_pct = profile[idx].load_filter_pct;
+	priv->singularity_downscale_delay_ms = profile[idx].downscale_delay_ms;
 	priv->singularity_perf_boost_level = level;
-	if (!priv->singularity_boost_enable) {
-		spin_lock(&boost_lock);
-		priv->singularity_boost_end = 0;
-		priv->singularity_downscale_blocked_till = 0;
-		spin_unlock(&boost_lock);
-	}
+	if (!priv->singularity_boost_enable)
+		singularity_clear_boost_window(priv);
 }
 
 static ssize_t singularity_boost_enable_show(struct device *dev,
@@ -217,12 +218,8 @@ static ssize_t singularity_boost_enable_store(struct device *dev,
 		return -EINVAL;
 
 	priv->singularity_boost_enable = !!val;
-	if (!priv->singularity_boost_enable) {
-		spin_lock(&boost_lock);
-		priv->singularity_boost_end = 0;
-		priv->singularity_downscale_blocked_till = 0;
-		spin_unlock(&boost_lock);
-	}
+	if (!priv->singularity_boost_enable)
+		singularity_clear_boost_window(priv);
 	singularity_update_devfreq(devfreq);
 	return count;
 }
