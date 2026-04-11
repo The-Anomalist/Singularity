@@ -63,6 +63,22 @@ static struct devfreq_msm_adreno_tz_data adreno_tz_data = {
 static bool adreno_performance_mode = true;
 module_param_named(performance_mode, adreno_performance_mode, bool, 0644);
 
+/*
+ * Optional floor to keep GPU clocks from collapsing too far while
+ * performance_mode is enabled. This acts in the core GPU driver and does not
+ * require changing the devfreq governor selection.
+ */
+static int adreno_perf_min_pwrlevel = 1;
+module_param_named(perf_min_pwrlevel, adreno_perf_min_pwrlevel, int, 0644);
+
+/*
+ * Optional cap for throttle-pwrlevel while performance_mode is enabled.
+ * Default keeps one thermal fallback level available, instead of allowing
+ * deep throttle levels to dominate sustained gaming workloads.
+ */
+static int adreno_perf_throttle_cap = 1;
+module_param_named(perf_throttle_cap, adreno_perf_throttle_cap, int, 0644);
+
 static const struct kgsl_functable adreno_functable;
 
 static struct adreno_device device_3d0 = {
@@ -1092,6 +1108,7 @@ static void adreno_of_get_initial_pwrlevel(struct adreno_device *adreno_dev,
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
 	int init_level = 1;
+	unsigned int floor;
 
 	of_property_read_u32(node, "qcom,initial-pwrlevel", &init_level);
 
@@ -1103,6 +1120,13 @@ static void adreno_of_get_initial_pwrlevel(struct adreno_device *adreno_dev,
 
 	pwr->active_pwrlevel = init_level;
 	pwr->default_pwrlevel = init_level;
+
+	if (!adreno_performance_mode || adreno_perf_min_pwrlevel < 0)
+		return;
+
+	floor = clamp_t(unsigned int, adreno_perf_min_pwrlevel, 0,
+		pwr->num_pwrlevels - 1);
+	pwr->min_pwrlevel = min_t(unsigned int, pwr->min_pwrlevel, floor);
 }
 
 static void adreno_of_get_limits(struct adreno_device *adreno_dev,
@@ -1115,6 +1139,10 @@ static void adreno_of_get_limits(struct adreno_device *adreno_dev,
 	if (!ADRENO_FEATURE(adreno_dev, ADRENO_LM) || of_property_read_u32(node,
 				"qcom,throttle-pwrlevel", &throttle_level))
 		return;
+
+	if (adreno_performance_mode && adreno_perf_throttle_cap >= 0)
+		throttle_level = min_t(unsigned int, throttle_level,
+			adreno_perf_throttle_cap);
 
 	throttle_level = min(throttle_level, pwrctrl->num_pwrlevels - 1);
 
