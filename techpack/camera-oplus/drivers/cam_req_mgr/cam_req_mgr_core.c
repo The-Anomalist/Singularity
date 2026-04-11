@@ -139,6 +139,12 @@ static void __cam_req_mgr_dec_idx(int32_t *val, int32_t step, int32_t max_val)
 		*val = max_val + (*val);
 }
 
+static inline uint64_t __cam_req_mgr_get_time_delta(uint64_t ts_1,
+	uint64_t ts_2)
+{
+	return (ts_1 > ts_2) ? (ts_1 - ts_2) : (ts_2 - ts_1);
+}
+
 /**
  * __cam_req_mgr_inject_delay()
  *
@@ -1172,6 +1178,8 @@ static int __cam_req_mgr_check_sync_req_is_ready(
 	int32_t sync_num_slots = 0;
 	uint64_t sync_frame_duration = 0;
 	bool ready = true, sync_ready = true;
+	uint64_t sof_delta = 0;
+	uint64_t sync_half_frame_duration = 0;
 
 	if (!link->sync_link) {
 		CAM_ERR(CAM_CRM, "Sync link null");
@@ -1207,14 +1215,16 @@ static int __cam_req_mgr_check_sync_req_is_ready(
 	CAM_DBG(CAM_CRM,
 		"sync link %x last frame_duration is %d ns",
 		sync_link->link_hdl, sync_frame_duration);
+	sof_delta = __cam_req_mgr_get_time_delta(link->sof_timestamp,
+		sync_link->sof_timestamp);
+	sync_half_frame_duration = sync_frame_duration / 2;
 
 	if (link->initial_skip) {
 		link->initial_skip = false;
 
 		if ((link->sof_timestamp > sync_link->sof_timestamp) &&
 			(sync_link->sof_timestamp > 0) &&
-			(link->sof_timestamp - sync_link->sof_timestamp) <
-			(sync_frame_duration / 2)) {
+			(sof_delta < sync_half_frame_duration)) {
 			/*
 			 * If this frame sync with the previous frame of sync
 			 * link, then we need to skip this frame, since the
@@ -1308,8 +1318,8 @@ static int __cam_req_mgr_check_sync_req_is_ready(
 		 * Only skip the frames if current frame sync with
 		 * next frame of sync link.
 		 */
-		if (link->sof_timestamp - sync_link->sof_timestamp >
-			sync_frame_duration / 2)
+		if ((link->sof_timestamp > sync_link->sof_timestamp) &&
+			(sof_delta > sync_half_frame_duration))
 			link->sync_link_sof_skip = true;
 		return -EINVAL;
 	} else if (ready == false) {
