@@ -9,7 +9,6 @@
 
 #include "../../../kernel/sched/sched.h"
 #include "../../../fs/proc/internal.h"
-#include <linux/sched/walt.h>
 #include <linux/jump_label.h>
 
 #include <linux/cgroup.h>
@@ -32,7 +31,9 @@
 /* Max window size (in ns) = 1s */
 #define MAX_SCHED_RAVG_WINDOW 1000000000
 
+#ifndef NR_WINDOWS_PER_SEC
 #define NR_WINDOWS_PER_SEC (NSEC_PER_SEC / WALT_DEFAULT_SCHED_RAVG_WINDOW)
+#endif
 
 /* MAX_MARGIN_LEVELS should be one less than MAX_CLUSTERS */
 #define MAX_MARGIN_LEVELS (MAX_CLUSTERS - 1)
@@ -113,8 +114,6 @@ struct walt_sched_cluster {
 	int8_t			sibling_cluster;
 };
 
-extern struct walt_sched_cluster *sched_cluster[WALT_NR_CPUS];
-
 /*END SCHED.H PORT*/
 
 extern int num_sched_clusters;
@@ -150,7 +149,7 @@ extern int input_boost_init(void);
 extern int core_ctl_init(void);
 
 extern atomic64_t walt_irq_work_lastq_ws;
-extern unsigned int __read_mostly sched_ravg_window;
+extern unsigned int sched_ravg_window;
 extern unsigned int min_max_possible_capacity;
 extern unsigned int max_possible_capacity;
 extern unsigned int __read_mostly sched_init_task_load_windows;
@@ -185,7 +184,7 @@ extern unsigned int sysctl_sched_hyst_min_coloc_ns;
 #define WALT_MANY_WAKEUP_DEFAULT 1000
 extern unsigned int sysctl_sched_many_wakeup_threshold;
 extern unsigned int sysctl_walt_rtg_cfs_boost_prio;
-extern __read_mostly unsigned int sysctl_sched_force_lb_enable;
+extern unsigned int sysctl_sched_force_lb_enable;
 extern const int sched_user_hint_max;
 extern unsigned int sysctl_sched_dynamic_tp_enable;
 extern unsigned int sysctl_panic_on_walt_bug;
@@ -234,14 +233,14 @@ static inline u64 irq_time_read(int cpu) { return 0; }
 #define WINDOW_STATS_AVG		3
 #define WINDOW_STATS_INVALID_POLICY	4
 
-extern unsigned int __read_mostly sysctl_sched_coloc_downmigrate_ns;
-extern unsigned int __read_mostly sysctl_sched_group_downmigrate_pct;
-extern unsigned int __read_mostly sysctl_sched_group_upmigrate_pct;
-extern unsigned int __read_mostly sysctl_sched_window_stats_policy;
+extern unsigned int sysctl_sched_coloc_downmigrate_ns;
+extern unsigned int sysctl_sched_group_downmigrate_pct;
+extern unsigned int sysctl_sched_group_upmigrate_pct;
+extern unsigned int sysctl_sched_window_stats_policy;
 extern unsigned int sysctl_sched_ravg_window_nr_ticks;
 extern unsigned int sysctl_sched_walt_rotate_big_tasks;
 extern unsigned int sysctl_sched_task_unfilter_period;
-extern unsigned int __read_mostly sysctl_sched_asym_cap_sibling_freq_match_pct;
+extern unsigned int sysctl_sched_asym_cap_sibling_freq_match_pct;
 extern unsigned int sysctl_walt_low_latency_task_threshold; /* disabled by default */
 extern unsigned int sysctl_sched_sync_hint_enable;
 extern unsigned int sysctl_sched_bug_on_rt_throttle;
@@ -279,12 +278,6 @@ extern unsigned int sched_lib_mask_force;
 #define CONSERVATIVE_BOOST_DISABLE -2
 #define RESTRAINED_BOOST_DISABLE -3
 #define MAX_NUM_BOOST_TYPE (RESTRAINED_BOOST+1)
-
-enum sched_boost_policy {
-	SCHED_BOOST_NONE,
-	SCHED_BOOST_ON_BIG,
-	SCHED_BOOST_ON_ALL,
-};
 
 struct walt_task_group {
 	/*

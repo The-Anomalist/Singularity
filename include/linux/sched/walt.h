@@ -4,9 +4,9 @@
 
 /*
  * Migration compatibility header:
- * New modular WALT sources include <linux/sched/walt.h> while the legacy
- * tree still exposes declarations from kernel/sched/walt.h.
+ * Keep this file intentionally minimal so modular WALT sources can include
+ * <linux/sched/walt.h> without also pulling in the legacy monolithic
+ * kernel/sched/walt.h interface.
  */
-#include "../../../kernel/sched/walt.h"
 
 #endif /* _LINUX_SCHED_WALT_H */

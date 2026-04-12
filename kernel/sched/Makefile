@@ -23,8 +23,10 @@ obj-$(CONFIG_SCHED_UCLASS) += uclass/
 
 obj-$(CONFIG_SMP) += cpupri.o cpudeadline.o topology.o stop_task.o pelt.o
 
-ifdef CONFIG_SCHED_WALT
-# Use the newer WALT implementation in kernel/sched/walt/.
+# CONFIG_SCHED_WALT is the common feature switch used across the scheduler.
+# CONFIG_SCHED_WALT_V2 selects the newer split implementation in
+# kernel/sched/walt/, otherwise keep using the legacy in-tree objects.
+ifeq ($(CONFIG_SCHED_WALT_V2),y)
 obj-$(CONFIG_SCHED_WALT) += walt/
 else
 obj-$(CONFIG_SCHED_WALT) += walt.o boost.o sched_avg.o
@@ -43,4 +45,3 @@ obj-$(CONFIG_CPU_FREQ_GOV_SCHEDPRO) += cpufreq_schedpro.o
 obj-$(CONFIG_MEMBARRIER) += membarrier.o
 obj-$(CONFIG_CPU_ISOLATION) += isolation.o
 obj-$(CONFIG_PSI) += psi.o
-
