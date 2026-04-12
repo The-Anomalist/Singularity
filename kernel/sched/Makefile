@@ -22,9 +22,16 @@ obj-y += wait.o wait_bit.o swait.o completion.o
 obj-$(CONFIG_SCHED_UCLASS) += uclass/
 
 obj-$(CONFIG_SMP) += cpupri.o cpudeadline.o topology.o stop_task.o pelt.o
-ifneq ($(CONFIG_SCHED_WALT_V2),y)
+
+ifdef CONFIG_SCHED_WALT
+# Use the newer WALT implementation in kernel/sched/walt/.
+obj-$(CONFIG_SCHED_WALT) += walt/
+else
 obj-$(CONFIG_SCHED_WALT) += walt.o boost.o sched_avg.o
+obj-$(CONFIG_SCHED_CORE_CTL) += core_ctl.o
 endif
+
+
 obj-$(CONFIG_SCHED_AUTOGROUP) += autogroup.o
 obj-$(CONFIG_SCHEDSTATS) += stats.o
 obj-$(CONFIG_SCHED_DEBUG) += debug.o
@@ -35,6 +42,5 @@ obj-$(CONFIG_CPU_FREQ_GOV_SCHEDUTIL) += cpufreq_schedutil.o
 obj-$(CONFIG_CPU_FREQ_GOV_SCHEDPRO) += cpufreq_schedpro.o
 obj-$(CONFIG_MEMBARRIER) += membarrier.o
 obj-$(CONFIG_CPU_ISOLATION) += isolation.o
-obj-$(CONFIG_SCHED_CORE_CTL) += core_ctl.o
 obj-$(CONFIG_PSI) += psi.o
-obj-$(CONFIG_SCHED_WALT_V2) += walt/
+

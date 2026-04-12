@@ -932,7 +932,7 @@ void walt_tunables(void)
 
 	sysctl_sched_ravg_window_nr_ticks = (HZ / NR_WINDOWS_PER_SEC);
 
-	sched_load_granule = DEFAULT_SCHED_RAVG_WINDOW / NUM_LOAD_INDICES;
+	sched_load_granule = WALT_DEFAULT_SCHED_RAVG_WINDOW / NUM_LOAD_INDICES;
 
 	for (i = 0; i < WALT_NR_CPUS; i++) {
 		sysctl_sched_coloc_busy_hyst_cpu[i] = 39000000;
@@ -947,7 +947,7 @@ void walt_tunables(void)
 
 	sysctl_sched_coloc_busy_hyst_max_ms = 5000;
 
-	sched_ravg_window = DEFAULT_SCHED_RAVG_WINDOW;
+	sched_ravg_window = WALT_DEFAULT_SCHED_RAVG_WINDOW;
 
 	sysctl_input_boost_ms = 40;
 

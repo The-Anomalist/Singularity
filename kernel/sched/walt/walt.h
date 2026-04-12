@@ -14,41 +14,30 @@
 
 #include <linux/cgroup.h>
 
+#ifndef WALT_NR_CPUS
+#define WALT_NR_CPUS NR_CPUS
+#endif
+
 #ifdef CONFIG_HZ_300
 /*
  * Tick interval becomes to 3333333 due to
  * rounding error when HZ=300.
  */
-#define DEFAULT_SCHED_RAVG_WINDOW (3333333 * 5)
+#define WALT_DEFAULT_SCHED_RAVG_WINDOW (3333333 * 5)
 #else
 /* Min window size (in ns) = 16ms */
-#define DEFAULT_SCHED_RAVG_WINDOW 16000000
+#define WALT_DEFAULT_SCHED_RAVG_WINDOW 16000000
 #endif
 
 /* Max window size (in ns) = 1s */
 #define MAX_SCHED_RAVG_WINDOW 1000000000
 
-#define NR_WINDOWS_PER_SEC (NSEC_PER_SEC / DEFAULT_SCHED_RAVG_WINDOW)
+#define NR_WINDOWS_PER_SEC (NSEC_PER_SEC / WALT_DEFAULT_SCHED_RAVG_WINDOW)
 
 /* MAX_MARGIN_LEVELS should be one less than MAX_CLUSTERS */
 #define MAX_MARGIN_LEVELS (MAX_CLUSTERS - 1)
 
 extern bool walt_disabled;
-
-enum task_event {
-	PUT_PREV_TASK	= 0,
-	PICK_NEXT_TASK	= 1,
-	TASK_WAKE	= 2,
-	TASK_MIGRATE	= 3,
-	TASK_UPDATE	= 4,
-	IRQ_UPDATE	= 5,
-};
-
-/* Note: this need to be in sync with migrate_type_names array */
-enum migrate_types {
-	GROUP_TO_RQ,
-	RQ_TO_GROUP,
-};
 
 #define WALT_LOW_LATENCY_PROCFS		BIT(0)
 #define WALT_LOW_LATENCY_BINDER		BIT(1)
@@ -64,28 +53,8 @@ struct walt_cpu_load {
 #define DECLARE_BITMAP_ARRAY(name, nr, bits) \
 	unsigned long name[nr][BITS_TO_LONGS(bits)]
 
-struct walt_sched_stats {
-	int		nr_big_tasks;
-	u64		cumulative_runnable_avg_scaled;
-	u64		pred_demands_sum_scaled;
-	unsigned int	nr_rtg_high_prio_tasks;
-};
-
 #define NUM_TRACKED_WINDOWS 2
 #define NUM_LOAD_INDICES 1000
-
-struct group_cpu_time {
-	u64			curr_runnable_sum;
-	u64			prev_runnable_sum;
-	u64			nt_curr_runnable_sum;
-	u64			nt_prev_runnable_sum;
-};
-
-struct load_subtractions {
-	u64			window_start;
-	u64			subs;
-	u64			new_subs;
-};
 
 struct walt_rq {
 	struct task_struct	*push_task;
@@ -154,7 +123,7 @@ extern unsigned int sched_capacity_margin_down[WALT_NR_CPUS];
 extern cpumask_t asym_cap_sibling_cpus;
 extern cpumask_t __read_mostly **cpu_array;
 extern int cpu_l2_sibling[WALT_NR_CPUS];
-extern void sched_update_nr_prod(int cpu, int enq);
+extern void sched_update_nr_prod(int cpu, long delta, bool inc);
 extern unsigned int walt_big_tasks(int cpu);
 extern void walt_rotation_checkpoint(int nr_big);
 extern void walt_fill_ta_data(struct core_ctl_notif_data *data);

@@ -73,7 +73,7 @@ unsigned int __read_mostly sched_init_task_load_windows;
  * The entire range of load from 0 to sched_ravg_window needs to be covered
  * in NUM_LOAD_INDICES number of buckets. Therefore the size of each bucket
  * is given by sched_ravg_window / NUM_LOAD_INDICES. Since the default value
- * of sched_ravg_window is DEFAULT_SCHED_RAVG_WINDOW, use that to compute
+ * of sched_ravg_window is WALT_DEFAULT_SCHED_RAVG_WINDOW, use that to compute
  * sched_load_granule.
  */
 unsigned int __read_mostly sched_load_granule;
@@ -159,7 +159,7 @@ static __read_mostly unsigned int sched_ravg_hist_size = 5;
 static __read_mostly unsigned int sched_io_is_busy = 1;
 
 /* Window size (in ns) */
-static __read_mostly unsigned int new_sched_ravg_window = DEFAULT_SCHED_RAVG_WINDOW;
+static __read_mostly unsigned int new_sched_ravg_window = WALT_DEFAULT_SCHED_RAVG_WINDOW;
 
 static DEFINE_SPINLOCK(sched_ravg_window_lock);
 static u64 sched_ravg_window_change_time;
