@@ -13,8 +13,26 @@
 #include <linux/ratelimit.h>
 #include <linux/irq.h>
 #include <linux/cpumask.h>
+#include <linux/atomic.h>
 
 #include "internals.h"
+
+static atomic_t irq_migrate_cpu_hint = ATOMIC_INIT(-1);
+
+static int irq_pick_migration_cpu(const struct cpumask *mask)
+{
+	int start, cpu;
+
+	if (cpumask_empty(mask))
+		return nr_cpu_ids;
+
+	start = atomic_inc_return(&irq_migrate_cpu_hint) % nr_cpu_ids;
+	cpu = cpumask_next_wrap(start - 1, mask, start, false);
+	if (cpu >= nr_cpu_ids)
+		cpu = cpumask_first(mask);
+
+	return cpu;
+}
 
 /* For !GENERIC_IRQ_EFFECTIVE_AFF_MASK this looks at general affinity mask */
 static inline bool irq_needs_fixup(struct irq_data *d)
@@ -154,7 +172,7 @@ static bool migrate_one_irq(struct irq_desc *desc)
 		 * to only one CPU. So pick only one CPU from the
 		 * prepared mask while overriding the user affinity.
 		 */
-		affinity = cpumask_of(cpumask_any(affinity));
+		affinity = cpumask_of(irq_pick_migration_cpu(affinity));
 		brokeaff = true;
 	}
 	/*

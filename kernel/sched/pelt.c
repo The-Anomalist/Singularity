@@ -374,14 +374,26 @@ int update_dl_rq_load_avg(u64 now, struct rq *rq, int running)
 int update_irq_load_avg(struct rq *rq, u64 running)
 {
 	int ret = 0;
+	int cpu = cpu_of(rq);
+	u64 max_irq_runtime;
 
 	/*
 	 * We can't use clock_pelt because irq time is not accounted in
 	 * clock_task. Instead we directly scale the running time to
 	 * reflect the real amount of computation
 	 */
-	running = cap_scale(running, arch_scale_freq_capacity(cpu_of(rq)));
-	running = cap_scale(running, arch_scale_cpu_capacity(NULL, cpu_of(rq)));
+	if (!running)
+		return ___update_load_sum(rq->clock, &rq->avg_irq, 0, 0, 0);
+
+	running = cap_scale(running, arch_scale_freq_capacity(cpu));
+	running = cap_scale(running, arch_scale_cpu_capacity(NULL, cpu));
+
+	/*
+	 * Keep IRQ accounting bounded to elapsed rq clock time so we don't
+	 * over-subtract from rq->clock when accounting large IRQ bursts.
+	 */
+	max_irq_runtime = rq->clock - rq->avg_irq.last_update_time;
+	running = min(running, max_irq_runtime);
 
 	/*
 	 * We know the time that has been used by interrupt since last update

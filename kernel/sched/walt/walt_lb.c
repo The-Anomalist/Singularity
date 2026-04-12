@@ -421,17 +421,18 @@ static int walt_lb_find_busiest_similar_cap_cpu(int dst_cpu, const cpumask_t *sr
 	int i;
 	int busiest_cpu = -1;
 	unsigned long util, busiest_util = 0;
+	struct rq *rq;
 	struct walt_rq *wrq;
 
 	for_each_cpu(i, src_mask) {
-		wrq = (struct walt_rq *) cpu_rq(i)->android_vendor_data1;
+		rq = cpu_rq(i);
+		wrq = (struct walt_rq *) rq->android_vendor_data1;
 		trace_walt_lb_cpu_util(i, wrq);
 
-		if ((dst_cpu == i) || (cpu_rq(i)->nr_running < 2)
-			|| !cpu_rq(i)->cfs.h_nr_running)
+		if ((dst_cpu == i) || (rq->nr_running < 2) || !rq->cfs.h_nr_running)
 			continue;
 
-		util = walt_lb_cpu_util(i);
+		util = wrq->walt_stats.cumulative_runnable_avg_scaled;
 		if (util < busiest_util)
 			continue;
 
@@ -450,6 +451,7 @@ static int walt_lb_find_busiest_from_higher_cap_cpu(int dst_cpu, const cpumask_t
 	unsigned long util, busiest_util = 0;
 	unsigned long total_capacity = 0, total_util = 0, total_nr = 0;
 	int total_cpus = 0;
+	struct rq *rq;
 	struct walt_rq *wrq;
 	bool asymcap_boost = ASYMCAP_BOOST(dst_cpu);
 	for_each_cpu(i, src_mask) {
@@ -457,20 +459,21 @@ static int walt_lb_find_busiest_from_higher_cap_cpu(int dst_cpu, const cpumask_t
 		if (!cpu_active(i))
 			continue;
 
-		wrq = (struct walt_rq *) cpu_rq(i)->android_vendor_data1;
+		rq = cpu_rq(i);
+		wrq = (struct walt_rq *) rq->android_vendor_data1;
 		trace_walt_lb_cpu_util(i, wrq);
 
-		util = walt_lb_cpu_util(i);
+		util = wrq->walt_stats.cumulative_runnable_avg_scaled;
 		total_cpus += 1;
 		total_util += util;
 		total_capacity += capacity_orig_of(i);
-		total_nr += cpu_rq(i)->cfs.h_nr_running;
+		total_nr += rq->cfs.h_nr_running;
 
-		if (cpu_rq(i)->cfs.h_nr_running < 2)
+		if (rq->cfs.h_nr_running < 2)
 			continue;
 
-		if (cpu_rq(i)->cfs.h_nr_running == 2 &&
-			task_util(cpu_rq(i)->curr) < SMALL_TASK_THRESHOLD)
+		if (rq->cfs.h_nr_running == 2 &&
+			task_util(rq->curr) < SMALL_TASK_THRESHOLD)
 			continue;
 
 		/*
@@ -511,6 +514,7 @@ static int walt_lb_find_busiest_from_lower_cap_cpu(int dst_cpu, const cpumask_t 
 	unsigned long total_capacity = 0, total_util = 0, total_nr = 0;
 	int total_cpus = 0;
 	int busy_nr_big_tasks = 0;
+	struct rq *rq;
 	struct walt_rq *wrq;
 	bool treat_dst_idle = is_newidle || available_idle_cpu(dst_cpu);
 
@@ -522,28 +526,29 @@ static int walt_lb_find_busiest_from_lower_cap_cpu(int dst_cpu, const cpumask_t 
 	 * refactor this after final testing is done.
 	 */
 	for_each_cpu(i, src_mask) {
-		wrq = (struct walt_rq *) cpu_rq(i)->android_vendor_data1;
+		rq = cpu_rq(i);
+		wrq = (struct walt_rq *) rq->android_vendor_data1;
 
 		if (!cpu_active(i))
 			continue;
 
 		trace_walt_lb_cpu_util(i, wrq);
 
-		util = walt_lb_cpu_util(i);
+		util = wrq->walt_stats.cumulative_runnable_avg_scaled;
 		total_cpus += 1;
 		total_util += util;
 		total_capacity += capacity_orig_of(i);
-		total_nr += cpu_rq(i)->cfs.h_nr_running;
+		total_nr += rq->cfs.h_nr_running;
 
 		/*
 		 * no point in selecting this CPU as busy, as
 		 * active balance is in progress.
 		 */
-		if (cpu_rq(i)->active_balance)
+		if (rq->active_balance)
 			continue;
 
 		/* active migration is allowed only to idle cpu */
-		if (cpu_rq(i)->cfs.h_nr_running < 2 &&
+		if (rq->cfs.h_nr_running < 2 &&
 			(!wrq->walt_stats.nr_big_tasks || !treat_dst_idle))
 			continue;
 
