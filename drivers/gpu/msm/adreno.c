@@ -39,20 +39,20 @@ static struct devfreq_msm_adreno_tz_data adreno_tz_data = {
 		.floating = true,
 	},
 	.device_id = KGSL_DEVICE_3D0,
-	.singularity_aggressiveness = 205,
+	.singularity_aggressiveness = 225,
 	.singularity_boost_level = 0,
-	.singularity_boost_ms = 180,
+	.singularity_boost_ms = 240,
 	.singularity_boost_enable = true,
-	.singularity_scene_boost_ms = 280,
-	.singularity_downscale_delay_ms = 95,
-	.singularity_transition_boost_pct = 34,
+	.singularity_scene_boost_ms = 360,
+	.singularity_downscale_delay_ms = 120,
+	.singularity_transition_boost_pct = 42,
 	.singularity_transition_contexts = 2,
-	.singularity_upthreshold_pct = 78,
-	.singularity_downthreshold_pct = 10,
-	.singularity_load_filter_pct = 74,
-	.singularity_hispeed_load = 86,
+	.singularity_upthreshold_pct = 72,
+	.singularity_downthreshold_pct = 8,
+	.singularity_load_filter_pct = 78,
+	.singularity_hispeed_load = 82,
 	.singularity_hispeed_level = 0,
-	.singularity_perf_boost_level = 1,
+	.singularity_perf_boost_level = 0,
 };
 
 /*
@@ -68,7 +68,7 @@ module_param_named(performance_mode, adreno_performance_mode, bool, 0644);
  * performance_mode is enabled. This acts in the core GPU driver and does not
  * require changing the devfreq governor selection.
  */
-static int adreno_perf_min_pwrlevel = 1;
+static int adreno_perf_min_pwrlevel = 0;
 module_param_named(perf_min_pwrlevel, adreno_perf_min_pwrlevel, int, 0644);
 
 /*
