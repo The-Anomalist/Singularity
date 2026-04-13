@@ -3463,6 +3463,10 @@ void walt_irq_work(struct irq_work *irq_work)
 							&asym_cap_sibling_cpus))
 				flag |= SCHED_CPUFREQ_INTERCLUSTER_MIG;
 
+			if (rtgb_active || sysctl_sched_user_hint ||
+			    rq->misfit_task_load || rq->walt_stats.nr_big_tasks)
+				flag |= SCHED_CPUFREQ_QOS_HINT;
+
 			if (i == num_cpus)
 				cpufreq_update_util(cpu_rq(cpu), flag);
 			else
