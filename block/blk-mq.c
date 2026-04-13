@@ -25,6 +25,7 @@
 #include <linux/delay.h>
 #include <linux/crash_dump.h>
 #include <linux/prefetch.h>
+#include <linux/singularity_qos.h>
 
 #include <trace/events/block.h>
 
@@ -520,6 +521,7 @@ EXPORT_SYMBOL_GPL(blk_mq_free_request);
 inline void __blk_mq_end_request(struct request *rq, blk_status_t error)
 {
 	u64 now = ktime_get_ns();
+	sqh_block_complete(rq, error);
 
 	if (rq->rq_flags & RQF_STATS) {
 		blk_mq_poll_stats_start(rq->q);
@@ -632,6 +634,7 @@ void blk_mq_start_request(struct request *rq)
 	struct request_queue *q = rq->q;
 
 	blk_mq_sched_started_request(rq);
+	sqh_block_issue(rq);
 
 	trace_block_rq_issue(q, rq);
 

@@ -50,6 +50,7 @@
 #include <linux/printk.h>
 #include <linux/dax.h>
 #include <linux/psi.h>
+#include <linux/singularity_qos.h>
 
 #include <asm/tlbflush.h>
 #include <asm/div64.h>
@@ -2567,6 +2568,7 @@ static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memc
 	enum lru_list lru;
 	unsigned long nr_reclaimed = 0;
 	unsigned long nr_to_reclaim = sc->nr_to_reclaim;
+	unsigned long reclaimed_before = sc->nr_reclaimed;
 	struct blk_plug plug;
 	bool scan_adjusted;
 
@@ -2663,6 +2665,7 @@ static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memc
 	}
 	blk_finish_plug(&plug);
 	sc->nr_reclaimed += nr_reclaimed;
+	sqh_mem_reclaim(pgdat, sc->nr_reclaimed - reclaimed_before, current_is_kswapd());
 
 	/*
 	 * Even if we did not try to evict anon pages at all, we want to

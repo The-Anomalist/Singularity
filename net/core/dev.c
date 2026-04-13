@@ -144,6 +144,7 @@
 #include <linux/netfilter_ingress.h>
 #include <linux/crash_dump.h>
 #include <linux/sctp.h>
+#include <linux/singularity_qos.h>
 #include <net/udp_tunnel.h>
 #include <linux/net_namespace.h>
 #include <linux/tcp.h>
@@ -5010,6 +5011,7 @@ static int __netif_receive_skb_core(struct sk_buff **pskb, bool pfmemalloc,
 	net_timestamp_check(!READ_ONCE(netdev_tstamp_prequeue), skb);
 
 	trace_netif_receive_skb(skb);
+	sqh_net_rx(skb);
 
 	orig_dev = skb->dev;
 
