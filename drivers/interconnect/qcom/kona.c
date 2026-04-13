@@ -249,24 +249,24 @@ MODULE_PARM_DESC(kona_max_downscale_percent,
  * - kona_perf_bias_turbo: extra bias for very large votes (race-to-performance).
  * - kona_perf_light_kb / kona_perf_turbo_kb: thresholds for selecting a profile.
  */
-static unsigned int kona_perf_bias = 126;
-static unsigned int kona_perf_bias_light = 106;
-static unsigned int kona_perf_bias_turbo = 150;
+static unsigned int kona_perf_bias = 132;
+static unsigned int kona_perf_bias_light = 110;
+static unsigned int kona_perf_bias_turbo = 160;
 #define KONA_PRIME_EXTRA_BIAS_PERCENT	10
 static unsigned long kona_perf_light_kb = 1000000;   /* 1 GB/s */
 static unsigned long kona_perf_turbo_kb = 14000000;  /* 14 GB/s */
 static bool kona_perf_sustain_boost_enable = true;
-static unsigned long kona_perf_sustain_kb = 4200000; /* 4.2 GB/s */
-static unsigned int kona_perf_sustain_extra_bias = 8;
+static unsigned long kona_perf_sustain_kb = 3600000; /* 3.6 GB/s */
+static unsigned int kona_perf_sustain_extra_bias = 12;
 module_param(kona_perf_bias, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias,
-        "Percent headroom added on CPU/DDR/LLCC/GPU/NPU paths (default: 126)");
+        "Percent headroom added on CPU/DDR/LLCC/GPU/NPU paths (default: 132)");
 module_param(kona_perf_bias_light, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias_light,
-        "Percent headroom added for light requests to save power (default: 106)");
+        "Percent headroom added for light requests to save power (default: 110)");
 module_param(kona_perf_bias_turbo, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias_turbo,
-        "Percent headroom added for very large votes (default: 150)");
+        "Percent headroom added for very large votes (default: 160)");
 module_param(kona_perf_light_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_perf_light_kb,
         "Threshold KB/s for light-load bias selection (default: 1000000)");
@@ -291,14 +291,14 @@ MODULE_PARM_DESC(kona_perf_sustain_extra_bias,
  * ib_*:        bias and floor IB over AB so command bursts hit DDR quickly.
  */
 static bool kona_gpu_keepalive_enable = true;
-static unsigned long kona_gpu_keepalive_ab_kb = 448000;   /* 448 MB/s */
-static unsigned long kona_gpu_keepalive_ib_kb = 1050000;  /* 1.05 GB/s */
+static unsigned long kona_gpu_keepalive_ab_kb = 640000;   /* 640 MB/s */
+static unsigned long kona_gpu_keepalive_ib_kb = 1400000;  /* 1.4 GB/s */
 static bool kona_cpu_keepalive_enable = true;
-static unsigned long kona_cpu_keepalive_ab_kb = 192000;   /* 192 MB/s */
-static unsigned long kona_cpu_keepalive_ib_kb = 448000;   /* 448 MB/s */
+static unsigned long kona_cpu_keepalive_ab_kb = 320000;   /* 320 MB/s */
+static unsigned long kona_cpu_keepalive_ib_kb = 768000;   /* 768 MB/s */
 static bool kona_npu_keepalive_enable = true;
-static unsigned long kona_npu_keepalive_ab_kb = 384000;   /* 384 MB/s */
-static unsigned long kona_npu_keepalive_ib_kb = 896000;   /* 896 MB/s */
+static unsigned long kona_npu_keepalive_ab_kb = 512000;   /* 512 MB/s */
+static unsigned long kona_npu_keepalive_ib_kb = 1152000;  /* 1.152 GB/s */
 static bool kona_dsp_keepalive_enable = true;
 static unsigned long kona_dsp_keepalive_ab_kb = 256000;   /* 256 MB/s */
 static unsigned long kona_dsp_keepalive_ib_kb = 768000;   /* 768 MB/s */
@@ -309,15 +309,15 @@ static bool kona_disp_keepalive_enable = true;
 static unsigned long kona_disp_keepalive_ab_kb = 120000;   /* 120 MB/s */
 static unsigned long kona_disp_keepalive_ib_kb = 240000;   /* 240 MB/s */
 static bool kona_keepalive_decay_enable = true;
-static unsigned int kona_keepalive_decay_window_ms = 140;
-static unsigned int kona_keepalive_decay_min_percent = 15;
-static unsigned int kona_sleep_keepalive_percent = 8;
-static unsigned int kona_gpu_ib_boost_percent = 176;
-static unsigned int kona_gpu_ib_min_ratio_percent = 220;
-static unsigned int kona_gpu_llcc_boost_percent = 130;
-static unsigned int kona_gpu_llcc_min_ratio_percent = 175;
-static unsigned int kona_npu_ib_boost_percent = 168;
-static unsigned int kona_npu_ib_min_ratio_percent = 220;
+static unsigned int kona_keepalive_decay_window_ms = 220;
+static unsigned int kona_keepalive_decay_min_percent = 25;
+static unsigned int kona_sleep_keepalive_percent = 12;
+static unsigned int kona_gpu_ib_boost_percent = 188;
+static unsigned int kona_gpu_ib_min_ratio_percent = 235;
+static unsigned int kona_gpu_llcc_boost_percent = 142;
+static unsigned int kona_gpu_llcc_min_ratio_percent = 185;
+static unsigned int kona_npu_ib_boost_percent = 176;
+static unsigned int kona_npu_ib_min_ratio_percent = 230;
 static bool kona_npu_oc_mem_pinning_enable = true;
 static unsigned long kona_npu_oc_pin_threshold_kb = 21000000; /* 21 GB/s */
 static unsigned long kona_npu_oc_floor_ab_kb = 20000000;      /* 20 GB/s */
@@ -335,6 +335,13 @@ static unsigned long kona_gpu_llcc_turbo_enter_ib_kb = 7200000; /* 7.2 GB/s */
 static unsigned long kona_gpu_llcc_turbo_exit_ib_kb = 5400000;  /* 5.4 GB/s */
 static unsigned long kona_gpu_llcc_turbo_ab_kb = 23500000;      /* 23.5 GB/s */
 static unsigned long kona_gpu_llcc_turbo_ib_kb = 28500000;      /* 28.5 GB/s */
+static bool kona_cpu_prime_oc_mem_pinning_enable = true;
+static unsigned long kona_cpu_prime_oc_pin_threshold_kb = 20000000; /* 20 GB/s */
+static unsigned long kona_cpu_prime_oc_floor_ab_kb = 26000000;      /* 26 GB/s */
+static unsigned long kona_cpu_prime_oc_floor_ib_kb = 43000000;      /* 43 GB/s */
+static unsigned long kona_cpu_prime_oc_llcc_floor_ab_kb = 18000000; /* 18 GB/s */
+static unsigned long kona_cpu_prime_oc_llcc_floor_ib_kb = 28000000; /* 28 GB/s */
+static unsigned int kona_cpu_prime_oc_min_ratio_percent = 180;
 static bool kona_cpu0_1804_boost_enable = true;
 static unsigned long kona_cpu0_1804_trigger_kb = 1305600; /* 1.804 GHz corner */
 static unsigned int kona_cpu0_1804_boost_percent = 118;
@@ -344,28 +351,28 @@ MODULE_PARM_DESC(kona_gpu_keepalive_enable,
         "Keep non-zero floor for gpu-ddr AB/IB between short idle gaps");
 module_param(kona_gpu_keepalive_ab_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_gpu_keepalive_ab_kb,
-        "gpu-ddr keepalive AB floor in KB/s (default: 448000)");
+        "gpu-ddr keepalive AB floor in KB/s (default: 640000)");
 module_param(kona_gpu_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_gpu_keepalive_ib_kb,
-        "gpu-ddr keepalive IB floor in KB/s (default: 1050000)");
+        "gpu-ddr keepalive IB floor in KB/s (default: 1400000)");
 module_param(kona_cpu_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_cpu_keepalive_enable,
         "Keep non-zero floor for cpu-ddr/cpu-llcc AB/IB between short idle gaps");
 module_param(kona_cpu_keepalive_ab_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_cpu_keepalive_ab_kb,
-        "cpu keepalive AB floor in KB/s (default: 192000)");
+        "cpu keepalive AB floor in KB/s (default: 320000)");
 module_param(kona_cpu_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_cpu_keepalive_ib_kb,
-        "cpu keepalive IB floor in KB/s (default: 448000)");
+        "cpu keepalive IB floor in KB/s (default: 768000)");
 module_param(kona_npu_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_npu_keepalive_enable,
         "Keep non-zero floor for npu-ddr/npu-llcc AB/IB between short idle gaps");
 module_param(kona_npu_keepalive_ab_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_npu_keepalive_ab_kb,
-        "npu keepalive AB floor in KB/s (default: 384000)");
+        "npu keepalive AB floor in KB/s (default: 512000)");
 module_param(kona_npu_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_npu_keepalive_ib_kb,
-        "npu keepalive IB floor in KB/s (default: 896000)");
+        "npu keepalive IB floor in KB/s (default: 1152000)");
 module_param(kona_dsp_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_dsp_keepalive_enable,
         "Keep non-zero floor for cam/video/cdsp config AB/IB between short idle gaps");
@@ -398,32 +405,32 @@ MODULE_PARM_DESC(kona_keepalive_decay_enable,
 	"linearly decay keepalive votes after the last active request (default: on)");
 module_param(kona_keepalive_decay_window_ms, uint, 0644);
 MODULE_PARM_DESC(kona_keepalive_decay_window_ms,
-	"keepalive decay window in ms before allowing full collapse (default: 140)");
+	"keepalive decay window in ms before allowing full collapse (default: 220)");
 module_param(kona_keepalive_decay_min_percent, uint, 0644);
 MODULE_PARM_DESC(kona_keepalive_decay_min_percent,
-	"minimum keepalive strength percent while inside decay window (default: 15)");
+	"minimum keepalive strength percent while inside decay window (default: 25)");
 module_param(kona_sleep_keepalive_percent, uint, 0644);
 MODULE_PARM_DESC(kona_sleep_keepalive_percent,
-	"Percent of keepalive floor retained while display is inactive (default: 8)");
+	"Percent of keepalive floor retained while display is inactive (default: 12)");
 
 module_param(kona_gpu_ib_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_ib_boost_percent,
-        "Percent boost applied to gpu-ddr IB after floors (default: 176)");
+        "Percent boost applied to gpu-ddr IB after floors (default: 188)");
 module_param(kona_gpu_ib_min_ratio_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_ib_min_ratio_percent,
-        "Minimum gpu-ddr IB as percent of AB (default: 220)");
+        "Minimum gpu-ddr IB as percent of AB (default: 235)");
 module_param(kona_gpu_llcc_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_llcc_boost_percent,
-        "Percent boost applied to gpu-llcc IB after floors (default: 130)");
+        "Percent boost applied to gpu-llcc IB after floors (default: 142)");
 module_param(kona_gpu_llcc_min_ratio_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_llcc_min_ratio_percent,
-        "Minimum gpu-llcc IB as percent of AB (default: 175)");
+        "Minimum gpu-llcc IB as percent of AB (default: 185)");
 module_param(kona_npu_ib_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_npu_ib_boost_percent,
-	"Percent boost applied to npu-ddr/npu-llcc IB after floors (default: 168)");
+	"Percent boost applied to npu-ddr/npu-llcc IB after floors (default: 176)");
 module_param(kona_npu_ib_min_ratio_percent, uint, 0644);
 MODULE_PARM_DESC(kona_npu_ib_min_ratio_percent,
-	"Minimum npu-ddr/npu-llcc IB as percent of AB (default: 220)");
+	"Minimum npu-ddr/npu-llcc IB as percent of AB (default: 230)");
 module_param(kona_npu_oc_mem_pinning_enable, bool, 0644);
 MODULE_PARM_DESC(kona_npu_oc_mem_pinning_enable,
 	"Pin elevated NPU AB/IB floors when sustained high NPU bandwidth suggests overclocked operation");
@@ -475,6 +482,27 @@ MODULE_PARM_DESC(kona_gpu_llcc_turbo_ab_kb,
 module_param(kona_gpu_llcc_turbo_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_gpu_llcc_turbo_ib_kb,
         "Forced gpu-llcc IB vote in KB/s while turbo pinning is active");
+module_param(kona_cpu_prime_oc_mem_pinning_enable, bool, 0644);
+MODULE_PARM_DESC(kona_cpu_prime_oc_mem_pinning_enable,
+	"Pin higher CPU-prime DDR/LLCC floors when prime-core bandwidth indicates overclocked operation");
+module_param(kona_cpu_prime_oc_pin_threshold_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_cpu_prime_oc_pin_threshold_kb,
+	"Enable CPU-prime OC pinning above this max(AB,IB) threshold in KB/s");
+module_param(kona_cpu_prime_oc_floor_ab_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_cpu_prime_oc_floor_ab_kb,
+	"Pinned cpu7-ddr AB floor in KB/s while CPU-prime OC pinning is active");
+module_param(kona_cpu_prime_oc_floor_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_cpu_prime_oc_floor_ib_kb,
+	"Pinned cpu7-ddr IB floor in KB/s while CPU-prime OC pinning is active");
+module_param(kona_cpu_prime_oc_llcc_floor_ab_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_cpu_prime_oc_llcc_floor_ab_kb,
+	"Pinned cpu7-llcc AB floor in KB/s while CPU-prime OC pinning is active");
+module_param(kona_cpu_prime_oc_llcc_floor_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_cpu_prime_oc_llcc_floor_ib_kb,
+	"Pinned cpu7-llcc IB floor in KB/s while CPU-prime OC pinning is active");
+module_param(kona_cpu_prime_oc_min_ratio_percent, uint, 0644);
+MODULE_PARM_DESC(kona_cpu_prime_oc_min_ratio_percent,
+	"Minimum CPU-prime IB as percent of AB while CPU-prime OC pinning is active");
 module_param(kona_cpu0_1804_boost_enable, bool, 0644);
 MODULE_PARM_DESC(kona_cpu0_1804_boost_enable,
 	"Enable targeted CPU0 memory uplift around the 1.804 GHz BW corner");
@@ -766,6 +794,7 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 {
 	bool gpu_pin_active;
 	bool npu_pin_active;
+	bool cpu_prime_pin_active;
 
 	if (!kona_perf_floor_enable)
 		return;
@@ -785,6 +814,8 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		max(*ab, *ib) >= kona_gpu_bimc_pin_threshold_kb;
 	npu_pin_active = kona_npu_oc_mem_pinning_enable &&
 		max(*ab, *ib) >= kona_npu_oc_pin_threshold_kb;
+	cpu_prime_pin_active = kona_cpu_prime_oc_mem_pinning_enable &&
+		max(*ab, *ib) >= kona_cpu_prime_oc_pin_threshold_kb;
 
 	switch (desc->id) {
 	case KONA_ICC_CPU0_TO_MEM:
@@ -875,16 +906,36 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 			*ib = KONA_UX_DDR_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_CPU7_TO_MEM:
+		if (cpu_prime_pin_active) {
+			if (*ab && *ab < kona_cpu_prime_oc_floor_ab_kb)
+				*ab = kona_cpu_prime_oc_floor_ab_kb;
+			if (*ib && *ib < kona_cpu_prime_oc_floor_ib_kb)
+				*ib = kona_cpu_prime_oc_floor_ib_kb;
+		}
 		if (*ab && *ab < KONA_CPU_PRIME_DDR_AB_FLOOR_KB)
 			*ab = KONA_CPU_PRIME_DDR_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_CPU_PRIME_DDR_IB_FLOOR_KB)
 			*ib = KONA_CPU_PRIME_DDR_IB_FLOOR_KB;
+		if (cpu_prime_pin_active && *ab && *ib <
+		    mul_u64_u32_div(*ab, kona_cpu_prime_oc_min_ratio_percent, 100))
+			*ib = mul_u64_u32_div(*ab,
+				     kona_cpu_prime_oc_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_CPU7_TO_LLCC:
+		if (cpu_prime_pin_active) {
+			if (*ab && *ab < kona_cpu_prime_oc_llcc_floor_ab_kb)
+				*ab = kona_cpu_prime_oc_llcc_floor_ab_kb;
+			if (*ib && *ib < kona_cpu_prime_oc_llcc_floor_ib_kb)
+				*ib = kona_cpu_prime_oc_llcc_floor_ib_kb;
+		}
 		if (*ab && *ab < KONA_CPU_PRIME_LLCC_AB_FLOOR_KB)
 			*ab = KONA_CPU_PRIME_LLCC_AB_FLOOR_KB;
 		if (*ib && *ib < KONA_CPU_PRIME_LLCC_IB_FLOOR_KB)
 			*ib = KONA_CPU_PRIME_LLCC_IB_FLOOR_KB;
+		if (cpu_prime_pin_active && *ab && *ib <
+		    mul_u64_u32_div(*ab, kona_cpu_prime_oc_min_ratio_percent, 100))
+			*ib = mul_u64_u32_div(*ab,
+				     kona_cpu_prime_oc_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_NPU_TO_MEM:
 	case KONA_ICC_NPUDSP_TO_MEM:
