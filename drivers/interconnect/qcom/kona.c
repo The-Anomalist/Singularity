@@ -9,6 +9,7 @@
 
 #include <linux/interconnect-provider.h>
 #include <linux/interconnect.h>
+#include <linux/bitmap.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/of_device.h>
@@ -23,6 +24,7 @@
 #include <linux/msm_drm_notify.h>
 #include <linux/suspend.h>
 #include <linux/atomic.h>
+#include <linux/spinlock.h>
 
 #include <dt-bindings/interconnect/qcom,kona.h>
 #include <soc/qcom/cmd-db.h>
@@ -71,7 +73,11 @@ struct kona_icc_provider {
 	atomic_t deferred_votes;
 	atomic_t replay_runs;
 	atomic_t display_replay_skips;
+	atomic_t replay_queue_skips;
 	unsigned long *last_active_jiffies;
+	unsigned long *dirty_nodes;
+	unsigned long *replay_scan_nodes;
+	spinlock_t dirty_lock;
 	bool display_active;
 	struct notifier_block display_nb;
 	struct device **sysfs_nodes;
@@ -1649,6 +1655,71 @@ out_retry:
 	return -EAGAIN;
 }
 
+static void kona_icc_mark_dirty(struct kona_icc_provider *qp, unsigned int index)
+{
+	unsigned long flags;
+
+	if (qp->dirty_nodes)
+		spin_lock_irqsave(&qp->dirty_lock, flags);
+	if (qp->dirty_nodes) {
+		__set_bit(index, qp->dirty_nodes);
+		spin_unlock_irqrestore(&qp->dirty_lock, flags);
+	}
+}
+
+static void kona_icc_clear_dirty(struct kona_icc_provider *qp, unsigned int index)
+{
+	unsigned long flags;
+
+	if (qp->dirty_nodes)
+		spin_lock_irqsave(&qp->dirty_lock, flags);
+	if (qp->dirty_nodes) {
+		__clear_bit(index, qp->dirty_nodes);
+		spin_unlock_irqrestore(&qp->dirty_lock, flags);
+	}
+}
+
+static bool kona_icc_is_dirty(struct kona_icc_provider *qp, unsigned int index)
+{
+	unsigned long flags;
+	bool dirty = false;
+
+	if (qp->dirty_nodes)
+		spin_lock_irqsave(&qp->dirty_lock, flags);
+	if (qp->dirty_nodes) {
+		dirty = test_bit(index, qp->dirty_nodes);
+		spin_unlock_irqrestore(&qp->dirty_lock, flags);
+	}
+
+	return dirty;
+}
+
+static void kona_icc_mark_all_dirty(struct kona_icc_provider *qp)
+{
+	unsigned long flags;
+
+	if (qp->dirty_nodes)
+		spin_lock_irqsave(&qp->dirty_lock, flags);
+	if (qp->dirty_nodes) {
+		bitmap_fill(qp->dirty_nodes, qp->num_nodes);
+		spin_unlock_irqrestore(&qp->dirty_lock, flags);
+	}
+}
+
+static bool kona_icc_snapshot_dirty(struct kona_icc_provider *qp)
+{
+	unsigned long flags;
+
+	if (!qp->dirty_nodes || !qp->replay_scan_nodes)
+		return false;
+
+	spin_lock_irqsave(&qp->dirty_lock, flags);
+	bitmap_copy(qp->replay_scan_nodes, qp->dirty_nodes, qp->num_nodes);
+	spin_unlock_irqrestore(&qp->dirty_lock, flags);
+
+	return !bitmap_empty(qp->replay_scan_nodes, qp->num_nodes);
+}
+
 static bool kona_icc_vote_is_unchanged(struct kona_icc_provider *qp,
 				      unsigned int index, u64 ab, u64 ib)
 {
@@ -1684,40 +1755,59 @@ static bool kona_icc_can_program(struct kona_icc_provider *qp, const char **reas
 static void kona_icc_queue_replay(struct kona_icc_provider *qp, unsigned int delay_ms,
 				 const char *why)
 {
+	unsigned long delay = msecs_to_jiffies(delay_ms);
+	unsigned long target = jiffies + delay;
+
+	if (delayed_work_pending(&qp->retry_work)) {
+		unsigned long cur_target = READ_ONCE(qp->retry_work.timer.expires);
+
+		if (time_before_eq(cur_target, target)) {
+			atomic_inc(&qp->replay_queue_skips);
+			return;
+		}
+	}
+
 	mod_delayed_work(system_wq, &qp->retry_work, msecs_to_jiffies(delay_ms));
 
 	if (kona_resume_debug)
 		dev_info_ratelimited(qp->provider.dev,
-			"kona-icc: replay queued (%s, %ums) deferred=%d replay=%d skips=%d\n",
+			"kona-icc: replay queued (%s, %ums) deferred=%d replay=%d skips=%d queue-skips=%d\n",
 			why ?: "unknown", delay_ms,
 			atomic_read(&qp->deferred_votes),
 			atomic_read(&qp->replay_runs),
-			atomic_read(&qp->display_replay_skips));
+			atomic_read(&qp->display_replay_skips),
+			atomic_read(&qp->replay_queue_skips));
 }
 
 
 static bool kona_icc_replay_req_votes(struct kona_icc_provider *qp)
 {
 	bool need_retry = false;
-	int i;
+	unsigned long i;
 
-	if (!qp || !qp->req_ab || !qp->req_ib)
+	if (!qp || !qp->req_ab || !qp->req_ib || !kona_icc_snapshot_dirty(qp))
 		return false;
 
-	for (i = 0; i < qp->num_nodes; i++) {
+	for_each_set_bit(i, qp->replay_scan_nodes, qp->num_nodes) {
 		u64 ab = qp->req_ab[i];
 		u64 ib = qp->req_ib[i];
 		bool retry = false;
 
-		if (ab == U64_MAX || ib == U64_MAX)
+		if (ab == U64_MAX || ib == U64_MAX) {
+			kona_icc_clear_dirty(qp, i);
 			continue;
+		}
 
-		if (kona_icc_vote_is_unchanged(qp, i, ab, ib))
+		if (kona_icc_vote_is_unchanged(qp, i, ab, ib)) {
+			kona_icc_clear_dirty(qp, i);
 			continue;
+		}
 
 		kona_icc_send_node_votes(qp, i, ab, ib, &retry);
 		if (retry)
 			need_retry = true;
+		else
+			kona_icc_clear_dirty(qp, i);
 	}
 
 	return need_retry;
@@ -1740,6 +1830,8 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 		bool req_zero = (!req_unset && !ab && !ib);
 
 		if (qp->nodes[i].role != role)
+			continue;
+		if (!kona_icc_is_dirty(qp, i))
 			continue;
 
 		/*
@@ -1766,6 +1858,7 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 				} else {
 					if (role == KONA_ROLE_DISPLAY)
 						atomic_inc(&qp->display_replay_skips);
+					kona_icc_clear_dirty(qp, i);
 					continue;
 				}
 			}
@@ -1790,6 +1883,7 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 						qp->nodes[i].name, ab, ib);
 			} else if (!used_fallback_floor) {
 				atomic_inc(&qp->display_replay_skips);
+				kona_icc_clear_dirty(qp, i);
 				continue;
 			}
 		} else {
@@ -1819,12 +1913,16 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 				ib = floor_ib;
 		}
 
-		if (!ab && !ib)
+		if (!ab && !ib) {
+			kona_icc_clear_dirty(qp, i);
 			continue;
+		}
 
 		ret = kona_icc_send_node_votes(qp, i, ab, ib, &retry);
 		if (ret == -EAGAIN || retry)
 			need_retry = true;
+		else
+			kona_icc_clear_dirty(qp, i);
 	}
 
 	return need_retry;
@@ -1906,6 +2004,7 @@ static void kona_icc_retry_workfn(struct work_struct *work)
 static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 {
 	struct kona_icc_provider *qp;
+	u64 prev_req_ab = U64_MAX, prev_req_ib = U64_MAX;
 	u64 ab, ib;
 	unsigned int index;
 
@@ -2023,9 +2122,15 @@ skip_perf_floor:
 	 * Resume replay logic relies on detecting explicit 0/0 requests.
 	 */
 	if (qp->req_ab)
+		prev_req_ab = qp->req_ab[index];
+	if (qp->req_ib)
+		prev_req_ib = qp->req_ib[index];
+	if (qp->req_ab)
 		qp->req_ab[index] = (u64)avg_bw;
 	if (qp->req_ib)
 		qp->req_ib[index] = (u64)peak_bw;
+	if (prev_req_ab != avg_bw || prev_req_ib != peak_bw)
+		kona_icc_mark_dirty(qp, index);
 	if (qp->last_active_jiffies && (avg_bw || peak_bw))
 		qp->last_active_jiffies[index] = jiffies;
 
@@ -2048,8 +2153,10 @@ skip_perf_floor:
 	 * Keep req_* and saved_* updates above so resume replay still tracks
 	 * the newest client intent even when programming can be skipped.
 	 */
-	if (kona_icc_vote_is_unchanged(qp, index, ab, ib))
+	if (kona_icc_vote_is_unchanged(qp, index, ab, ib)) {
+		kona_icc_clear_dirty(qp, index);
 		return 0;
+	}
 
 
 	/*
@@ -2074,6 +2181,7 @@ skip_perf_floor:
 				kona_icc_queue_replay(qp, 0, reason);
 
 			atomic_inc(&qp->deferred_votes);
+			kona_icc_mark_dirty(qp, index);
 
 			if (kona_resume_debug && (ab || ib))
 				dev_info_ratelimited(qp->provider.dev,
@@ -2088,10 +2196,14 @@ skip_perf_floor:
 		bool retry = false;
 		int ret = kona_icc_send_node_votes(qp, index, ab, ib, &retry);
 
-		if (ret == -EAGAIN || retry)
+		if (ret == -EAGAIN || retry) {
+			kona_icc_mark_dirty(qp, index);
 			kona_icc_queue_replay(qp, KONA_RETRY_DELAY_MS, "send-eagain");
-		else if (ret)
+		} else if (ret) {
 			return ret;
+		} else {
+			kona_icc_clear_dirty(qp, index);
+		}
 	}
 
 	return 0;
@@ -2240,6 +2352,7 @@ static void kona_icc_invalidate_cache(struct kona_icc_provider *qp)
 		if (qp->last_ib)
 			qp->last_ib[i] = U64_MAX;
 	}
+	kona_icc_mark_all_dirty(qp);
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
 	qp->gpu_llcc_turbo = false;
@@ -2450,11 +2563,24 @@ static int kona_icc_probe(struct platform_device *pdev)
 	if (!qp->last_active_jiffies)
 		return -ENOMEM;
 
+	qp->dirty_nodes = bitmap_zalloc(qp->num_nodes, GFP_KERNEL);
+	if (!qp->dirty_nodes)
+		return -ENOMEM;
+
+	qp->replay_scan_nodes = bitmap_zalloc(qp->num_nodes, GFP_KERNEL);
+	if (!qp->replay_scan_nodes) {
+		bitmap_free(qp->dirty_nodes);
+		return -ENOMEM;
+	}
+
+	spin_lock_init(&qp->dirty_lock);
+
 
 	INIT_DELAYED_WORK(&qp->retry_work, kona_icc_retry_workfn);
 	atomic_set(&qp->deferred_votes, 0);
 	atomic_set(&qp->replay_runs, 0);
 	atomic_set(&qp->display_replay_skips, 0);
+	atomic_set(&qp->replay_queue_skips, 0);
 	qp->display_active = true;
 	qp->display_nb.notifier_call = kona_icc_display_notifier_cb;
 
@@ -2466,6 +2592,7 @@ static int kona_icc_probe(struct platform_device *pdev)
 		qp->saved_ab[i] = U64_MAX;
 		qp->saved_ib[i] = U64_MAX;
 	}
+	kona_icc_mark_all_dirty(qp);
 
         qp->provider.dev = &pdev->dev;
         qp->provider.of_node = pdev->dev.of_node;
@@ -2477,24 +2604,24 @@ static int kona_icc_probe(struct platform_device *pdev)
 
 	ret = kona_icc_validate_display_nodes(qp);
 	if (ret)
-		return ret;
+		goto err_free_bitmaps;
 
 	ret = icc_provider_register(&qp->provider);
         if (ret)
-                return ret;
+		goto err_free_bitmaps;
 
 	ret = kona_icc_register_sysfs(pdev, qp);
 	if (ret) {
                 kona_icc_unregister_sysfs(qp);
                 icc_provider_unregister(&qp->provider);
-                return ret;
+		goto err_free_bitmaps;
         }
 
 	ret = msm_drm_register_client(&qp->display_nb);
 	if (ret) {
 		kona_icc_unregister_sysfs(qp);
 		icc_provider_unregister(&qp->provider);
-		return ret;
+		goto err_free_bitmaps;
 	}
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
@@ -2532,6 +2659,13 @@ static int kona_icc_probe(struct platform_device *pdev)
                  qp->num_nodes);
 
         return 0;
+
+err_free_bitmaps:
+	bitmap_free(qp->replay_scan_nodes);
+	qp->replay_scan_nodes = NULL;
+	bitmap_free(qp->dirty_nodes);
+	qp->dirty_nodes = NULL;
+	return ret;
 }
 
 static int kona_icc_remove(struct platform_device *pdev)
@@ -2541,8 +2675,10 @@ static int kona_icc_remove(struct platform_device *pdev)
 	cancel_delayed_work_sync(&qp->retry_work);
 	msm_drm_unregister_client(&qp->display_nb);
 
-        kona_icc_unregister_sysfs(qp);
-        icc_provider_unregister(&qp->provider);
+	        kona_icc_unregister_sysfs(qp);
+	        icc_provider_unregister(&qp->provider);
+	bitmap_free(qp->replay_scan_nodes);
+	bitmap_free(qp->dirty_nodes);
 
         return 0;
 }
