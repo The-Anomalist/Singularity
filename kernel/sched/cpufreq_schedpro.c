@@ -16,6 +16,7 @@
 #include <linux/sched/cpufreq.h>
 #include <trace/events/power.h>
 #include <linux/sched/sysctl.h>
+#include <linux/mm.h>
 
 #ifdef OPLUS_FEATURE_POWER_CPUFREQ
 /* Target load.  Lower values result in higher CPU speeds. */
@@ -88,10 +89,12 @@ struct sugov_policy {
 	unsigned int		cached_raw_freq;
 	unsigned int		prev_cached_raw_freq;
 	u64			freq_hold_until_ns;
-	u64			mem_boost_until_ns;
 	u64			auto_boost_until_ns;
 	u64			efficiency_until_ns;
 	unsigned long		auto_boost_avg_util;
+	unsigned int		cpu_signal_ema;
+	unsigned int		gpu_signal_ema;
+	unsigned int		mem_signal_ema;
 	bool			has_prime_cpu;
 
 	/* The next fields are only needed if fast switch cannot be used: */
@@ -769,13 +772,11 @@ static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #define DEFAULT_AUTO_BOOST_MIN_UTIL_WALT 96
 #define DEFAULT_AUTO_BOOST_MAX_UTIL_WALT 224
 #define DEFAULT_AUTO_BOOST_DECAY_US_WALT 12000
-#define DEFAULT_ICC_BOOST_UTIL_WALT 192
 #define DEFAULT_AUTO_BOOST_HIGH_LOAD_PELT 90
 #define DEFAULT_AUTO_BOOST_LOW_LOAD_PELT 65
 #define DEFAULT_AUTO_BOOST_MIN_UTIL_PELT 64
 #define DEFAULT_AUTO_BOOST_MAX_UTIL_PELT 192
 #define DEFAULT_AUTO_BOOST_DECAY_US_PELT 10000
-#define DEFAULT_ICC_BOOST_UTIL_PELT 128
 #define DEFAULT_AUTO_BOOST_HEAVY_TASKS 4
 #define DEFAULT_AUTO_BOOST_HEAVY_UTIL 92
 #define DEFAULT_AUTO_BOOST_PRIME_UTIL 300
@@ -796,9 +797,7 @@ static void sugov_apply_auto_profile(struct sugov_tunables *tunables,
 	bool pelt = use_pelt();
 
 	tunables->auto_boost = true;
-	tunables->uclamp_helper = true;
-	tunables->mem_boost_util = 0;
-	tunables->mem_boost_hyst_us = 2000;
+	tunables->uclamp_helper = false;
 	tunables->auto_boost_heavy_tasks = DEFAULT_AUTO_BOOST_HEAVY_TASKS;
 	tunables->auto_boost_heavy_util = DEFAULT_AUTO_BOOST_HEAVY_UTIL;
 	tunables->auto_boost_prime_util = DEFAULT_AUTO_BOOST_PRIME_UTIL;
@@ -938,22 +937,8 @@ static void sugov_apply_tunable_boosts(struct sugov_cpu *sg_cpu, u64 time,
 {
 	struct sugov_policy *sg_policy = sg_cpu->sg_policy;
 	struct sugov_tunables *tunables = sg_policy->tunables;
-	unsigned int icc_boost_util = use_pelt() ?
-		DEFAULT_ICC_BOOST_UTIL_PELT : DEFAULT_ICC_BOOST_UTIL_WALT;
-
-	if (tunables->mem_boost_util) {
-		if (flags & SCHED_CPUFREQ_IOWAIT)
-			sg_policy->mem_boost_until_ns =
-				time + tunables->mem_boost_hyst_us * NSEC_PER_USEC;
-
-		if (time < sg_policy->mem_boost_until_ns)
-			*util = max(*util, mult_frac(max, tunables->mem_boost_util,
-						     SCHED_CAPACITY_SCALE));
-	}
-
-	if (flags & (SCHED_CPUFREQ_MIGRATION | SCHED_CPUFREQ_INTERCLUSTER_MIG))
-		*util = max(*util, mult_frac(max, icc_boost_util,
-					     SCHED_CAPACITY_SCALE));
+	(void)time;
+	(void)flags;
 
 	/* WALT path does not pass through schedutil_cpu_util(). */
 	if (tunables->uclamp_helper && !use_pelt())
@@ -968,10 +953,13 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 {
 	struct sugov_tunables *tunables = sg_policy->tunables;
 	unsigned long avg_util, floor_util, cap_util;
-	unsigned int util_pct;
+	unsigned int util_pct, cpu_signal, gpu_signal, mem_signal;
+	unsigned int high_load, low_load;
+	unsigned int min_util, max_util;
 	u64 decay_ns;
 	bool transition = sugov_is_transition_event(flags);
 	bool heavy_load;
+	long mem_avail, mem_total;
 
 	if (!tunables->auto_boost || !max)
 		return;
@@ -983,6 +971,49 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		avg_util = ((avg_util * 3) + *util) >> 2;
 
 	util_pct = mult_frac(*util, 100, max);
+	cpu_signal = util_pct;
+	gpu_signal = transition ? 100 : 0;
+	mem_total = totalram_pages;
+	mem_avail = si_mem_available();
+	mem_signal = (!mem_total || mem_avail >= mem_total) ? 0 :
+		100 - mult_frac(mem_avail, 100, mem_total);
+
+	/*
+	 * Lightweight "online learning":
+	 * - cpu_signal follows utilization,
+	 * - gpu_signal follows transition bursts often seen in rendering,
+	 * - mem_signal follows system memory pressure.
+	 * Exponential smoothing keeps behavior stable while adapting quickly.
+	 */
+	sg_policy->cpu_signal_ema =
+		((sg_policy->cpu_signal_ema * 7) + cpu_signal) >> 3;
+	sg_policy->gpu_signal_ema =
+		((sg_policy->gpu_signal_ema * 3) + gpu_signal) >> 2;
+	sg_policy->mem_signal_ema =
+		((sg_policy->mem_signal_ema * 7) + mem_signal) >> 3;
+
+	high_load = tunables->auto_boost_high_load;
+	low_load = tunables->auto_boost_low_load;
+	min_util = tunables->auto_boost_min_util;
+	max_util = tunables->auto_boost_max_util;
+
+	/* Promote responsiveness when graphics bursts are detected. */
+	if (sg_policy->gpu_signal_ema >= 35) {
+		high_load = max_t(unsigned int, 1, high_load - 8);
+		low_load = max_t(unsigned int, 1, low_load - 6);
+		min_util = min_t(unsigned int, SCHED_CAPACITY_SCALE,
+				 min_util + 32);
+	}
+
+	/* Ease off boosts when memory pressure is sustained. */
+	if (sg_policy->mem_signal_ema >= 70) {
+		high_load = min_t(unsigned int, 100, high_load + 6);
+		low_load = min_t(unsigned int, high_load, low_load + 4);
+		max_util = max_t(unsigned int, min_util,
+				 mult_frac(max_util, 9, 10));
+	}
+
+	low_load = min(low_load, high_load);
 	decay_ns = tunables->auto_boost_decay_us * NSEC_PER_USEC;
 	heavy_load = util_pct >= tunables->auto_boost_heavy_util ||
 		     nr_running >= tunables->auto_boost_heavy_tasks;
@@ -1003,11 +1034,11 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		sg_policy->auto_boost_until_ns = max_t(u64,
 			sg_policy->auto_boost_until_ns, time + decay_ns);
 
-	if (util_pct >= tunables->auto_boost_high_load)
+	if (util_pct >= high_load)
 		sg_policy->auto_boost_until_ns = max_t(u64,
 			sg_policy->auto_boost_until_ns,
 			time + (decay_ns << 1));
-	else if (util_pct >= tunables->auto_boost_low_load)
+	else if (util_pct >= low_load)
 		sg_policy->auto_boost_until_ns = max_t(u64,
 			sg_policy->auto_boost_until_ns, time + decay_ns);
 
@@ -1019,7 +1050,7 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		return;
 
 	floor_util = max_t(unsigned long, avg_util,
-			  mult_frac(max, tunables->auto_boost_min_util,
+			  mult_frac(max, min_util,
 				    SCHED_CAPACITY_SCALE));
 	if (heavy_load) {
 		unsigned int heavy_util = sg_policy->has_prime_cpu ?
@@ -1030,7 +1061,7 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 			mult_frac(max, heavy_util,
 				  SCHED_CAPACITY_SCALE));
 	}
-	cap_util = mult_frac(max, tunables->auto_boost_max_util,
+	cap_util = mult_frac(max, max_util,
 			    SCHED_CAPACITY_SCALE);
 	if (!heavy_load)
 		cap_util = min_t(unsigned long, cap_util,
@@ -2348,10 +2379,12 @@ static int sugov_start(struct cpufreq_policy *policy)
 	sg_policy->need_freq_update		= false;
 	sg_policy->cached_raw_freq		= 0;
 	sg_policy->freq_hold_until_ns		= 0;
-	sg_policy->mem_boost_until_ns		= 0;
 	sg_policy->auto_boost_until_ns		= 0;
 	sg_policy->efficiency_until_ns		= 0;
 	sg_policy->auto_boost_avg_util		= 0;
+	sg_policy->cpu_signal_ema		= 0;
+	sg_policy->gpu_signal_ema		= 0;
+	sg_policy->mem_signal_ema		= 0;
 	sg_policy->has_prime_cpu		= sugov_policy_has_prime_cpu(sg_policy);
 #ifdef OPLUS_FEATURE_POWER_CPUFREQ
 	sg_policy->hispeed_validate_time	= 0;
