@@ -225,6 +225,8 @@ struct arm_smmu_power_resources {
 	uint32_t			bus_client;
 	struct msm_bus_scale_pdata	*bus_dt_data;
 	struct icc_path			*icc_path;
+	u32				icc_on_avg_kbps;
+	u32				icc_on_peak_kbps;
 	bool				use_icc;
 
 	/* Protects power_count */
@@ -1229,7 +1231,8 @@ static int arm_smmu_request_bus(struct arm_smmu_power_resources *pwr)
 	int ret;
 
 	if (pwr->use_icc) {
-		ret = icc_set_bw(pwr->icc_path, 0, 1);
+		ret = icc_set_bw(pwr->icc_path, pwr->icc_on_avg_kbps,
+				 pwr->icc_on_peak_kbps);
 		if (!ret)
 			return 0;
 
@@ -5298,7 +5301,33 @@ static int arm_smmu_init_bus_scaling(struct arm_smmu_power_resources *pwr)
 
 	pwr->icc_path = devm_of_icc_get(dev, "smmu-ddr");
 	if (!IS_ERR(pwr->icc_path)) {
+		/*
+		 * Keep SMMU translation traffic away from near-zero DDR votes.
+		 *
+		 * Prefer explicit "qcom,icc-on-{avg,peak}-kbps". For backward
+		 * compatibility, reuse existing min-floor properties if present.
+		 * If neither is provided, keep a minimal non-zero vote.
+		 */
+		of_property_read_u32(dev->of_node, "qcom,icc-on-avg-kbps",
+				     &pwr->icc_on_avg_kbps);
+		of_property_read_u32(dev->of_node, "qcom,icc-on-peak-kbps",
+				     &pwr->icc_on_peak_kbps);
+
+		if (!pwr->icc_on_avg_kbps)
+			of_property_read_u32(dev->of_node,
+					     "qcom,icc-min-avg-kbps",
+					     &pwr->icc_on_avg_kbps);
+		if (!pwr->icc_on_peak_kbps)
+			of_property_read_u32(dev->of_node,
+					     "qcom,icc-min-peak-kbps",
+					     &pwr->icc_on_peak_kbps);
+
+		if (!pwr->icc_on_avg_kbps && !pwr->icc_on_peak_kbps)
+			pwr->icc_on_peak_kbps = 1;
+
 		pwr->use_icc = true;
+		dev_dbg(dev, "Using ICC vote avg=%u peak=%u kBps\n",
+			pwr->icc_on_avg_kbps, pwr->icc_on_peak_kbps);
 		return 0;
 	}
 

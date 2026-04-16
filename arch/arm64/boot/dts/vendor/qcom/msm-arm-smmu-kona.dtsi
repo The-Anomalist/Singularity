@@ -182,6 +182,8 @@
 		qcom,msm-bus,name = "apps_smmu";
 		interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 		interconnect-names = "smmu-ddr";
+		qcom,icc-on-avg-kbps = <762000>;
+		qcom,icc-on-peak-kbps = <1524000>;
 		qcom,msm-bus,num-cases = <2>;
 		qcom,msm-bus,active-only;
 		qcom,msm-bus,num-paths = <1>;
@@ -219,6 +221,8 @@
 			qcom,msm-bus,name = "apps_smmu";
 			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 			interconnect-names = "smmu-ddr";
+			qcom,icc-on-avg-kbps = <762000>;
+			qcom,icc-on-peak-kbps = <1524000>;
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -240,6 +244,8 @@
 			qcom,msm-bus,name = "apps_smmu";
 			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 			interconnect-names = "smmu-ddr";
+			qcom,icc-on-avg-kbps = <762000>;
+			qcom,icc-on-peak-kbps = <1524000>;
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -263,6 +269,8 @@
 			qcom,msm-bus,name = "mnoc_hf_0_tbu";
 			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 			interconnect-names = "smmu-ddr";
+			qcom,icc-on-avg-kbps = <762000>;
+			qcom,icc-on-peak-kbps = <1524000>;
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -286,6 +294,8 @@
 			qcom,msm-bus,name = "mnoc_hf_1_tbu";
 			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 			interconnect-names = "smmu-ddr";
+			qcom,icc-on-avg-kbps = <762000>;
+			qcom,icc-on-peak-kbps = <1524000>;
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -307,6 +317,8 @@
 			qcom,msm-bus,name = "apps_smmu";
 			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 			interconnect-names = "smmu-ddr";
+			qcom,icc-on-avg-kbps = <762000>;
+			qcom,icc-on-peak-kbps = <1524000>;
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -328,6 +340,8 @@
 			qcom,msm-bus,name = "apps_smmu";
 			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 			interconnect-names = "smmu-ddr";
+			qcom,icc-on-avg-kbps = <762000>;
+			qcom,icc-on-peak-kbps = <1524000>;
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -350,6 +364,8 @@
 			qcom,msm-bus,name = "apps_smmu";
 			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 			interconnect-names = "smmu-ddr";
+			qcom,icc-on-avg-kbps = <762000>;
+			qcom,icc-on-peak-kbps = <1524000>;
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -373,6 +389,8 @@
 			qcom,msm-bus,name = "apps_smmu";
 			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 			interconnect-names = "smmu-ddr";
+			qcom,icc-on-avg-kbps = <762000>;
+			qcom,icc-on-peak-kbps = <1524000>;
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -397,6 +415,8 @@
 			qcom,msm-bus,name = "mnoc_sf_0_tbu";
 			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 			interconnect-names = "smmu-ddr";
+			qcom,icc-on-avg-kbps = <762000>;
+			qcom,icc-on-peak-kbps = <1524000>;
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;
@@ -420,6 +440,8 @@
 			qcom,msm-bus,name = "mnoc_sf_1_tbu";
 			interconnects = <&kona_icc KONA_ICC_CPU_TO_MEM>;
 			interconnect-names = "smmu-ddr";
+			qcom,icc-on-avg-kbps = <762000>;
+			qcom,icc-on-peak-kbps = <1524000>;
 			qcom,msm-bus,num-cases = <2>;
 			qcom,msm-bus,active-only;
 			qcom,msm-bus,num-paths = <1>;

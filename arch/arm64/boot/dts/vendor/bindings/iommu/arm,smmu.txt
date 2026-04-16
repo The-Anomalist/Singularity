@@ -186,6 +186,17 @@ conditions.
 - qcom,msm-bus,vectors-KBps
 		: Refer to devicetree/bindings/arm/msm/msm_bus.txt
 
+- qcom,icc-on-avg-kbps
+- qcom,icc-on-peak-kbps
+		: Optional interconnect on-state vote (kBps) used when
+		  "interconnect-names" includes "smmu-ddr". If omitted,
+		  qcom,icc-min-{avg,peak}-kbps are used as fallback.
+
+- qcom,icc-min-avg-kbps
+- qcom,icc-min-peak-kbps
+		: Optional fallback floor values (kBps) for SMMU ICC votes
+		  when qcom,icc-on-{avg,peak}-kbps are not provided.
+
 ** Deprecated properties:
 
 - mmu-masters (deprecated in favour of the generic "iommus" binding) :
