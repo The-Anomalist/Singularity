@@ -29,6 +29,14 @@ layer on top of the existing 4.19 scheduler so devices can adopt it safely.
   when it remains a valid candidate.
 - `sched_uclass_prev_cpu_energy_margin_pct`: minimum energy saving required
   before migrating away from prev CPU.
+- `sched_uclass_auto_tune`: enable adaptive UCLASS policy shaping based on
+  live task behavior.
+- `sched_uclass_auto_boost_max_pct`: safety ceiling for adaptive wakeup
+  granularity boost.
+- `sched_uclass_idle_exit_latency_limit_us`: maximum idle exit latency
+  accepted for idle-first placement (0 disables the cap).
+- `sched_uclass_high_util_pct`: utilization threshold that classifies a task
+  as throughput-heavy for adaptive policy decisions.
 
 ## Safety principles for SM8250 / 4.19
 

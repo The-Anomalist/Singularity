@@ -36,6 +36,10 @@ extern unsigned int sysctl_sched_uclass_idle_bias;
 extern unsigned int sysctl_sched_uclass_prefer_prev_cpu;
 extern unsigned int sysctl_sched_uclass_gran_boost_pct;
 extern unsigned int sysctl_sched_uclass_prev_cpu_energy_margin_pct;
+extern unsigned int sysctl_sched_uclass_auto_tune;
+extern unsigned int sysctl_sched_uclass_auto_boost_max_pct;
+extern unsigned int sysctl_sched_uclass_idle_exit_latency_limit_us;
+extern unsigned int sysctl_sched_uclass_high_util_pct;
 #endif
 extern unsigned int sysctl_sched_child_runs_first;
 extern unsigned int sysctl_sched_force_lb_enable;

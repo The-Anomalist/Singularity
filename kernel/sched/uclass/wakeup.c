@@ -26,7 +26,7 @@ unsigned long uclass_adjust_wakeup_gran(struct task_struct *curr,
 	if (!uclamp_latency_sensitive(p) || uclamp_boosted(curr))
 		return gran;
 
-	boost_pct = min_t(unsigned int, sysctl_sched_uclass_gran_boost_pct, 100);
+	boost_pct = uclass_effective_gran_boost_pct(curr, p);
 	gran = mult_frac(gran, 100 - boost_pct, 100);
 
 	return max_t(unsigned long, gran, sysctl_sched_min_granularity / 2);

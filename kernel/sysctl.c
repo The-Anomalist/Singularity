@@ -755,6 +755,42 @@ static struct ctl_table kern_table[] = {
 		.extra1		= &zero,
 		.extra2		= &fifty,
 	},
+	{
+		.procname	= "sched_uclass_auto_tune",
+		.data		= &sysctl_sched_uclass_auto_tune,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+	{
+		.procname	= "sched_uclass_auto_boost_max_pct",
+		.data		= &sysctl_sched_uclass_auto_boost_max_pct,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one_hundred,
+	},
+	{
+		.procname	= "sched_uclass_idle_exit_latency_limit_us",
+		.data		= &sysctl_sched_uclass_idle_exit_latency_limit_us,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &int_max,
+	},
+	{
+		.procname	= "sched_uclass_high_util_pct",
+		.data		= &sysctl_sched_uclass_high_util_pct,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one_hundred,
+	},
 #endif
 
 #ifdef CONFIG_SMP

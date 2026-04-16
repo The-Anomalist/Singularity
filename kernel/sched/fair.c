@@ -93,12 +93,17 @@ unsigned int sysctl_sched_cstate_aware = 1;
  * UCLASS tunables:
  * - wakeup boost applies only to latency-sensitive tasks.
  * - idle bias prefers shallower idle states during wake placement.
+ * - auto tune adapts wakeup and placement behavior per-task.
  */
 unsigned int sysctl_sched_uclass_wakeup_boost = 0;
 unsigned int sysctl_sched_uclass_idle_bias = 0;
 unsigned int sysctl_sched_uclass_prefer_prev_cpu = 1;
 unsigned int sysctl_sched_uclass_gran_boost_pct = 20;
 unsigned int sysctl_sched_uclass_prev_cpu_energy_margin_pct = 6;
+unsigned int sysctl_sched_uclass_auto_tune = 1;
+unsigned int sysctl_sched_uclass_auto_boost_max_pct = 40;
+unsigned int sysctl_sched_uclass_idle_exit_latency_limit_us = 1000;
+unsigned int sysctl_sched_uclass_high_util_pct = 80;
 #endif
 
 /*
@@ -7690,7 +7695,7 @@ static void select_cpu_candidates(struct sched_domain *sd, cpumask_t *cpus,
 					continue;
 				idle = idle_get_state(cpu_rq(cpu));
 				if (!uclass_idle_candidate_is_better(cpu_cap, target_cap,
-						idle, min_exit_lat))
+						p, idle, min_exit_lat))
 					continue;
 
 				if (idle)

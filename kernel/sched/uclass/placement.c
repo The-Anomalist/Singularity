@@ -15,6 +15,9 @@ bool uclass_placement_enabled(void)
 
 bool uclass_pick_idle_cpu_first(struct task_struct *p)
 {
+	if (uclass_auto_tune_enabled() && uclass_task_high_util(p))
+		return false;
+
 	return uclass_placement_enabled() && sysctl_sched_uclass_idle_bias &&
 	       uclamp_latency_sensitive(p);
 }
@@ -36,11 +39,18 @@ unsigned int uclass_prev_cpu_energy_margin_pct(void)
 
 bool uclass_idle_candidate_is_better(unsigned long cpu_cap,
 				     unsigned long target_cap,
+				     struct task_struct *p,
 				     struct cpuidle_state *idle,
 				     unsigned int min_exit_lat)
 {
+	unsigned int limit;
+
 	if (!idle || cpu_cap != target_cap)
 		return true;
+
+	limit = uclass_idle_exit_latency_limit_us(p);
+	if (limit && idle->exit_latency > limit)
+		return false;
 
 	if (uclass_placement_enabled() && sysctl_sched_uclass_idle_bias)
 		return idle->exit_latency < min_exit_lat;
