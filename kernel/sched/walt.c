@@ -12,14 +12,12 @@
 #include "sched.h"
 #include "walt.h"
 
-#include <trace/events/sched.h>
+const char * const task_event_names[] = {"PUT_PREV_TASK", "PICK_NEXT_TASK",
+					 "TASK_WAKE", "TASK_MIGRATE",
+					 "TASK_UPDATE", "IRQ_UPDATE"};
 
-const char *task_event_names[] = {"PUT_PREV_TASK", "PICK_NEXT_TASK",
-				  "TASK_WAKE", "TASK_MIGRATE", "TASK_UPDATE",
-				"IRQ_UPDATE"};
-
-const char *migrate_type_names[] = {"GROUP_TO_RQ", "RQ_TO_GROUP",
-					 "RQ_TO_RQ", "GROUP_TO_GROUP"};
+const char * const migrate_type_names[] = {"GROUP_TO_RQ", "RQ_TO_GROUP",
+					    "RQ_TO_RQ", "GROUP_TO_GROUP"};
 
 #define SCHED_FREQ_ACCOUNT_WAIT_TIME 0
 #define SCHED_ACCOUNT_WAIT_TIME 1
@@ -39,20 +37,20 @@ static struct irq_work walt_migration_irq_work;
 
 u64 sched_ktime_clock(void)
 {
-	if (unlikely(sched_ktime_suspended))
-		return ktime_to_ns(ktime_last);
+	if (unlikely(READ_ONCE(sched_ktime_suspended)))
+		return ktime_to_ns(READ_ONCE(ktime_last));
 	return ktime_get_ns();
 }
 
 static void sched_resume(void)
 {
-	sched_ktime_suspended = false;
+	WRITE_ONCE(sched_ktime_suspended, false);
 }
 
 static int sched_suspend(void)
 {
-	ktime_last = ktime_get();
-	sched_ktime_suspended = true;
+	WRITE_ONCE(ktime_last, ktime_get());
+	WRITE_ONCE(sched_ktime_suspended, true);
 	return 0;
 }
 
@@ -73,13 +71,15 @@ static void acquire_rq_locks_irqsave(const cpumask_t *cpus,
 {
 	int cpu;
 	int level = 0;
+	struct rq *rq;
 
 	local_irq_save(*flags);
 	for_each_cpu(cpu, cpus) {
+		rq = cpu_rq(cpu);
 		if (level == 0)
-			raw_spin_lock(&cpu_rq(cpu)->lock);
+			raw_spin_lock(&rq->lock);
 		else
-			raw_spin_lock_nested(&cpu_rq(cpu)->lock, level);
+			raw_spin_lock_nested(&rq->lock, level);
 		level++;
 	}
 }
@@ -88,9 +88,12 @@ static void release_rq_locks_irqrestore(const cpumask_t *cpus,
 					unsigned long *flags)
 {
 	int cpu;
+	struct rq *rq;
 
-	for_each_cpu(cpu, cpus)
-		raw_spin_unlock(&cpu_rq(cpu)->lock);
+	for_each_cpu(cpu, cpus) {
+		rq = cpu_rq(cpu);
+		raw_spin_unlock(&rq->lock);
+	}
 	local_irq_restore(*flags);
 }
 
@@ -200,11 +203,16 @@ static int __init set_sched_predl(char *str)
 early_param("sched_predl", set_sched_predl);
 
 __read_mostly unsigned int walt_scale_demand_divisor;
-#define scale_demand(d) ((d)/walt_scale_demand_divisor)
+static __always_inline u64 scale_demand(u64 demand)
+{
+	return demand / walt_scale_demand_divisor;
+}
 
 static inline void walt_irq_work_queue(struct irq_work *work)
 {
-	if (likely(cpu_online(raw_smp_processor_id())))
+	int cpu = raw_smp_processor_id();
+
+	if (likely(cpu_online(cpu)))
 		irq_work_queue(work);
 	else
 		irq_work_queue_on(work, cpumask_any(cpu_online_mask));
@@ -567,15 +575,16 @@ __cpu_util_freq_walt(int cpu, struct sched_walt_cpu_load *walt_load)
 	struct rq *rq = cpu_rq(cpu);
 	unsigned long capacity = capacity_orig_of(cpu);
 	int boost;
+	int boost_factor;
 
 	boost = per_cpu(sched_load_boost, cpu);
+	boost_factor = 100 + boost;
 	util_unboosted = util = freq_policy_load(rq);
-	util = div64_u64(util * (100 + boost),
-			walt_cpu_util_freq_divisor);
+	util = div64_u64(util * boost_factor, walt_cpu_util_freq_divisor);
 
 	if (walt_load) {
-		u64 nl = cpu_rq(cpu)->nt_prev_runnable_sum +
-				rq->grp_time.nt_prev_runnable_sum;
+		u64 nl = rq->nt_prev_runnable_sum +
+			 rq->grp_time.nt_prev_runnable_sum;
 		u64 pl = rq->walt_stats.pred_demands_sum_scaled;
 
 		/* do_pl_notif() needs unboosted signals */
@@ -584,7 +593,7 @@ __cpu_util_freq_walt(int cpu, struct sched_walt_cpu_load *walt_load)
 						SCHED_CAPACITY_SHIFT);
 		rq->old_estimated_time = pl;
 
-		nl = div64_u64(nl * (100 + boost), walt_cpu_util_freq_divisor);
+		nl = div64_u64(nl * boost_factor, walt_cpu_util_freq_divisor);
 
 		walt_load->nl = nl;
 		walt_load->pl = pl;
@@ -605,6 +614,7 @@ cpu_util_freq_walt(int cpu, struct sched_walt_cpu_load *walt_load)
 	unsigned long util = 0, util_other = 0;
 	unsigned long capacity = capacity_orig_of(cpu);
 	int i, mpct = sysctl_sched_asym_cap_sibling_freq_match_pct;
+	bool load_out = !!walt_load;
 
 	if (!cpumask_test_cpu(cpu, &asym_cap_sibling_cpus))
 		return __cpu_util_freq_walt(cpu, walt_load);
@@ -621,10 +631,12 @@ cpu_util_freq_walt(int cpu, struct sched_walt_cpu_load *walt_load)
 
 	util = ADJUSTED_ASYM_CAP_CPU_UTIL(util, util_other, mpct);
 
-	walt_load->nl = ADJUSTED_ASYM_CAP_CPU_UTIL(walt_load->nl, wl_other.nl,
-						   mpct);
-	walt_load->pl = ADJUSTED_ASYM_CAP_CPU_UTIL(walt_load->pl, wl_other.pl,
-						   mpct);
+	if (load_out) {
+		walt_load->nl = ADJUSTED_ASYM_CAP_CPU_UTIL(walt_load->nl,
+							   wl_other.nl, mpct);
+		walt_load->pl = ADJUSTED_ASYM_CAP_CPU_UTIL(walt_load->pl,
+							   wl_other.pl, mpct);
+	}
 
 	return (util >= capacity) ? capacity : util;
 }
