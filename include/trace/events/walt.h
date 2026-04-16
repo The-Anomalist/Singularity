@@ -6,7 +6,7 @@
 #ifdef CONFIG_SCHED_WALT
 struct rq;
 struct group_cpu_time;
-extern const char *task_event_names[];
+extern const char * const task_event_names[];
 
 #if defined(CREATE_TRACE_POINTS) && defined(CONFIG_SCHED_WALT)
 static inline void __window_data(u32 *dst, u32 *src)
@@ -354,7 +354,7 @@ TRACE_EVENT(sched_update_task_ravg_mini,
 );
 
 struct migration_sum_data;
-extern const char *migrate_type_names[];
+extern const char * const migrate_type_names[];
 
 TRACE_EVENT(sched_set_preferred_cluster,
 
