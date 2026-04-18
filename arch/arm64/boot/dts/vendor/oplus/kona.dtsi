@@ -126,20 +126,31 @@
 };
 
 /*
- * Keep a moderate CPU DDR floor on Oplus kona boards:
- * - high enough to preserve display stability on low-load transitions
- * - low enough to avoid excessive idle drain on battery
+ * Rebalance CPU memory QoS for better battery life while keeping burst
+ * responsiveness:
+ * - lower sustained floors reduce idle/light-load drain
+ * - higher upscale + tighter polling preserves fast ramp under load
  */
+&cpu_cpu_llcc_bw {
+	qcom,icc-min-avg-kbps = <5200000>;
+	qcom,icc-min-peak-kbps = <10400000>;
+	qcom,icc-boost-percent = <120>;
+	qcom,icc-upscale-percent = <180>;
+	qcom,polling-ms = <8>;
+};
+
 &cpu_llcc_ddr_bw {
 	qcom,icc-min-avg-kbps = <4587000>;
 	qcom,icc-min-peak-kbps = <9160000>;
-	qcom,icc-boost-percent = <130>;
+	qcom,icc-boost-percent = <125>;
+	qcom,icc-upscale-percent = <185>;
+	qcom,polling-ms = <4>;
 };
 
 &cpu4_cpu_ddr_latfloor {
 	qcom,icc-min-avg-kbps = <4587000>;
 	qcom,icc-min-peak-kbps = <9160000>;
-	qcom,icc-boost-percent = <130>;
+	qcom,icc-boost-percent = <125>;
 };
 
 &qcom_seecom {
