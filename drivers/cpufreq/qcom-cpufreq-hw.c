@@ -697,7 +697,7 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		u32 max_freq_data, max_volt_data, max_src, max_lval;
 		u32 programmed_freq_data, programmed_volt_data;
 		u32 programmed_src, programmed_lval;
-		u32 new_lval, new_mv;
+		u32 new_lval, new_mv, min_lval;
 		u32 original_target_freq_data, original_target_volt_data;
 		u64 new_freq_khz;
 		unsigned int materialized_freq_khz = 0;
@@ -719,8 +719,16 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		if (max_src) {
 			new_freq_khz = c->table[max_index].frequency +
 				       c->max_freq_offset_khz;
-			new_lval = DIV_ROUND_CLOSEST_ULL(new_freq_khz * 1000,
-							 c->xo_rate);
+			/*
+			 * Round up when translating the requested OC frequency
+			 * into an L value so small offsets do not quantize back
+			 * to the same top-row point and silently disappear.
+			 */
+			new_lval = DIV_ROUND_UP_ULL(new_freq_khz * 1000,
+						    c->xo_rate);
+			min_lval = max_lval + 1;
+			if (new_lval < min_lval)
+				new_lval = min_lval;
 			new_mv = DIV_ROUND_UP(c->voltages[max_index] +
 					      c->max_volt_offset_uv, 1000);
 

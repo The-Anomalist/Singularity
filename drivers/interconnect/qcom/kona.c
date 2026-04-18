@@ -82,6 +82,9 @@ struct kona_icc_provider {
 	struct notifier_block display_nb;
 	struct device **sysfs_nodes;
 	struct class *icc_class;
+	unsigned long gpu_oc_last_jiffies;
+	unsigned long npu_oc_last_jiffies;
+	unsigned long cpu_prime_oc_last_jiffies;
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
         bool gpu_llcc_turbo;
 #endif
@@ -320,6 +323,8 @@ static unsigned int kona_npu_ib_boost_percent = 176;
 static unsigned int kona_npu_ib_min_ratio_percent = 230;
 static bool kona_npu_oc_mem_pinning_enable = true;
 static unsigned long kona_npu_oc_pin_threshold_kb = 21000000; /* 21 GB/s */
+static unsigned int kona_npu_oc_pin_exit_percent = 75;
+static unsigned int kona_npu_oc_pin_hold_ms = 200;
 static unsigned long kona_npu_oc_floor_ab_kb = 20000000;      /* 20 GB/s */
 static unsigned long kona_npu_oc_floor_ib_kb = 33000000;      /* 33 GB/s */
 static unsigned long kona_npu_oc_llcc_floor_ab_kb = 15000000; /* 15 GB/s */
@@ -329,6 +334,8 @@ static bool kona_gpu_bimc_no_hyst_enable = true;
 static unsigned long kona_gpu_bimc_floor_ab_kb = 16500000; /* 16.5 GB/s */
 static unsigned long kona_gpu_bimc_floor_ib_kb = 35000000; /* 35 GB/s */
 static unsigned long kona_gpu_bimc_pin_threshold_kb = 6500000; /* 6.5 GB/s */
+static unsigned int kona_gpu_bimc_pin_exit_percent = 70;
+static unsigned int kona_gpu_bimc_pin_hold_ms = 220;
 static unsigned int kona_gpu_bimc_min_ratio_percent = 245;
 static bool kona_gpu_llcc_turbo_enable = true;
 static unsigned long kona_gpu_llcc_turbo_enter_ib_kb = 7200000; /* 7.2 GB/s */
@@ -337,6 +344,8 @@ static unsigned long kona_gpu_llcc_turbo_ab_kb = 23500000;      /* 23.5 GB/s */
 static unsigned long kona_gpu_llcc_turbo_ib_kb = 28500000;      /* 28.5 GB/s */
 static bool kona_cpu_prime_oc_mem_pinning_enable = true;
 static unsigned long kona_cpu_prime_oc_pin_threshold_kb = 20000000; /* 20 GB/s */
+static unsigned int kona_cpu_prime_oc_pin_exit_percent = 75;
+static unsigned int kona_cpu_prime_oc_pin_hold_ms = 240;
 static unsigned long kona_cpu_prime_oc_floor_ab_kb = 26000000;      /* 26 GB/s */
 static unsigned long kona_cpu_prime_oc_floor_ib_kb = 43000000;      /* 43 GB/s */
 static unsigned long kona_cpu_prime_oc_llcc_floor_ab_kb = 18000000; /* 18 GB/s */
@@ -437,6 +446,12 @@ MODULE_PARM_DESC(kona_npu_oc_mem_pinning_enable,
 module_param(kona_npu_oc_pin_threshold_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_npu_oc_pin_threshold_kb,
 	"Enable NPU OC pinning above this max(AB,IB) threshold in KB/s");
+module_param(kona_npu_oc_pin_exit_percent, uint, 0644);
+MODULE_PARM_DESC(kona_npu_oc_pin_exit_percent,
+	"Exit threshold as percent of enter threshold for NPU OC pinning (default: 75)");
+module_param(kona_npu_oc_pin_hold_ms, uint, 0644);
+MODULE_PARM_DESC(kona_npu_oc_pin_hold_ms,
+	"Hold NPU OC pinning for N ms after threshold crossing (default: 200)");
 module_param(kona_npu_oc_floor_ab_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_npu_oc_floor_ab_kb,
 	"Pinned npu-ddr AB floor in KB/s while NPU OC pinning is active");
@@ -464,6 +479,12 @@ MODULE_PARM_DESC(kona_gpu_bimc_floor_ib_kb,
 module_param(kona_gpu_bimc_pin_threshold_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_gpu_bimc_pin_threshold_kb,
         "Only enable gpu-ddr BIMC pinning above this KB/s request threshold");
+module_param(kona_gpu_bimc_pin_exit_percent, uint, 0644);
+MODULE_PARM_DESC(kona_gpu_bimc_pin_exit_percent,
+	"Exit threshold as percent of enter threshold for GPU BIMC pinning (default: 70)");
+module_param(kona_gpu_bimc_pin_hold_ms, uint, 0644);
+MODULE_PARM_DESC(kona_gpu_bimc_pin_hold_ms,
+	"Hold GPU BIMC pinning for N ms after threshold crossing (default: 220)");
 module_param(kona_gpu_bimc_min_ratio_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_bimc_min_ratio_percent,
         "Minimum gpu-ddr BIMC IB as percent of AB when pinning is active (default: 245)");
@@ -488,6 +509,12 @@ MODULE_PARM_DESC(kona_cpu_prime_oc_mem_pinning_enable,
 module_param(kona_cpu_prime_oc_pin_threshold_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_cpu_prime_oc_pin_threshold_kb,
 	"Enable CPU-prime OC pinning above this max(AB,IB) threshold in KB/s");
+module_param(kona_cpu_prime_oc_pin_exit_percent, uint, 0644);
+MODULE_PARM_DESC(kona_cpu_prime_oc_pin_exit_percent,
+	"Exit threshold as percent of enter threshold for CPU-prime OC pinning (default: 75)");
+module_param(kona_cpu_prime_oc_pin_hold_ms, uint, 0644);
+MODULE_PARM_DESC(kona_cpu_prime_oc_pin_hold_ms,
+	"Hold CPU-prime OC pinning for N ms after threshold crossing (default: 240)");
 module_param(kona_cpu_prime_oc_floor_ab_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_cpu_prime_oc_floor_ab_kb,
 	"Pinned cpu7-ddr AB floor in KB/s while CPU-prime OC pinning is active");
@@ -788,14 +815,50 @@ static void kona_icc_apply_hysteresis(struct kona_icc_provider *qp,
 		 desc->name, prev_ab, prev_ib, *ab, *ib);
 }
 
+static bool kona_icc_pin_latched(bool enabled, u64 req_max_kb,
+				 unsigned long enter_kb,
+				 unsigned int exit_percent,
+				 unsigned int hold_ms,
+				 unsigned long *last_jiffies)
+{
+	unsigned long hold_jiffies, exit_kb;
+
+	if (!enabled || !enter_kb)
+		return false;
+
+	exit_percent = clamp_val(exit_percent, 1, 100);
+	exit_kb = mul_u64_u32_div(enter_kb, exit_percent, 100);
+	hold_jiffies = msecs_to_jiffies(hold_ms);
+
+	if (req_max_kb >= enter_kb) {
+		*last_jiffies = jiffies;
+		return true;
+	}
+
+	if (*last_jiffies &&
+	    req_max_kb >= exit_kb &&
+	    time_before(jiffies, *last_jiffies + hold_jiffies)) {
+		*last_jiffies = jiffies;
+		return true;
+	}
+
+	if (*last_jiffies &&
+	    time_before(jiffies, *last_jiffies + hold_jiffies))
+		return true;
+
+	return false;
+}
+
 static void __maybe_unused
-kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
-		     u64 *ab, u64 *ib)
+kona_icc_apply_floor(struct kona_icc_provider *qp,
+		     const struct kona_icc_node_desc *desc,
+		     u64 req_ab, u64 req_ib, u64 *ab, u64 *ib)
 {
 	bool active;
 	bool gpu_pin_active;
 	bool npu_pin_active;
 	bool cpu_prime_pin_active;
+	u64 req_max;
 
 	if (!kona_perf_floor_enable)
 		return;
@@ -815,17 +878,24 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 	 * and DDR corners do not rise enough under load.
 	 */
 	active = (*ab || *ib);
+	req_max = max(req_ab, req_ib);
 
 	/*
 	 * Only pin GPU/GMU BIMC floors for heavy GPU load. This avoids paying
 	 * peak floor cost for every non-zero vote.
 	 */
-	gpu_pin_active = kona_gpu_bimc_pinning_enable &&
-		max(*ab, *ib) >= kona_gpu_bimc_pin_threshold_kb;
-	npu_pin_active = kona_npu_oc_mem_pinning_enable &&
-		max(*ab, *ib) >= kona_npu_oc_pin_threshold_kb;
-	cpu_prime_pin_active = kona_cpu_prime_oc_mem_pinning_enable &&
-		max(*ab, *ib) >= kona_cpu_prime_oc_pin_threshold_kb;
+	gpu_pin_active = kona_icc_pin_latched(kona_gpu_bimc_pinning_enable,
+		req_max, kona_gpu_bimc_pin_threshold_kb,
+		kona_gpu_bimc_pin_exit_percent, kona_gpu_bimc_pin_hold_ms,
+		&qp->gpu_oc_last_jiffies);
+	npu_pin_active = kona_icc_pin_latched(kona_npu_oc_mem_pinning_enable,
+		req_max, kona_npu_oc_pin_threshold_kb,
+		kona_npu_oc_pin_exit_percent, kona_npu_oc_pin_hold_ms,
+		&qp->npu_oc_last_jiffies);
+	cpu_prime_pin_active = kona_icc_pin_latched(kona_cpu_prime_oc_mem_pinning_enable,
+		req_max, kona_cpu_prime_oc_pin_threshold_kb,
+		kona_cpu_prime_oc_pin_exit_percent, kona_cpu_prime_oc_pin_hold_ms,
+		&qp->cpu_prime_oc_last_jiffies);
 
 	switch (desc->id) {
 	case KONA_ICC_CPU0_TO_MEM:
@@ -2104,7 +2174,7 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	if (ab || ib) {
 		const struct kona_icc_node_desc *desc = &qp->nodes[index];
 
-		kona_icc_apply_floor(desc, &ab, &ib);
+		kona_icc_apply_floor(qp, desc, avg_bw, peak_bw, &ab, &ib);
 		kona_icc_apply_hysteresis(qp, desc, index, &ab, &ib);
 	}
 
@@ -2695,7 +2765,7 @@ static int kona_icc_probe(struct platform_device *pdev)
 
 			ab = KONA_ICC_MIN_AB_FLOOR_KB;
 			ib = KONA_ICC_MIN_IB_FLOOR_KB;
-			kona_icc_apply_floor(&qp->nodes[i], &ab, &ib);
+			kona_icc_apply_floor(qp, &qp->nodes[i], ab, ib, &ab, &ib);
 
 			r_ab = kona_icc_send_bw(qp->provider.dev,
 					     qp->nodes[i].ab, ab, false);
