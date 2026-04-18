@@ -5,6 +5,7 @@
  */
 
 #include <linux/devfreq.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/msm_adreno_devfreq.h>
 #include <linux/of_platform.h>
@@ -151,21 +152,21 @@ static int devfreq_gpubw_get_target(struct devfreq *df,
 	if (priv->bus.total_time < bus_profile->sampling_ms)
 		return result;
 
-	norm_max_cycles = (unsigned int)(priv->bus.ram_time) /
-			(unsigned int) priv->bus.total_time;
-	norm_cycles = (unsigned int)(priv->bus.ram_time + priv->bus.ram_wait) /
-			(unsigned int) priv->bus.total_time;
+	norm_max_cycles = div64_u64(priv->bus.ram_time * 100,
+				    priv->bus.total_time);
+	norm_cycles = div64_u64((priv->bus.ram_time + priv->bus.ram_wait) * 100,
+				priv->bus.total_time);
 
 	if (priv->bus.ram_wait == 0)
 		wait_active_percent = 0;
 	else if (priv->bus.ram_time == 0)
 		wait_active_percent = 100;
 	else
-		wait_active_percent = (100 * (unsigned int)priv->bus.ram_wait) /
-				(unsigned int) priv->bus.ram_time;
+		wait_active_percent = div64_u64(priv->bus.ram_wait * 100,
+						priv->bus.ram_time);
 
-	gpu_percent = (100 * (unsigned int)priv->bus.gpu_time) /
-			(unsigned int) priv->bus.total_time;
+	gpu_percent = div64_u64(priv->bus.gpu_time * 100,
+				priv->bus.total_time);
 
 	/*
 	 * If there's a new high watermark, update the cutoffs and send the
@@ -193,15 +194,15 @@ static int devfreq_gpubw_get_target(struct devfreq *df,
 
 	/* Calculate the AB vote based on bus width if defined */
 	if (priv->bus.width) {
-		norm_ab =  (unsigned int)priv->bus.ram_time /
-			(unsigned int) priv->bus.total_time;
+		norm_ab = div64_u64(priv->bus.ram_time * 100,
+				    priv->bus.total_time);
 		/* Calculate AB in Mega Bytes and roundup in BW_STEP */
 		ab_mbytes = (norm_ab * priv->bus.width * 1000000ULL) >> 20;
 		bus_profile->ab_mbytes = roundup(ab_mbytes, BW_STEP);
 	} else if (bus_profile->flag) {
 		/* Re-calculate the AB percentage for a new IB vote */
-		norm_ab =  (unsigned int)priv->bus.ram_time /
-			(unsigned int) priv->bus.total_time;
+		norm_ab = div64_u64(priv->bus.ram_time * 100,
+				    priv->bus.total_time);
 		if (norm_ab > norm_ab_max)
 			norm_ab_max = norm_ab;
 		bus_profile->percent_ab = (100 * norm_ab) / norm_ab_max;
@@ -351,4 +352,3 @@ module_exit(devfreq_gpubw_exit);
 
 MODULE_DESCRIPTION("GPU bus bandwidth voting driver. Uses VBIF counters");
 MODULE_LICENSE("GPL v2");
-

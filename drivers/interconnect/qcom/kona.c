@@ -792,6 +792,7 @@ static void __maybe_unused
 kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		     u64 *ab, u64 *ib)
 {
+	bool active;
 	bool gpu_pin_active;
 	bool npu_pin_active;
 	bool cpu_prime_pin_active;
@@ -807,6 +808,15 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		return;
 
 	/*
+	 * Treat votes with either AB or IB as active.
+	 *
+	 * Many legacy clients still send IB-only requests (AB=0, IB>0). If we
+	 * only clamp non-zero AB, those paths can stay effectively AB-starved
+	 * and DDR corners do not rise enough under load.
+	 */
+	active = (*ab || *ib);
+
+	/*
 	 * Only pin GPU/GMU BIMC floors for heavy GPU load. This avoids paying
 	 * peak floor cost for every non-zero vote.
 	 */
@@ -819,9 +829,9 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 
 	switch (desc->id) {
 	case KONA_ICC_CPU0_TO_MEM:
-		if (*ab && *ab < KONA_CPU0_DDR_AB_FLOOR_KB)
+		if (active && *ab < KONA_CPU0_DDR_AB_FLOOR_KB)
 			*ab = KONA_CPU0_DDR_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_CPU0_DDR_IB_FLOOR_KB)
+		if (active && *ib < KONA_CPU0_DDR_IB_FLOOR_KB)
 			*ib = KONA_CPU0_DDR_IB_FLOOR_KB;
 
 		if (kona_cpu0_1804_boost_enable &&
@@ -835,9 +845,9 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		}
 		break;
 	case KONA_ICC_CPU0_TO_LLCC:
-		if (*ab && *ab < KONA_CPU0_LLCC_AB_FLOOR_KB)
+		if (active && *ab < KONA_CPU0_LLCC_AB_FLOOR_KB)
 			*ab = KONA_CPU0_LLCC_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_CPU0_LLCC_IB_FLOOR_KB)
+		if (active && *ib < KONA_CPU0_LLCC_IB_FLOOR_KB)
 			*ib = KONA_CPU0_LLCC_IB_FLOOR_KB;
 
 		if (kona_cpu0_1804_boost_enable &&
@@ -864,15 +874,15 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 	case KONA_ICC_CPU4_TO_MEM:
 	case KONA_ICC_CPU5_TO_MEM:
 	case KONA_ICC_CPU6_TO_MEM:
-		if (*ab && *ab < KONA_CPU_DDR_AB_FLOOR_KB)
+		if (active && *ab < KONA_CPU_DDR_AB_FLOOR_KB)
 			*ab = KONA_CPU_DDR_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_CPU_DDR_IB_FLOOR_KB)
+		if (active && *ib < KONA_CPU_DDR_IB_FLOOR_KB)
 			*ib = KONA_CPU_DDR_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_VIDEO_CFG:
-		if (*ab && *ab < KONA_MEDIA_DDR_AB_FLOOR_KB)
+		if (active && *ab < KONA_MEDIA_DDR_AB_FLOOR_KB)
 			*ab = KONA_MEDIA_DDR_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_MEDIA_DDR_IB_FLOOR_KB)
+		if (active && *ib < KONA_MEDIA_DDR_IB_FLOOR_KB)
 			*ib = KONA_MEDIA_DDR_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_DISP_CFG:
@@ -880,9 +890,9 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		 * UX-sensitive config paths share CPU_* BCMs but often vote low.
 		 * Keep moderate floors so register/config bursts don't collapse DDR.
 		 */
-		if (*ab && *ab < KONA_UX_DDR_AB_FLOOR_KB)
+		if (active && *ab < KONA_UX_DDR_AB_FLOOR_KB)
 			*ab = KONA_UX_DDR_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_UX_DDR_IB_FLOOR_KB)
+		if (active && *ib < KONA_UX_DDR_IB_FLOOR_KB)
 			*ib = KONA_UX_DDR_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_CPU_TO_LLCC:
@@ -893,28 +903,28 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 	case KONA_ICC_CPU4_TO_LLCC:
 	case KONA_ICC_CPU5_TO_LLCC:
 	case KONA_ICC_CPU6_TO_LLCC:
-		if (*ab && *ab < KONA_CPU_LLCC_AB_FLOOR_KB)
+		if (active && *ab < KONA_CPU_LLCC_AB_FLOOR_KB)
 			*ab = KONA_CPU_LLCC_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_CPU_LLCC_IB_FLOOR_KB)
+		if (active && *ib < KONA_CPU_LLCC_IB_FLOOR_KB)
 			*ib = KONA_CPU_LLCC_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_DISP0_TO_MEM:
 	case KONA_ICC_DISP1_TO_MEM:
-		if (*ab && *ab < KONA_UX_DDR_AB_FLOOR_KB)
+		if (active && *ab < KONA_UX_DDR_AB_FLOOR_KB)
 			*ab = KONA_UX_DDR_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_UX_DDR_IB_FLOOR_KB)
+		if (active && *ib < KONA_UX_DDR_IB_FLOOR_KB)
 			*ib = KONA_UX_DDR_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_CPU7_TO_MEM:
 		if (cpu_prime_pin_active) {
-			if (*ab && *ab < kona_cpu_prime_oc_floor_ab_kb)
+			if (active && *ab < kona_cpu_prime_oc_floor_ab_kb)
 				*ab = kona_cpu_prime_oc_floor_ab_kb;
-			if (*ib && *ib < kona_cpu_prime_oc_floor_ib_kb)
+			if (active && *ib < kona_cpu_prime_oc_floor_ib_kb)
 				*ib = kona_cpu_prime_oc_floor_ib_kb;
 		}
-		if (*ab && *ab < KONA_CPU_PRIME_DDR_AB_FLOOR_KB)
+		if (active && *ab < KONA_CPU_PRIME_DDR_AB_FLOOR_KB)
 			*ab = KONA_CPU_PRIME_DDR_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_CPU_PRIME_DDR_IB_FLOOR_KB)
+		if (active && *ib < KONA_CPU_PRIME_DDR_IB_FLOOR_KB)
 			*ib = KONA_CPU_PRIME_DDR_IB_FLOOR_KB;
 		if (cpu_prime_pin_active && *ab && *ib <
 		    mul_u64_u32_div(*ab, kona_cpu_prime_oc_min_ratio_percent, 100))
@@ -923,14 +933,14 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		break;
 	case KONA_ICC_CPU7_TO_LLCC:
 		if (cpu_prime_pin_active) {
-			if (*ab && *ab < kona_cpu_prime_oc_llcc_floor_ab_kb)
+			if (active && *ab < kona_cpu_prime_oc_llcc_floor_ab_kb)
 				*ab = kona_cpu_prime_oc_llcc_floor_ab_kb;
-			if (*ib && *ib < kona_cpu_prime_oc_llcc_floor_ib_kb)
+			if (active && *ib < kona_cpu_prime_oc_llcc_floor_ib_kb)
 				*ib = kona_cpu_prime_oc_llcc_floor_ib_kb;
 		}
-		if (*ab && *ab < KONA_CPU_PRIME_LLCC_AB_FLOOR_KB)
+		if (active && *ab < KONA_CPU_PRIME_LLCC_AB_FLOOR_KB)
 			*ab = KONA_CPU_PRIME_LLCC_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_CPU_PRIME_LLCC_IB_FLOOR_KB)
+		if (active && *ib < KONA_CPU_PRIME_LLCC_IB_FLOOR_KB)
 			*ib = KONA_CPU_PRIME_LLCC_IB_FLOOR_KB;
 		if (cpu_prime_pin_active && *ab && *ib <
 		    mul_u64_u32_div(*ab, kona_cpu_prime_oc_min_ratio_percent, 100))
@@ -940,15 +950,15 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 	case KONA_ICC_NPU_TO_MEM:
 	case KONA_ICC_NPUDSP_TO_MEM:
 		if (npu_pin_active) {
-			if (*ab && *ab < kona_npu_oc_floor_ab_kb)
+			if (active && *ab < kona_npu_oc_floor_ab_kb)
 				*ab = kona_npu_oc_floor_ab_kb;
-			if (*ib && *ib < kona_npu_oc_floor_ib_kb)
+			if (active && *ib < kona_npu_oc_floor_ib_kb)
 				*ib = kona_npu_oc_floor_ib_kb;
 		}
 
-		if (*ab && *ab < KONA_NPU_DDR_AB_FLOOR_KB)
+		if (active && *ab < KONA_NPU_DDR_AB_FLOOR_KB)
 			*ab = KONA_NPU_DDR_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_NPU_DDR_IB_FLOOR_KB)
+		if (active && *ib < KONA_NPU_DDR_IB_FLOOR_KB)
 			*ib = KONA_NPU_DDR_IB_FLOOR_KB;
 
 		if (*ib)
@@ -959,9 +969,9 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 				     kona_npu_ib_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_CVP_TO_MEM:
-		if (*ab && *ab < KONA_MEDIA_DDR_AB_FLOOR_KB)
+		if (active && *ab < KONA_MEDIA_DDR_AB_FLOOR_KB)
 			*ab = KONA_MEDIA_DDR_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_MEDIA_DDR_IB_FLOOR_KB)
+		if (active && *ib < KONA_MEDIA_DDR_IB_FLOOR_KB)
 			*ib = KONA_MEDIA_DDR_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_PAS_TO_MEM:
@@ -973,15 +983,15 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		break;
 	case KONA_ICC_NPU_TO_LLCC:
 		if (npu_pin_active) {
-			if (*ab && *ab < kona_npu_oc_llcc_floor_ab_kb)
+			if (active && *ab < kona_npu_oc_llcc_floor_ab_kb)
 				*ab = kona_npu_oc_llcc_floor_ab_kb;
-			if (*ib && *ib < kona_npu_oc_llcc_floor_ib_kb)
+			if (active && *ib < kona_npu_oc_llcc_floor_ib_kb)
 				*ib = kona_npu_oc_llcc_floor_ib_kb;
 		}
 
-		if (*ab && *ab < KONA_NPU_LLCC_AB_FLOOR_KB)
+		if (active && *ab < KONA_NPU_LLCC_AB_FLOOR_KB)
 			*ab = KONA_NPU_LLCC_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_NPU_LLCC_IB_FLOOR_KB)
+		if (active && *ib < KONA_NPU_LLCC_IB_FLOOR_KB)
 			*ib = KONA_NPU_LLCC_IB_FLOOR_KB;
 
 		if (*ib)
@@ -992,22 +1002,22 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 				     kona_npu_ib_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_VIDEO_TO_LLCC:
-		if (*ab && *ab < KONA_MEDIA_LLCC_AB_FLOOR_KB)
+		if (active && *ab < KONA_MEDIA_LLCC_AB_FLOOR_KB)
 			*ab = KONA_MEDIA_LLCC_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_MEDIA_LLCC_IB_FLOOR_KB)
+		if (active && *ib < KONA_MEDIA_LLCC_IB_FLOOR_KB)
 			*ib = KONA_MEDIA_LLCC_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_GPU_TO_MEM:
 		if (gpu_pin_active) {
-			if (*ab && *ab < kona_gpu_bimc_floor_ab_kb)
+			if (active && *ab < kona_gpu_bimc_floor_ab_kb)
 				*ab = kona_gpu_bimc_floor_ab_kb;
-			if (*ib && *ib < kona_gpu_bimc_floor_ib_kb)
+			if (active && *ib < kona_gpu_bimc_floor_ib_kb)
 				*ib = kona_gpu_bimc_floor_ib_kb;
 		}
 
-		if (*ab && *ab < KONA_GPU_DDR_AB_FLOOR_KB)
+		if (active && *ab < KONA_GPU_DDR_AB_FLOOR_KB)
 			*ab = KONA_GPU_DDR_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_GPU_DDR_IB_FLOOR_KB)
+		if (active && *ib < KONA_GPU_DDR_IB_FLOOR_KB)
 			*ib = KONA_GPU_DDR_IB_FLOOR_KB;
 
 		/* Prioritize burst bandwidth for GPU->DDR traffic. */
@@ -1029,15 +1039,15 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 		 * transitions never under-vote compared to regular GPU traffic.
 		 */
 		if (gpu_pin_active) {
-			if (*ab && *ab < kona_gpu_bimc_floor_ab_kb)
+			if (active && *ab < kona_gpu_bimc_floor_ab_kb)
 				*ab = kona_gpu_bimc_floor_ab_kb;
-			if (*ib && *ib < kona_gpu_bimc_floor_ib_kb)
+			if (active && *ib < kona_gpu_bimc_floor_ib_kb)
 				*ib = kona_gpu_bimc_floor_ib_kb;
 		}
 
-		if (*ab && *ab < KONA_GMU_DDR_AB_FLOOR_KB)
+		if (active && *ab < KONA_GMU_DDR_AB_FLOOR_KB)
 			*ab = KONA_GMU_DDR_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_GMU_DDR_IB_FLOOR_KB)
+		if (active && *ib < KONA_GMU_DDR_IB_FLOOR_KB)
 			*ib = KONA_GMU_DDR_IB_FLOOR_KB;
 
 		if (*ib)
@@ -1053,9 +1063,9 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 				     kona_gpu_bimc_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_GPU_TO_LLCC:
-		if (*ab && *ab < KONA_GPU_LLCC_AB_FLOOR_KB)
+		if (active && *ab < KONA_GPU_LLCC_AB_FLOOR_KB)
 			*ab = KONA_GPU_LLCC_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_GPU_LLCC_IB_FLOOR_KB)
+		if (active && *ib < KONA_GPU_LLCC_IB_FLOOR_KB)
 			*ib = KONA_GPU_LLCC_IB_FLOOR_KB;
 
 		if (*ib)
@@ -1066,9 +1076,9 @@ kona_icc_apply_floor(const struct kona_icc_node_desc *desc,
 				     kona_gpu_llcc_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_GMU_TO_LLCC:
-		if (*ab && *ab < KONA_GMU_LLCC_AB_FLOOR_KB)
+		if (active && *ab < KONA_GMU_LLCC_AB_FLOOR_KB)
 			*ab = KONA_GMU_LLCC_AB_FLOOR_KB;
-		if (*ib && *ib < KONA_GMU_LLCC_IB_FLOOR_KB)
+		if (active && *ib < KONA_GMU_LLCC_IB_FLOOR_KB)
 			*ib = KONA_GMU_LLCC_IB_FLOOR_KB;
 
 		if (*ib)
