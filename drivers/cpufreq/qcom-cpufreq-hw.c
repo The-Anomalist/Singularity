@@ -7,6 +7,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
+#include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
@@ -26,6 +27,9 @@
 #define GT_IRQ_STATUS			BIT(2)
 #define MAX_FN_SIZE			20
 #define LIMITS_POLLING_DELAY_MS		10
+#define DEFAULT_HW_UP_RATE_LIMIT_US	500
+#define DEFAULT_HW_DOWN_RATE_LIMIT_US	0
+#define DEFAULT_TRANSITION_HYST_KHZ	15360
 
 #define CYCLE_CNTR_OFFSET(c, m, acc_count)				\
 			(acc_count ? ((c - cpumask_first(m) + 1) * 4) : 0)
@@ -88,6 +92,15 @@ struct cpufreq_qcom {
 	bool is_irq_enabled;
 	bool is_irq_requested;
 	bool has_hw_freq_status;
+	u32 up_rate_limit_us;
+	u32 down_rate_limit_us;
+	u32 transition_hyst_khz;
+	u64 last_freq_update_ns;
+	u32 last_index;
+	u32 blocked_up_transitions;
+	u32 blocked_down_transitions;
+	u32 filtered_hyst_transitions;
+	spinlock_t transition_lock;
 };
 
 struct cpufreq_counter {
@@ -125,6 +138,21 @@ static const u16 cpufreq_qcom_epss_std_offsets[REG_ARRAY_SIZE] = {
 
 static struct cpufreq_counter qcom_cpufreq_counter[NR_CPUS];
 static struct cpufreq_qcom *qcom_freq_domain_map[NR_CPUS];
+static unsigned int hw_up_rate_limit_us = DEFAULT_HW_UP_RATE_LIMIT_US;
+static unsigned int hw_down_rate_limit_us = DEFAULT_HW_DOWN_RATE_LIMIT_US;
+static unsigned int hw_transition_hyst_khz = DEFAULT_TRANSITION_HYST_KHZ;
+
+module_param_named(hw_up_rate_limit_us, hw_up_rate_limit_us, uint, 0644);
+MODULE_PARM_DESC(hw_up_rate_limit_us,
+		 "Driver-level minimum time between upward perf-state updates");
+
+module_param_named(hw_down_rate_limit_us, hw_down_rate_limit_us, uint, 0644);
+MODULE_PARM_DESC(hw_down_rate_limit_us,
+		 "Driver-level minimum time between downward perf-state updates");
+
+module_param_named(hw_transition_hyst_khz, hw_transition_hyst_khz, uint, 0644);
+MODULE_PARM_DESC(hw_transition_hyst_khz,
+		 "Ignore target changes smaller than this kHz delta");
 
 static unsigned int qcom_cpufreq_hw_get(unsigned int cpu);
 
@@ -298,27 +326,117 @@ static unsigned int qcom_cpufreq_hw_get_actual_rate(struct cpufreq_qcom *c)
 	return DIV_ROUND_CLOSEST_ULL(freq * c->xo_rate, 1000);
 }
 
+static inline unsigned int
+qcom_cpufreq_hw_resolve_rate(struct cpufreq_policy *policy, unsigned int index)
+{
+	struct cpufreq_qcom *c = policy->driver_data;
+	unsigned int actual_freq;
+
+	actual_freq = qcom_cpufreq_hw_get_actual_rate(c);
+	if (actual_freq)
+		return actual_freq;
+
+	return policy->freq_table[index].frequency;
+}
+
+static bool qcom_cpufreq_hw_within_hysteresis(struct cpufreq_qcom *c,
+					      unsigned int from_freq,
+					      unsigned int to_freq)
+{
+	u32 diff;
+
+	if (!c->transition_hyst_khz)
+		return false;
+
+	diff = (from_freq > to_freq) ? (from_freq - to_freq) :
+				       (to_freq - from_freq);
+
+	return diff <= c->transition_hyst_khz;
+}
+
+static bool qcom_cpufreq_hw_rate_limited(struct cpufreq_qcom *c,
+					 unsigned int curr_index,
+					 unsigned int target_index,
+					 u64 now)
+{
+	u64 delta_ns;
+	u32 limit_us;
+
+	if (c->last_index != curr_index || !c->last_freq_update_ns)
+		return false;
+
+	if (target_index > curr_index)
+		limit_us = c->up_rate_limit_us;
+	else if (target_index < curr_index)
+		limit_us = c->down_rate_limit_us;
+	else
+		return false;
+
+	if (!limit_us)
+		return false;
+
+	delta_ns = now - c->last_freq_update_ns;
+	return delta_ns < ((u64)limit_us * NSEC_PER_USEC);
+}
+
 static int
 qcom_cpufreq_hw_target_index(struct cpufreq_policy *policy,
 			     unsigned int index)
 {
 	struct cpufreq_qcom *c = policy->driver_data;
-	unsigned int actual_freq;
+	unsigned int actual_freq, curr_freq, curr_index, programmed_index;
 	unsigned long flags;
+	u64 now;
+	bool rate_limited = false;
+
+	curr_index = readl_relaxed(c->reg_bases[REG_PERF_STATE]);
+	curr_index = min(curr_index, c->lut_max_entries - 1);
+	curr_freq = qcom_cpufreq_hw_resolve_rate(policy, curr_index);
+
+	if (index == curr_index)
+		goto update_scale;
+
+	if (qcom_cpufreq_hw_within_hysteresis(c, curr_freq,
+					      policy->freq_table[index].frequency)) {
+		spin_lock_irqsave(&c->transition_lock, flags);
+		c->filtered_hyst_transitions++;
+		spin_unlock_irqrestore(&c->transition_lock, flags);
+		goto update_scale;
+	}
+
+	now = ktime_get_ns();
+	spin_lock_irqsave(&c->transition_lock, flags);
+	rate_limited = qcom_cpufreq_hw_rate_limited(c, curr_index, index, now);
+	if (rate_limited) {
+		if (index > curr_index)
+			c->blocked_up_transitions++;
+		else
+			c->blocked_down_transitions++;
+	}
+	spin_unlock_irqrestore(&c->transition_lock, flags);
+	if (rate_limited)
+		goto update_scale;
 
 	if (c->skip_data.skip && index == c->skip_data.high_temp_index) {
 		spin_lock_irqsave(&c->skip_data.lock, flags);
 		writel_relaxed(c->skip_data.final_index,
 				c->reg_bases[REG_PERF_STATE]);
 		spin_unlock_irqrestore(&c->skip_data.lock, flags);
+		programmed_index = c->skip_data.final_index;
 	} else {
 		writel_relaxed(index, c->reg_bases[REG_PERF_STATE]);
+		programmed_index = index;
 	}
 
-	actual_freq = qcom_cpufreq_hw_get_actual_rate(c);
-	if (!actual_freq)
-		actual_freq = policy->freq_table[index].frequency;
+	spin_lock_irqsave(&c->transition_lock, flags);
+	c->last_freq_update_ns = now;
+	c->last_index = programmed_index;
+	spin_unlock_irqrestore(&c->transition_lock, flags);
 
+update_scale:
+	actual_freq = qcom_cpufreq_hw_get(policy->cpu);
+	if (!actual_freq)
+		actual_freq = curr_freq;
 	arch_set_freq_scale(policy->related_cpus, actual_freq,
 			    policy->cpuinfo.max_freq);
 
@@ -808,6 +926,23 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 
 	c->xo_rate = xo_rate;
 	c->cpu_hw_rate = cpu_hw_rate;
+	c->up_rate_limit_us = hw_up_rate_limit_us;
+	c->down_rate_limit_us = hw_down_rate_limit_us;
+	c->transition_hyst_khz = hw_transition_hyst_khz;
+	c->last_index = U32_MAX;
+	spin_lock_init(&c->transition_lock);
+
+	of_property_read_u32(dev->of_node, "qcom,driver-up-rate-limit-us",
+			     &c->up_rate_limit_us);
+	of_property_read_u32(dev->of_node, "qcom,driver-down-rate-limit-us",
+			     &c->down_rate_limit_us);
+	of_property_read_u32(dev->of_node, "qcom,driver-transition-hyst-khz",
+			     &c->transition_hyst_khz);
+
+	dev_info(dev,
+		 "domain-%d driver limits: up=%u us down=%u us hyst=%u kHz\n",
+		 index, c->up_rate_limit_us, c->down_rate_limit_us,
+		 c->transition_hyst_khz);
 
 	ret = qcom_cpufreq_hw_read_lut(pdev, c);
 	if (ret) {
