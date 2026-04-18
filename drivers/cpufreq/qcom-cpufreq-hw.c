@@ -569,17 +569,18 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 	/*
 	 * If there is room in the HW LUT, materialize the offset clock as a real
 	 * LUT row so it behaves like a factory bin (residency + perf-state
-	 * programming). Keep it boost-only so the regular governor path still
-	 * targets stock bins and avoids unnecessary thermal/power contention.
-	 * If we cannot back it with HW, skip exposing the offset OPP entirely.
+	 * programming). If we cannot back it with HW, skip exposing the offset
+	 * OPP entirely.
 	 */
 	if (c->max_freq_offset_khz && c->lut_max_entries) {
 		unsigned int max_index = c->lut_max_entries - 1;
 		unsigned int offset_index = c->lut_max_entries;
 		u32 max_freq_data, max_volt_data, max_src, max_lval;
 		u32 programmed_freq_data, programmed_volt_data;
+		u32 programmed_src, programmed_lval;
 		u32 new_lval, new_mv;
 		u64 new_freq_khz;
+		unsigned int materialized_freq_khz = 0;
 		bool hw_backed = false;
 
 		max_freq_data = readl_relaxed(base_freq + max_index * lut_row_size);
@@ -622,25 +623,33 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 					base_freq + offset_index * lut_row_size);
 				programmed_volt_data = readl_relaxed(
 					base_volt + offset_index * lut_row_size);
+				programmed_src =
+					(programmed_freq_data &
+					 GENMASK(31, 30)) >> 30;
+				programmed_lval = programmed_freq_data & GENMASK(7, 0);
+				if (programmed_src)
+					materialized_freq_khz =
+						c->xo_rate * programmed_lval /
+						1000;
+				else
+					materialized_freq_khz = c->cpu_hw_rate / 1000;
+
 				hw_backed =
-					((programmed_freq_data & GENMASK(7, 0))
-					 == new_lval) &&
-					((programmed_volt_data & GENMASK(11, 0))
-					 == new_mv);
+					(programmed_lval == new_lval) &&
+					((programmed_volt_data &
+					  GENMASK(11, 0)) == new_mv) &&
+					(materialized_freq_khz > c->table[max_index].frequency);
 			}
 		}
 
 		if (hw_backed) {
-			c->table[offset_index].frequency =
-				c->table[max_index].frequency +
-				c->max_freq_offset_khz;
-			c->table[offset_index].flags = CPUFREQ_BOOST_FREQ;
+			c->table[offset_index].frequency = materialized_freq_khz;
 			c->freqs[offset_index] = c->table[offset_index].frequency;
 			c->voltages[offset_index] = new_mv * 1000;
 			c->lut_max_entries++;
 
 			dev_info(dev,
-				 "offset boost OPP materialized in HW LUT for domain cpus%*pbl: %u kHz @ %u uV\n",
+				 "offset OPP materialized in HW LUT for domain cpus%*pbl: %u kHz @ %u uV\n",
 				 cpumask_pr_args(&c->related_cpus),
 				 c->table[offset_index].frequency,
 				 c->voltages[offset_index]);
