@@ -70,7 +70,11 @@ static long ratelimit_pages = 32;
 /*
  * Start background writeback (via writeback threads) at this percentage
  */
-int dirty_background_ratio = 10;
+/*
+ * Mobile UFS/eMMC devices generally deliver better burst throughput when
+ * writeback starts slightly later, reducing frequent small flushes.
+ */
+int dirty_background_ratio = 15;
 
 /*
  * dirty_background_bytes starts at 0 (disabled) so that it is a function of
@@ -87,7 +91,7 @@ int vm_highmem_is_dirtyable;
 /*
  * The generator of dirty data starts writeback at this percentage
  */
-int vm_dirty_ratio = 20;
+int vm_dirty_ratio = 30;
 
 /*
  * vm_dirty_bytes starts at 0 (disabled) so that it is a function of
@@ -98,7 +102,7 @@ unsigned long vm_dirty_bytes;
 /*
  * The interval between `kupdate'-style writebacks
  */
-unsigned int dirty_writeback_interval = 5 * 100; /* centiseconds */
+unsigned int dirty_writeback_interval = 10 * 100; /* centiseconds */
 
 EXPORT_SYMBOL_GPL(dirty_writeback_interval);
 

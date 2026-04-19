@@ -2489,7 +2489,10 @@ int __must_check write_one_page(struct page *page);
 void task_dirty_inc(struct task_struct *tsk);
 
 /* readahead.c */
-#define VM_READAHEAD_PAGES	(SZ_128K / PAGE_SIZE)
+/*
+ * Improve sequential read throughput for app/data scans common on Android.
+ */
+#define VM_READAHEAD_PAGES	(SZ_256K / PAGE_SIZE)
 
 int force_page_cache_readahead(struct address_space *mapping, struct file *filp,
 			pgoff_t offset, unsigned long nr_to_read);
