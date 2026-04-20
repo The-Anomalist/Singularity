@@ -72,6 +72,37 @@ static void lru_gen_decay_pressure(struct lru_gen_struct *lrugen)
 		lrugen->pressure[type] -= lrugen->pressure[type] >> 3;
 }
 
+static bool lru_gen_should_age(struct lru_gen_struct *lrugen,
+			       struct scan_control *sc)
+{
+	unsigned long gen = lrugen->max_seq % MAX_NR_GENS;
+	unsigned long age = jiffies - lrugen->timestamps[gen];
+
+	if (age >= HZ)
+		return true;
+
+	if (sc && sc->priority <= DEF_PRIORITY - 2)
+		return true;
+
+	return lrugen->pressure[LRU_GEN_ANON] + lrugen->pressure[LRU_GEN_FILE] >=
+	       SWAP_CLUSTER_MAX * 16;
+}
+
+static unsigned int lru_gen_pick_scan_type(struct lru_gen_struct *lrugen,
+					   struct scan_control *sc)
+{
+	unsigned long anon = lrugen->pressure[LRU_GEN_ANON] + 1;
+	unsigned long file = lrugen->pressure[LRU_GEN_FILE] + 1;
+
+	if (!sc->may_swap || !total_swap_pages)
+		return LRU_GEN_FILE;
+
+	anon += lrugen->tiers[LRU_GEN_ANON] * SWAP_CLUSTER_MAX;
+	file += lrugen->tiers[LRU_GEN_FILE] * SWAP_CLUSTER_MAX;
+
+	return anon >= file ? LRU_GEN_ANON : LRU_GEN_FILE;
+}
+
 bool lru_gen_enabled(void)
 {
 	return static_branch_likely(&lru_gen_caps);
@@ -100,10 +131,15 @@ void lru_gen_init_lruvec(struct lruvec *lruvec)
 	lrugen->pressure[LRU_GEN_FILE] = 1;
 	lrugen->tiers[LRU_GEN_ANON] = 0;
 	lrugen->tiers[LRU_GEN_FILE] = 0;
+	lrugen->scanned[LRU_GEN_ANON] = 0;
+	lrugen->scanned[LRU_GEN_FILE] = 0;
+	lrugen->reclaimed[LRU_GEN_ANON] = 0;
+	lrugen->reclaimed[LRU_GEN_FILE] = 0;
 	lrugen->accessed[LRU_GEN_ANON] = 0;
 	lrugen->accessed[LRU_GEN_FILE] = 0;
 	lrugen->evicted[LRU_GEN_ANON] = 0;
 	lrugen->evicted[LRU_GEN_FILE] = 0;
+	lrugen->last_reclaim = jiffies;
 	lrugen->enabled = lru_gen_boot_enabled;
 }
 
@@ -134,8 +170,12 @@ void lru_gen_track_page_scan(struct lruvec *lruvec, enum lru_list lru,
 	lrugen->timestamps[gen] = jiffies;
 	delta = nr_taken + nr_scanned - min(nr_reclaimed, nr_taken);
 	lrugen->pressure[type] += delta;
+	lrugen->scanned[type] += nr_scanned;
+	lrugen->reclaimed[type] += nr_reclaimed;
 	if (is_active_lru(lru) && lrugen->pressure[type] > nr_reclaimed)
 		lrugen->pressure[type] -= nr_reclaimed;
+	if (!is_active_lru(lru) && nr_reclaimed)
+		lrugen->evicted[type] += nr_reclaimed;
 	spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 }
 
@@ -192,17 +232,15 @@ void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc)
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
 	unsigned int gen;
-	unsigned long age;
 
 	if (!lru_gen_enabled() || !lrugen->enabled)
 		return;
 
 	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 	gen = lrugen->max_seq % MAX_NR_GENS;
-	age = jiffies - lrugen->timestamps[gen];
-	if (age >= HZ / 2 || sc->priority <= DEF_PRIORITY - 3 ||
-	    lrugen->evicted[LRU_GEN_ANON] + lrugen->evicted[LRU_GEN_FILE] >=
-	    SWAP_CLUSTER_MAX * 8) {
+	if (lrugen->timestamps[gen] + HZ / 4 < jiffies)
+		lrugen->timestamps[gen] = jiffies;
+	if (lru_gen_should_age(lrugen, sc)) {
 		lrugen->evicted[LRU_GEN_ANON] = 0;
 		lrugen->evicted[LRU_GEN_FILE] = 0;
 		lru_gen_advance_seq(lruvec);
@@ -220,6 +258,7 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 	unsigned long denom;
 	unsigned long anon_weight;
 	unsigned long file_weight;
+	unsigned int preferred;
 
 	if (!lru_gen_enabled() || !lrugen->enabled)
 		return;
@@ -239,6 +278,12 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 	file_weight = lrugen->pressure[LRU_GEN_FILE] + 1;
 	if (!sc->may_swap || !total_swap_pages)
 		anon_weight = 0;
+	preferred = lru_gen_pick_scan_type(lrugen, sc);
+
+	if (preferred == LRU_GEN_ANON)
+		anon_weight += SWAP_CLUSTER_MAX;
+	else
+		file_weight += SWAP_CLUSTER_MAX;
 
 	denom = anon_weight + file_weight;
 	if (!denom)
@@ -267,7 +312,9 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
 	unsigned int anon_tier, file_tier;
-	unsigned long efficiency;
+	unsigned long efficiency, split;
+	unsigned long now = jiffies;
+	unsigned long anon_eff = 0, file_eff = 0;
 
 	if (!lru_gen_enabled() || !lrugen->enabled || !scanned)
 		return;
@@ -292,17 +339,32 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 
 	lrugen->tiers[LRU_GEN_ANON] = anon_tier;
 	lrugen->tiers[LRU_GEN_FILE] = file_tier;
+
+	split = max_t(unsigned long, 1, scanned / 2);
+	if (reclaimed)
+		anon_eff = min_t(unsigned long, reclaimed, split) * 100 / split;
+	if (scanned > split)
+		file_eff = (reclaimed > split ? reclaimed - split : 0) * 100 /
+			   (scanned - split);
+
+	if (anon_eff + 5 < file_eff)
+		lrugen->pressure[LRU_GEN_ANON] += SWAP_CLUSTER_MAX / 2;
+	else if (file_eff + 5 < anon_eff)
+		lrugen->pressure[LRU_GEN_FILE] += SWAP_CLUSTER_MAX / 2;
+
 	lru_gen_decay_pressure(lrugen);
 
 	/*
 	 * Tier-aware aging: advance generations faster when reclaim is weak or
 	 * when higher tiers are selected by pressure feedback.
 	 */
-	if (efficiency < 20 || anon_tier + file_tier >= MAX_NR_GENS) {
+	if (efficiency < 20 || anon_tier + file_tier >= MAX_NR_GENS ||
+	    now - lrugen->last_reclaim >= HZ) {
 		spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 		lru_gen_advance_seq(lruvec);
 		spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 	}
+	lrugen->last_reclaim = now;
 }
 
 /*

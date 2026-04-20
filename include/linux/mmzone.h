@@ -276,10 +276,15 @@ struct lru_gen_struct {
 	unsigned long pressure[ANON_AND_FILE];
 	/* memcg-local reclaim tiers per type */
 	unsigned int tiers[ANON_AND_FILE];
+	/* running scan/reclaim accounting for feedback control */
+	unsigned long scanned[ANON_AND_FILE];
+	unsigned long reclaimed[ANON_AND_FILE];
 	/* access samples observed since last aging cycle */
 	unsigned long accessed[ANON_AND_FILE];
 	/* pages reclaimed from the oldest generations */
 	unsigned long evicted[ANON_AND_FILE];
+	/* jiffies when reclaim feedback was last updated */
+	unsigned long last_reclaim;
 };
 
 void lru_gen_init_lruvec(struct lruvec *lruvec);
