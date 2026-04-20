@@ -2777,6 +2777,9 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 	unsigned long nr_reclaimed, nr_scanned;
 	bool reclaimable = false;
 
+	if (lru_gen_shrink_node(pgdat, sc))
+		return true;
+
 	do {
 		struct mem_cgroup *root = sc->target_mem_cgroup;
 		struct mem_cgroup_reclaim_cookie reclaim = {

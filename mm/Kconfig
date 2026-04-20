@@ -833,6 +833,20 @@ config GUP_BENCHMARK
 
 	  See tools/testing/selftests/vm/gup_benchmark.c
 
+config LRU_GEN
+	bool "Multi-Gen LRU"
+	depends on MMU
+	depends on 64BIT || !SPARSEMEM || SPARSEMEM_VMEMMAP
+	help
+	  Enable the multi-generational LRU framework.
+
+config LRU_GEN_ENABLED
+	bool "Enable Multi-Gen LRU by default"
+	depends on LRU_GEN
+	default y
+	help
+	  Turn the multi-generational LRU framework on at boot.
+
 config ARCH_HAS_PTE_SPECIAL
 	bool
 

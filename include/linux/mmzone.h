@@ -21,6 +21,8 @@
 #include <linux/android_kabi.h>
 #include <asm/page.h>
 
+struct scan_control;
+
 /* Free memory management - zoned buddy allocator.  */
 #ifndef CONFIG_FORCE_MAX_ZONEORDER
 #define MAX_ORDER 11
@@ -246,6 +248,46 @@ struct zone_reclaim_stat {
 	unsigned long		recent_scanned[2];
 };
 
+#ifdef CONFIG_LRU_GEN
+#define MIN_NR_GENS	2U
+#define MAX_NR_GENS	4U
+
+enum {
+	LRU_GEN_ANON,
+	LRU_GEN_FILE,
+};
+
+struct lru_gen_struct {
+	/* the youngest generation number */
+	unsigned long max_seq;
+	/* the oldest generation numbers for anon and file */
+	unsigned long min_seq[ANON_AND_FILE];
+	/* generations indexed by [gen][type][zone] */
+	struct list_head lists[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
+	/* total pages per [gen][type][zone] */
+	long nr_pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
+	/* runtime kill switch */
+	bool enabled;
+};
+
+void lru_gen_init_lruvec(struct lruvec *lruvec);
+bool lru_gen_enabled(void);
+bool lru_gen_shrink_node(struct pglist_data *pgdat, struct scan_control *sc);
+#else
+static inline void lru_gen_init_lruvec(struct lruvec *lruvec)
+{
+}
+static inline bool lru_gen_enabled(void)
+{
+	return false;
+}
+static inline bool lru_gen_shrink_node(struct pglist_data *pgdat,
+				       struct scan_control *sc)
+{
+	return false;
+}
+#endif
+
 struct lruvec {
 	struct list_head		lists[NR_LRU_LISTS];
 	struct zone_reclaim_stat	reclaim_stat;
@@ -253,6 +295,10 @@ struct lruvec {
 	atomic_long_t			inactive_age;
 	/* Refaults at the time of last reclaim cycle */
 	unsigned long			refaults;
+#ifdef CONFIG_LRU_GEN
+	/* Evictable pages split into multiple generations */
+	struct lru_gen_struct		lrugen;
+#endif
 #ifdef CONFIG_MEMCG
 	struct pglist_data *pgdat;
 #endif
