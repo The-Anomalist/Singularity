@@ -272,11 +272,22 @@ struct lru_gen_struct {
 	long nr_pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
 	/* runtime kill switch */
 	bool enabled;
+	/* reclaim pressure score per type; higher means older/cooler */
+	unsigned long pressure[ANON_AND_FILE];
+	/* memcg-local reclaim tiers per type */
+	unsigned int tiers[ANON_AND_FILE];
 };
 
 void lru_gen_init_lruvec(struct lruvec *lruvec);
 bool lru_gen_enabled(void);
 bool lru_gen_shrink_node(struct pglist_data *pgdat, struct scan_control *sc);
+void lru_gen_track_page_scan(struct lruvec *lruvec, enum lru_list lru,
+			     unsigned long nr_scanned, unsigned long nr_taken,
+			     unsigned long nr_reclaimed);
+void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
+			 unsigned long *nr);
+void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
+			unsigned long reclaimed, unsigned long scanned);
 #else
 static inline void lru_gen_init_lruvec(struct lruvec *lruvec)
 {
@@ -289,6 +300,24 @@ static inline bool lru_gen_shrink_node(struct pglist_data *pgdat,
 				       struct scan_control *sc)
 {
 	return false;
+}
+static inline void lru_gen_track_page_scan(struct lruvec *lruvec,
+					   enum lru_list lru,
+					   unsigned long nr_scanned,
+					   unsigned long nr_taken,
+					   unsigned long nr_reclaimed)
+{
+}
+static inline void lru_gen_adjust_scan(struct lruvec *lruvec,
+				       struct scan_control *sc,
+				       unsigned long *nr)
+{
+}
+static inline void lru_gen_tune_memcg(struct lruvec *lruvec,
+				      struct scan_control *sc,
+				      unsigned long reclaimed,
+				      unsigned long scanned)
+{
 }
 #endif
 

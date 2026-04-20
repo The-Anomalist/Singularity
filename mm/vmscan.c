@@ -2032,6 +2032,8 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 	if (nr_taken == 0)
 		return 0;
 
+	lru_gen_track_page_scan(lruvec, lru, nr_scanned, nr_taken, 0);
+
 	nr_reclaimed = shrink_page_list(&page_list, pgdat, sc, 0,
 				&stat, false);
 
@@ -2071,6 +2073,8 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 	 */
 	if (stat.nr_unqueued_dirty == nr_taken)
 		wakeup_flusher_threads(WB_REASON_VMSCAN);
+
+	lru_gen_track_page_scan(lruvec, lru, nr_scanned, nr_taken, nr_reclaimed);
 
 	sc->nr.dirty += stat.nr_dirty;
 	sc->nr.congested += stat.nr_congested;
@@ -2189,6 +2193,8 @@ static void shrink_active_list(unsigned long nr_to_scan,
 	count_memcg_events(lruvec_memcg(lruvec), PGREFILL, nr_scanned);
 
 	spin_unlock_irq(&pgdat->lru_lock);
+
+	lru_gen_track_page_scan(lruvec, lru, nr_scanned, nr_taken, 0);
 
 	while (!list_empty(&l_hold)) {
 		cond_resched();
@@ -2558,6 +2564,8 @@ out:
 		*lru_pages += size;
 		nr[lru] = scan;
 	}
+
+	lru_gen_adjust_scan(lruvec, sc, nr);
 }
 
 /*
@@ -2574,6 +2582,7 @@ static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memc
 	unsigned long nr_reclaimed = 0;
 	unsigned long nr_to_reclaim = sc->nr_to_reclaim;
 	unsigned long reclaimed_before = sc->nr_reclaimed;
+	unsigned long scanned_before = sc->nr_scanned;
 	struct blk_plug plug;
 	bool scan_adjusted;
 
@@ -2669,6 +2678,8 @@ static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memc
 		scan_adjusted = true;
 	}
 	blk_finish_plug(&plug);
+	lru_gen_tune_memcg(lruvec, sc, sc->nr_reclaimed - reclaimed_before,
+			   sc->nr_scanned - scanned_before);
 	sc->nr_reclaimed += nr_reclaimed;
 	sqh_mem_reclaim(pgdat, sc->nr_reclaimed - reclaimed_before, current_is_kswapd());
 
