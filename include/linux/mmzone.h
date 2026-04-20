@@ -22,6 +22,7 @@
 #include <asm/page.h>
 
 struct scan_control;
+struct lruvec;
 
 /* Free memory management - zoned buddy allocator.  */
 #ifndef CONFIG_FORCE_MAX_ZONEORDER
@@ -255,6 +256,7 @@ struct zone_reclaim_stat {
 enum {
 	LRU_GEN_ANON,
 	LRU_GEN_FILE,
+	ANON_AND_FILE,
 };
 
 struct lru_gen_struct {

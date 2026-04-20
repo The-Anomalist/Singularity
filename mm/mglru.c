@@ -47,9 +47,6 @@ bool lru_gen_shrink_node(struct pglist_data *pgdat, struct scan_control *sc)
 	if (!lru_gen_enabled())
 		return false;
 
-	if (!IS_ENABLED(CONFIG_LRU_GEN_ENABLED))
-		return false;
-
 	return false;
 }
 #endif
