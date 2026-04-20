@@ -264,6 +264,8 @@ struct lru_gen_struct {
 	unsigned long max_seq;
 	/* the oldest generation numbers for anon and file */
 	unsigned long min_seq[ANON_AND_FILE];
+	/* birth time of each generation in jiffies */
+	unsigned long timestamps[MAX_NR_GENS];
 	/* generations indexed by [gen][type][zone] */
 	struct list_head lists[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
 	/* total pages per [gen][type][zone] */
