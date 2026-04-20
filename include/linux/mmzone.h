@@ -276,6 +276,10 @@ struct lru_gen_struct {
 	unsigned long pressure[ANON_AND_FILE];
 	/* memcg-local reclaim tiers per type */
 	unsigned int tiers[ANON_AND_FILE];
+	/* access samples observed since last aging cycle */
+	unsigned long accessed[ANON_AND_FILE];
+	/* pages reclaimed from the oldest generations */
+	unsigned long evicted[ANON_AND_FILE];
 };
 
 void lru_gen_init_lruvec(struct lruvec *lruvec);
@@ -288,6 +292,10 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 			 unsigned long *nr);
 void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 			unsigned long reclaimed, unsigned long scanned);
+void lru_gen_note_access(struct lruvec *lruvec, bool file);
+void lru_gen_note_lru_move(struct lruvec *lruvec, enum lru_list old_lru,
+			   enum lru_list new_lru, unsigned long nr_pages);
+void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc);
 #else
 static inline void lru_gen_init_lruvec(struct lruvec *lruvec)
 {
@@ -317,6 +325,19 @@ static inline void lru_gen_tune_memcg(struct lruvec *lruvec,
 				      struct scan_control *sc,
 				      unsigned long reclaimed,
 				      unsigned long scanned)
+{
+}
+static inline void lru_gen_note_access(struct lruvec *lruvec, bool file)
+{
+}
+static inline void lru_gen_note_lru_move(struct lruvec *lruvec,
+					 enum lru_list old_lru,
+					 enum lru_list new_lru,
+					 unsigned long nr_pages)
+{
+}
+static inline void lru_gen_enter_reclaim(struct lruvec *lruvec,
+					 struct scan_control *sc)
 {
 }
 #endif

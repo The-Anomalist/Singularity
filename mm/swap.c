@@ -282,6 +282,8 @@ static void __activate_page(struct page *page, struct lruvec *lruvec,
 		SetPageActive(page);
 		lru += LRU_ACTIVE;
 		add_page_to_lru_list(page, lruvec, lru);
+		lru_gen_note_lru_move(lruvec, lru - LRU_ACTIVE, lru,
+				      hpage_nr_pages(page));
 		trace_mm_lru_activate(page);
 
 		__count_vm_event(PGACTIVATE);
@@ -381,9 +383,11 @@ void mark_page_accessed(struct page *page)
 		 * pagevec, mark it active and it'll be moved to the active
 		 * LRU on the next drain.
 		 */
-		if (PageLRU(page))
+		if (PageLRU(page)) {
+			lru_gen_note_access(mem_cgroup_page_lruvec(page, page_zone(page)->zone_pgdat),
+					    page_is_file_cache(page));
 			activate_page(page);
-		else
+		} else
 			__lru_cache_activate_page(page);
 		ClearPageReferenced(page);
 		if (page_is_file_cache(page))
@@ -516,6 +520,7 @@ static void lru_deactivate_file_fn(struct page *page, struct lruvec *lruvec,
 	ClearPageActive(page);
 	ClearPageReferenced(page);
 	add_page_to_lru_list(page, lruvec, lru);
+	lru_gen_note_lru_move(lruvec, lru + active, lru, hpage_nr_pages(page));
 
 	if (PageWriteback(page) || PageDirty(page)) {
 		/*
@@ -557,6 +562,8 @@ static void lru_lazyfree_fn(struct page *page, struct lruvec *lruvec,
 		 */
 		ClearPageSwapBacked(page);
 		add_page_to_lru_list(page, lruvec, LRU_INACTIVE_FILE);
+		lru_gen_note_lru_move(lruvec, LRU_INACTIVE_ANON + active,
+				      LRU_INACTIVE_FILE, hpage_nr_pages(page));
 
 		__count_vm_events(PGLAZYFREE, hpage_nr_pages(page));
 		count_memcg_page_event(page, PGLAZYFREE);

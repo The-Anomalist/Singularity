@@ -100,6 +100,10 @@ void lru_gen_init_lruvec(struct lruvec *lruvec)
 	lrugen->pressure[LRU_GEN_FILE] = 1;
 	lrugen->tiers[LRU_GEN_ANON] = 0;
 	lrugen->tiers[LRU_GEN_FILE] = 0;
+	lrugen->accessed[LRU_GEN_ANON] = 0;
+	lrugen->accessed[LRU_GEN_FILE] = 0;
+	lrugen->evicted[LRU_GEN_ANON] = 0;
+	lrugen->evicted[LRU_GEN_FILE] = 0;
 	lrugen->enabled = lru_gen_boot_enabled;
 }
 
@@ -132,6 +136,77 @@ void lru_gen_track_page_scan(struct lruvec *lruvec, enum lru_list lru,
 	lrugen->pressure[type] += delta;
 	if (is_active_lru(lru) && lrugen->pressure[type] > nr_reclaimed)
 		lrugen->pressure[type] -= nr_reclaimed;
+	spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+}
+
+void lru_gen_note_access(struct lruvec *lruvec, bool file)
+{
+	struct lru_gen_struct *lrugen = &lruvec->lrugen;
+	unsigned int type = file ? LRU_GEN_FILE : LRU_GEN_ANON;
+
+	if (!lru_gen_enabled() || !lrugen->enabled)
+		return;
+
+	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+	lrugen->accessed[type]++;
+	/*
+	 * Age generations when enough new accesses arrive, so the reclaim
+	 * side can keep selecting truly older generations.
+	 */
+	if (lrugen->accessed[type] >= SWAP_CLUSTER_MAX * 4) {
+		lrugen->accessed[type] = 0;
+		lru_gen_advance_seq(lruvec);
+	}
+	spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+}
+
+void lru_gen_note_lru_move(struct lruvec *lruvec, enum lru_list old_lru,
+			   enum lru_list new_lru, unsigned long nr_pages)
+{
+	struct lru_gen_struct *lrugen = &lruvec->lrugen;
+	unsigned int old_type, new_type, zone;
+	unsigned int old_gen, new_gen;
+	unsigned long old_seq, new_seq;
+
+	if (!lru_gen_enabled() || !lrugen->enabled || !nr_pages)
+		return;
+
+	old_type = lru_gen_lru_type(old_lru);
+	new_type = lru_gen_lru_type(new_lru);
+	old_seq = is_active_lru(old_lru) ? lrugen->max_seq : lrugen->min_seq[old_type];
+	new_seq = is_active_lru(new_lru) ? lrugen->max_seq : lrugen->min_seq[new_type];
+	old_gen = old_seq % MAX_NR_GENS;
+	new_gen = new_seq % MAX_NR_GENS;
+	zone = 0;
+
+	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+	lrugen->nr_pages[old_gen][old_type][zone] -= nr_pages;
+	lrugen->nr_pages[new_gen][new_type][zone] += nr_pages;
+	if (!is_active_lru(new_lru) && old_type == new_type &&
+	    old_seq == lrugen->min_seq[new_type])
+		lrugen->evicted[new_type] += nr_pages;
+	spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+}
+
+void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc)
+{
+	struct lru_gen_struct *lrugen = &lruvec->lrugen;
+	unsigned int gen;
+	unsigned long age;
+
+	if (!lru_gen_enabled() || !lrugen->enabled)
+		return;
+
+	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+	gen = lrugen->max_seq % MAX_NR_GENS;
+	age = jiffies - lrugen->timestamps[gen];
+	if (age >= HZ / 2 || sc->priority <= DEF_PRIORITY - 3 ||
+	    lrugen->evicted[LRU_GEN_ANON] + lrugen->evicted[LRU_GEN_FILE] >=
+	    SWAP_CLUSTER_MAX * 8) {
+		lrugen->evicted[LRU_GEN_ANON] = 0;
+		lrugen->evicted[LRU_GEN_FILE] = 0;
+		lru_gen_advance_seq(lruvec);
+	}
 	spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 }
 
@@ -237,32 +312,4 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
  * keep classic reclaim behavior unless full MGLRU scan/evict wiring is
  * available. Returning false hands control back to legacy shrink_node().
  */
-bool lru_gen_shrink_node(struct pglist_data *pgdat, struct scan_control *sc)
-{
-	struct lruvec *lruvec;
-	struct lru_gen_struct *lrugen;
-	unsigned int gen;
-
-	if (!lru_gen_enabled())
-		return false;
-
-	lruvec = node_lruvec(pgdat);
-	lrugen = &lruvec->lrugen;
-
-	if (!lrugen->enabled)
-		return false;
-
-	/*
-	 * Keep generation timestamps and sequence numbers moving while reclaim is
-	 * active. Full MGLRU scan/evict wiring will consume this state.
-	 */
-	spin_lock_irq(&pgdat->lru_lock);
-	gen = lrugen->max_seq % MAX_NR_GENS;
-	if (time_is_before_eq_jiffies(lrugen->timestamps[gen] + HZ / 2) ||
-	    sc->priority <= DEF_PRIORITY - 3)
-		lru_gen_advance_seq(lruvec);
-	spin_unlock_irq(&pgdat->lru_lock);
-
-	return false;
-}
 #endif

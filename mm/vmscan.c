@@ -2130,6 +2130,9 @@ static unsigned move_active_pages_to_lru(struct lruvec *lruvec,
 		nr_pages = hpage_nr_pages(page);
 		update_lru_size(lruvec, lru, page_zonenum(page), nr_pages);
 		list_move(&page->lru, &lruvec->lists[lru]);
+		lru_gen_note_lru_move(lruvec,
+				      is_active_lru(lru) ? lru : lru + LRU_ACTIVE,
+				      lru, nr_pages);
 
 		if (put_page_testzero(page)) {
 			__ClearPageLRU(page);
@@ -2782,14 +2785,16 @@ static bool pgdat_memcg_congested(pg_data_t *pgdat, struct mem_cgroup *memcg)
 		(memcg && memcg_congested(pgdat, memcg));
 }
 
-static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
+static bool shrink_node_reclaim(pg_data_t *pgdat, struct scan_control *sc,
+				bool mglru)
 {
 	struct reclaim_state *reclaim_state = current->reclaim_state;
 	unsigned long nr_reclaimed, nr_scanned;
 	bool reclaimable = false;
+	struct lruvec *pgdat_lruvec = node_lruvec(pgdat);
 
-	if (lru_gen_shrink_node(pgdat, sc))
-		return true;
+	if (mglru)
+		lru_gen_enter_reclaim(pgdat_lruvec, sc);
 
 	do {
 		struct mem_cgroup *root = sc->target_mem_cgroup;
@@ -2845,6 +2850,8 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 
 			reclaimed = sc->nr_reclaimed;
 			scanned = sc->nr_scanned;
+			if (mglru)
+				lru_gen_enter_reclaim(mem_cgroup_lruvec(pgdat, memcg), sc);
 			shrink_node_memcg(pgdat, memcg, sc, &lru_pages);
 			node_lru_pages += lru_pages;
 
@@ -2967,6 +2974,30 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 		pgdat->kswapd_failures = 0;
 
 	return reclaimable;
+}
+
+#ifdef CONFIG_LRU_GEN
+bool lru_gen_shrink_node(pg_data_t *pgdat, struct scan_control *sc)
+{
+	struct lruvec *lruvec;
+
+	if (!lru_gen_enabled())
+		return false;
+
+	lruvec = node_lruvec(pgdat);
+	if (!lruvec->lrugen.enabled)
+		return false;
+
+	return shrink_node_reclaim(pgdat, sc, true);
+}
+#endif
+
+static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
+{
+	if (lru_gen_shrink_node(pgdat, sc))
+		return true;
+
+	return shrink_node_reclaim(pgdat, sc, false);
 }
 
 /*
