@@ -4,6 +4,7 @@
  */
 
 #include <linux/mm.h>
+#include <linux/mm_inline.h>
 #include <linux/mmzone.h>
 #include <linux/jump_label.h>
 #include <linux/errno.h>
@@ -110,8 +111,7 @@ static void lru_gen_decay_pressure(struct lru_gen_struct *lrugen)
 		lrugen->pressure[type] -= lrugen->pressure[type] >> 3;
 }
 
-static bool lru_gen_should_age(struct lru_gen_struct *lrugen,
-			       struct scan_control *sc)
+static bool lru_gen_should_age(struct lru_gen_struct *lrugen)
 {
 	unsigned long gen = lrugen->max_seq % MAX_NR_GENS;
 	unsigned long age = jiffies - lrugen->timestamps[gen];
@@ -128,22 +128,18 @@ static bool lru_gen_should_age(struct lru_gen_struct *lrugen,
 	if (anon_old + file_old >= SWAP_CLUSTER_MAX * 32)
 		return true;
 
-	if (sc && sc->priority <= DEF_PRIORITY - 2)
-		return true;
-
 	return lrugen->pressure[LRU_GEN_ANON] + lrugen->pressure[LRU_GEN_FILE] >=
 	       SWAP_CLUSTER_MAX * 16;
 }
 
-static unsigned int lru_gen_pick_scan_type(struct lru_gen_struct *lrugen,
-					   struct scan_control *sc)
+static unsigned int lru_gen_pick_scan_type(struct lru_gen_struct *lrugen)
 {
 	unsigned long anon = lrugen->pressure[LRU_GEN_ANON] + 1;
 	unsigned long file = lrugen->pressure[LRU_GEN_FILE] + 1;
 	unsigned long anon_old = lru_gen_count_old(lrugen, LRU_GEN_ANON);
 	unsigned long file_old = lru_gen_count_old(lrugen, LRU_GEN_FILE);
 
-	if (!sc->may_swap || !total_swap_pages)
+	if (!total_swap_pages)
 		return LRU_GEN_FILE;
 
 	anon += anon_old / SWAP_CLUSTER_MAX;
@@ -332,6 +328,8 @@ void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc)
 	unsigned int gen;
 	unsigned int type;
 
+	(void)sc;
+
 	if (!lru_gen_enabled() || !lru_gen_get_state())
 		return;
 
@@ -339,7 +337,7 @@ void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc)
 	gen = lrugen->max_seq % MAX_NR_GENS;
 	if (lrugen->timestamps[gen] + HZ / 4 < jiffies)
 		lrugen->timestamps[gen] = jiffies;
-	if (lru_gen_should_age(lrugen, sc)) {
+	if (lru_gen_should_age(lrugen)) {
 		lrugen->evicted[LRU_GEN_ANON] = 0;
 		lrugen->evicted[LRU_GEN_FILE] = 0;
 		lru_gen_advance_seq(lruvec);
@@ -403,9 +401,9 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 	else if (file_old > anon_old)
 		file_weight += SWAP_CLUSTER_MAX / 2;
 
-	if (!sc->may_swap || !total_swap_pages)
+	if (!total_swap_pages)
 		anon_weight = 0;
-	preferred = lru_gen_pick_scan_type(lrugen, sc);
+	preferred = lru_gen_pick_scan_type(lrugen);
 
 	if (preferred == LRU_GEN_ANON)
 		anon_weight += SWAP_CLUSTER_MAX;
