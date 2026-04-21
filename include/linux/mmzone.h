@@ -298,6 +298,8 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 			unsigned long reclaimed, unsigned long scanned);
 void lru_gen_note_access(struct lruvec *lruvec, bool file);
+void lru_gen_note_page_referenced(struct lruvec *lruvec, struct page *page,
+				  bool from_reclaim);
 void lru_gen_note_lru_move(struct lruvec *lruvec, enum lru_list old_lru,
 			   enum lru_list new_lru, unsigned long nr_pages);
 void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc);
@@ -337,6 +339,11 @@ static inline void lru_gen_tune_memcg(struct lruvec *lruvec,
 {
 }
 static inline void lru_gen_note_access(struct lruvec *lruvec, bool file)
+{
+}
+static inline void lru_gen_note_page_referenced(struct lruvec *lruvec,
+						struct page *page,
+						bool from_reclaim)
 {
 }
 static inline void lru_gen_note_lru_move(struct lruvec *lruvec,

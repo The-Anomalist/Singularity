@@ -1299,8 +1299,12 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 
 		switch (references) {
 		case PAGEREF_ACTIVATE:
+			lru_gen_note_page_referenced(mem_cgroup_page_lruvec(page, pgdat),
+						     page, true);
 			goto activate_locked;
 		case PAGEREF_KEEP:
+			lru_gen_note_page_referenced(mem_cgroup_page_lruvec(page, pgdat),
+						     page, true);
 			nr_ref_keep++;
 			goto keep_locked;
 		case PAGEREF_RECLAIM:
@@ -2219,6 +2223,7 @@ static void shrink_active_list(unsigned long nr_to_scan,
 
 		if (page_referenced(page, 0, sc->target_mem_cgroup,
 				    &vm_flags)) {
+			lru_gen_note_page_referenced(lruvec, page, true);
 			nr_rotated += hpage_nr_pages(page);
 			/*
 			 * Identify referenced, file-backed active pages and

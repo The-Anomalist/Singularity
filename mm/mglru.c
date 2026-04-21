@@ -271,6 +271,37 @@ void lru_gen_note_access(struct lruvec *lruvec, bool file)
 	spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 }
 
+void lru_gen_note_page_referenced(struct lruvec *lruvec, struct page *page,
+				  bool from_reclaim)
+{
+	struct lru_gen_struct *lrugen = &lruvec->lrugen;
+	unsigned int type;
+	unsigned long nr_pages;
+	unsigned long threshold;
+
+	if (!lru_gen_enabled() || !lru_gen_get_state())
+		return;
+
+	type = page_is_file_cache(page) ? LRU_GEN_FILE : LRU_GEN_ANON;
+	nr_pages = hpage_nr_pages(page);
+	threshold = SWAP_CLUSTER_MAX * (from_reclaim ? 2 : 4);
+
+	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+	lrugen->accessed[type] += nr_pages;
+	/*
+	 * Reclaim-driven references are collected from page table walks
+	 * (via page_referenced()), so use them as a direct aging signal.
+	 */
+	if (from_reclaim)
+		lrugen->pressure[type] += min_t(unsigned long, nr_pages, SWAP_CLUSTER_MAX);
+
+	if (lrugen->accessed[type] >= threshold) {
+		lrugen->accessed[type] = 0;
+		lru_gen_advance_seq(lruvec);
+	}
+	spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+}
+
 void lru_gen_note_lru_move(struct lruvec *lruvec, enum lru_list old_lru,
 			   enum lru_list new_lru, unsigned long nr_pages)
 {
