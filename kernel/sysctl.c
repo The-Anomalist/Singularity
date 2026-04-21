@@ -310,6 +310,9 @@ static int bpf_unpriv_handler(struct ctl_table *table, int write,
 
 #ifdef CONFIG_LRU_GEN
 static int sysctl_lru_gen_enabled;
+static int sysctl_lru_gen_min_ttl_ms;
+static int sysctl_lru_gen_age_period_ms;
+static int sixty_thousand = 60000;
 
 static int lru_gen_sysctl_handler(struct ctl_table *table, int write,
 				  void __user *buffer, size_t *lenp,
@@ -326,6 +329,40 @@ static int lru_gen_sysctl_handler(struct ctl_table *table, int write,
 		return ret;
 
 	return lru_gen_set_state(!!state);
+}
+
+static int lru_gen_min_ttl_sysctl_handler(struct ctl_table *table, int write,
+					  void __user *buffer, size_t *lenp,
+					  loff_t *ppos)
+{
+	struct ctl_table tmp = *table;
+	int val;
+	int ret;
+
+	val = lru_gen_get_min_ttl();
+	tmp.data = &val;
+	ret = proc_dointvec_minmax(&tmp, write, buffer, lenp, ppos);
+	if (ret || !write)
+		return ret;
+
+	return lru_gen_set_min_ttl(val);
+}
+
+static int lru_gen_age_period_sysctl_handler(struct ctl_table *table, int write,
+					     void __user *buffer, size_t *lenp,
+					     loff_t *ppos)
+{
+	struct ctl_table tmp = *table;
+	int val;
+	int ret;
+
+	val = lru_gen_get_age_period();
+	tmp.data = &val;
+	ret = proc_dointvec_minmax(&tmp, write, buffer, lenp, ppos);
+	if (ret || !write)
+		return ret;
+
+	return lru_gen_set_age_period(val);
 }
 #endif
 
@@ -1920,6 +1957,24 @@ static struct ctl_table vm_table[] = {
 		.proc_handler	= lru_gen_sysctl_handler,
 		.extra1		= &zero,
 		.extra2		= &one,
+	},
+	{
+		.procname	= "lru_gen_min_ttl_ms",
+		.data		= &sysctl_lru_gen_min_ttl_ms,
+		.maxlen		= sizeof(sysctl_lru_gen_min_ttl_ms),
+		.mode		= 0644,
+		.proc_handler	= lru_gen_min_ttl_sysctl_handler,
+		.extra1		= &zero,
+		.extra2		= &sixty_thousand,
+	},
+	{
+		.procname	= "lru_gen_age_period_ms",
+		.data		= &sysctl_lru_gen_age_period_ms,
+		.maxlen		= sizeof(sysctl_lru_gen_age_period_ms),
+		.mode		= 0644,
+		.proc_handler	= lru_gen_age_period_sysctl_handler,
+		.extra1		= &one_hundred,
+		.extra2		= &sixty_thousand,
 	},
 #endif
 #ifdef CONFIG_HUGETLB_PAGE

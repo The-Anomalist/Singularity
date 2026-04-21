@@ -893,6 +893,40 @@ The default value follows the boot-time Multi-Gen LRU setting.
 
 ==============================================================
 
+lru_gen_min_ttl_ms
+
+This control protects hot working sets under Multi-Gen LRU by applying
+an optional minimum time-to-live (TTL) for the oldest generation before
+it is scanned aggressively.
+
+Valid values are:
+	0      - disable TTL protection
+	1-60000 - minimum age (in milliseconds) for oldest generations
+
+Larger values can reduce refaults and improve latency for interactive
+workloads, but may delay reclaim and increase OOM risk under sustained
+memory pressure.
+
+The default value is 0.
+
+==============================================================
+
+lru_gen_age_period_ms
+
+This control adjusts how frequently Multi-Gen LRU advances generations
+based on elapsed time.
+
+Valid values are:
+	100-60000 - target aging period in milliseconds
+
+Lower values age generations more frequently (more responsive reclaim
+feedback). Higher values retain current generations longer (more stable
+but less reactive reclaim behavior).
+
+The default value is 1000.
+
+==============================================================
+
 unprivileged_userfaultfd
 
 This flag controls the mode in which unprivileged users can use the

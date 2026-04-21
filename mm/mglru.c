@@ -18,6 +18,8 @@
 static DEFINE_STATIC_KEY_FALSE(lru_gen_caps);
 static bool __read_mostly lru_gen_boot_enabled =
 	IS_ENABLED(CONFIG_LRU_GEN_ENABLED);
+static unsigned int __read_mostly lru_gen_min_ttl_ms;
+static unsigned int __read_mostly lru_gen_age_period_ms = 1000;
 
 static int __init setup_lru_gen(char *str)
 {
@@ -34,6 +36,32 @@ static int __init setup_lru_gen(char *str)
 	return 0;
 }
 early_param("lru_gen", setup_lru_gen);
+
+static int __init setup_lru_gen_min_ttl(char *str)
+{
+	unsigned int val;
+
+	if (!str || kstrtouint(str, 0, &val))
+		return -EINVAL;
+
+	lru_gen_min_ttl_ms = val;
+
+	return 0;
+}
+early_param("lru_gen_min_ttl_ms", setup_lru_gen_min_ttl);
+
+static int __init setup_lru_gen_age_period(char *str)
+{
+	unsigned int val;
+
+	if (!str || kstrtouint(str, 0, &val))
+		return -EINVAL;
+
+	lru_gen_age_period_ms = clamp_t(unsigned int, val, 100, 60000);
+
+	return 0;
+}
+early_param("lru_gen_age_period_ms", setup_lru_gen_age_period);
 
 static int __init init_lru_gen(void)
 {
@@ -115,10 +143,11 @@ static bool lru_gen_should_age(struct lru_gen_struct *lrugen)
 {
 	unsigned long gen = lrugen->max_seq % MAX_NR_GENS;
 	unsigned long age = jiffies - lrugen->timestamps[gen];
+	unsigned long age_period = msecs_to_jiffies(READ_ONCE(lru_gen_age_period_ms));
 	unsigned long anon_old = lru_gen_count_old(lrugen, LRU_GEN_ANON);
 	unsigned long file_old = lru_gen_count_old(lrugen, LRU_GEN_FILE);
 
-	if (age >= HZ)
+	if (age >= max_t(unsigned long, 1, age_period))
 		return true;
 
 	/*
@@ -174,6 +203,28 @@ int lru_gen_set_state(bool enable)
 		static_branch_disable(&lru_gen_caps);
 
 	return 0;
+}
+
+int lru_gen_set_min_ttl(unsigned int ttl_ms)
+{
+	WRITE_ONCE(lru_gen_min_ttl_ms, ttl_ms);
+	return 0;
+}
+
+unsigned int lru_gen_get_min_ttl(void)
+{
+	return READ_ONCE(lru_gen_min_ttl_ms);
+}
+
+int lru_gen_set_age_period(unsigned int period_ms)
+{
+	WRITE_ONCE(lru_gen_age_period_ms, clamp_t(unsigned int, period_ms, 100, 60000));
+	return 0;
+}
+
+unsigned int lru_gen_get_age_period(void)
+{
+	return READ_ONCE(lru_gen_age_period_ms);
 }
 
 void lru_gen_init_lruvec(struct lruvec *lruvec)
@@ -368,6 +419,10 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 	unsigned long file_weight;
 	unsigned long anon_old = 0;
 	unsigned long file_old = 0;
+	unsigned long anon_old_age = 0;
+	unsigned long file_old_age = 0;
+	unsigned long min_ttl;
+	unsigned long min_ttl_jiffies;
 	unsigned int preferred;
 	unsigned int zone;
 
@@ -394,8 +449,23 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 		file_old += lrugen->nr_pages[lrugen->min_seq[LRU_GEN_FILE] % MAX_NR_GENS]
 					  [LRU_GEN_FILE][zone];
 	}
+	anon_old_age = jiffies - lrugen->timestamps[lrugen->min_seq[LRU_GEN_ANON] % MAX_NR_GENS];
+	file_old_age = jiffies - lrugen->timestamps[lrugen->min_seq[LRU_GEN_FILE] % MAX_NR_GENS];
+	min_ttl = READ_ONCE(lru_gen_min_ttl_ms);
+	min_ttl_jiffies = msecs_to_jiffies(min_ttl);
+
 	anon_weight += anon_old / SWAP_CLUSTER_MAX;
 	file_weight += file_old / SWAP_CLUSTER_MAX;
+
+	/*
+	 * Respect optional working-set protection: until the oldest generation
+	 * reaches min_ttl, de-emphasize it instead of scanning it aggressively.
+	 */
+	if (min_ttl && anon_old_age < min_ttl_jiffies)
+		anon_weight >>= 1;
+	if (min_ttl && file_old_age < min_ttl_jiffies)
+		file_weight >>= 1;
+
 	if (anon_old > file_old)
 		anon_weight += SWAP_CLUSTER_MAX / 2;
 	else if (file_old > anon_old)

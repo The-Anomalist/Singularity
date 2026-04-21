@@ -307,6 +307,10 @@ void lru_gen_update_size(struct lruvec *lruvec, enum lru_list lru,
 			 enum zone_type zid, long delta);
 int lru_gen_set_state(bool enable);
 int lru_gen_get_state(void);
+int lru_gen_set_min_ttl(unsigned int ttl_ms);
+unsigned int lru_gen_get_min_ttl(void);
+int lru_gen_set_age_period(unsigned int period_ms);
+unsigned int lru_gen_get_age_period(void);
 #else
 static inline void lru_gen_init_lruvec(struct lruvec *lruvec)
 {
@@ -366,6 +370,22 @@ static inline int lru_gen_set_state(bool enable)
 	return 0;
 }
 static inline int lru_gen_get_state(void)
+{
+	return 0;
+}
+static inline int lru_gen_set_min_ttl(unsigned int ttl_ms)
+{
+	return 0;
+}
+static inline unsigned int lru_gen_get_min_ttl(void)
+{
+	return 0;
+}
+static inline int lru_gen_set_age_period(unsigned int period_ms)
+{
+	return 0;
+}
+static inline unsigned int lru_gen_get_age_period(void)
 {
 	return 0;
 }
