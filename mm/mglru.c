@@ -109,6 +109,7 @@ void lru_gen_update_size(struct lruvec *lruvec, enum lru_list lru,
 			 enum zone_type zid, long delta)
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
+	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
 	unsigned long seq;
 	unsigned int type, gen;
 	long *nr_pages;
@@ -116,9 +117,9 @@ void lru_gen_update_size(struct lruvec *lruvec, enum lru_list lru,
 	if (!lru_gen_enabled() || !lru_gen_get_state() || lru == LRU_UNEVICTABLE || !delta)
 		return;
 
-	type = lru_gen_lru_type(lru);
+	lockdep_assert_held(&pgdat->lru_lock);
 
-	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+	type = lru_gen_lru_type(lru);
 	seq = is_active_lru(lru) ? lrugen->max_seq : lrugen->min_seq[type];
 	gen = seq % MAX_NR_GENS;
 	nr_pages = &lrugen->nr_pages[gen][type][zid];
@@ -128,7 +129,6 @@ void lru_gen_update_size(struct lruvec *lruvec, enum lru_list lru,
 		*nr_pages = 0;
 	if (delta > 0)
 		lrugen->timestamps[gen] = jiffies;
-	spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 }
 
 static void lru_gen_decay_pressure(struct lru_gen_struct *lrugen)
@@ -353,6 +353,7 @@ void lru_gen_note_lru_move(struct lruvec *lruvec, enum lru_list old_lru,
 			   enum lru_list new_lru, unsigned long nr_pages)
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
+	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
 	unsigned int old_type, new_type;
 	unsigned long old_seq;
 
@@ -362,15 +363,15 @@ void lru_gen_note_lru_move(struct lruvec *lruvec, enum lru_list old_lru,
 	if (old_lru == LRU_UNEVICTABLE || new_lru == LRU_UNEVICTABLE)
 		return;
 
+	lockdep_assert_held(&pgdat->lru_lock);
+
 	old_type = lru_gen_lru_type(old_lru);
 	new_type = lru_gen_lru_type(new_lru);
 
-	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 	old_seq = is_active_lru(old_lru) ? lrugen->max_seq : lrugen->min_seq[old_type];
 	if (!is_active_lru(new_lru) && old_type == new_type &&
 	    old_seq == lrugen->min_seq[new_type])
 		lrugen->evicted[new_type] += nr_pages;
-	spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 }
 
 void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc)
