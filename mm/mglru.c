@@ -495,6 +495,7 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 				  div64_u64((u64)total * anon_weight, denom));
 	else
 		anon_scan = 0;
+	anon_scan = min(anon_scan, total);
 	file_scan = total - anon_scan;
 
 	nr[LRU_INACTIVE_ANON] = min(nr[LRU_INACTIVE_ANON], anon_scan);
