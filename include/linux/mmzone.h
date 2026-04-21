@@ -301,6 +301,8 @@ void lru_gen_note_access(struct lruvec *lruvec, bool file);
 void lru_gen_note_lru_move(struct lruvec *lruvec, enum lru_list old_lru,
 			   enum lru_list new_lru, unsigned long nr_pages);
 void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc);
+void lru_gen_update_size(struct lruvec *lruvec, enum lru_list lru,
+			 enum zone_type zid, long delta);
 #else
 static inline void lru_gen_init_lruvec(struct lruvec *lruvec)
 {
@@ -343,6 +345,11 @@ static inline void lru_gen_note_lru_move(struct lruvec *lruvec,
 }
 static inline void lru_gen_enter_reclaim(struct lruvec *lruvec,
 					 struct scan_control *sc)
+{
+}
+static inline void lru_gen_update_size(struct lruvec *lruvec,
+				       enum lru_list lru, enum zone_type zid,
+				       long delta)
 {
 }
 #endif

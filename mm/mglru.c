@@ -64,6 +64,32 @@ static int lru_gen_lru_type(enum lru_list lru)
 	return is_file_lru(lru) ? LRU_GEN_FILE : LRU_GEN_ANON;
 }
 
+void lru_gen_update_size(struct lruvec *lruvec, enum lru_list lru,
+			 enum zone_type zid, long delta)
+{
+	struct lru_gen_struct *lrugen = &lruvec->lrugen;
+	unsigned long seq;
+	unsigned int type, gen;
+	long *nr_pages;
+
+	if (!lru_gen_enabled() || !lrugen->enabled || lru == LRU_UNEVICTABLE || !delta)
+		return;
+
+	type = lru_gen_lru_type(lru);
+
+	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+	seq = is_active_lru(lru) ? lrugen->max_seq : lrugen->min_seq[type];
+	gen = seq % MAX_NR_GENS;
+	nr_pages = &lrugen->nr_pages[gen][type][zid];
+
+	*nr_pages += delta;
+	if (*nr_pages < 0)
+		*nr_pages = 0;
+	if (delta > 0)
+		lrugen->timestamps[gen] = jiffies;
+	spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+}
+
 static void lru_gen_decay_pressure(struct lru_gen_struct *lrugen)
 {
 	unsigned int type;
@@ -204,24 +230,20 @@ void lru_gen_note_lru_move(struct lruvec *lruvec, enum lru_list old_lru,
 			   enum lru_list new_lru, unsigned long nr_pages)
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
-	unsigned int old_type, new_type, zone;
-	unsigned int old_gen, new_gen;
-	unsigned long old_seq, new_seq;
+	unsigned int old_type, new_type;
+	unsigned long old_seq;
 
 	if (!lru_gen_enabled() || !lrugen->enabled || !nr_pages)
 		return;
 
+	if (old_lru == LRU_UNEVICTABLE || new_lru == LRU_UNEVICTABLE)
+		return;
+
 	old_type = lru_gen_lru_type(old_lru);
 	new_type = lru_gen_lru_type(new_lru);
-	old_seq = is_active_lru(old_lru) ? lrugen->max_seq : lrugen->min_seq[old_type];
-	new_seq = is_active_lru(new_lru) ? lrugen->max_seq : lrugen->min_seq[new_type];
-	old_gen = old_seq % MAX_NR_GENS;
-	new_gen = new_seq % MAX_NR_GENS;
-	zone = 0;
 
 	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
-	lrugen->nr_pages[old_gen][old_type][zone] -= nr_pages;
-	lrugen->nr_pages[new_gen][new_type][zone] += nr_pages;
+	old_seq = is_active_lru(old_lru) ? lrugen->max_seq : lrugen->min_seq[old_type];
 	if (!is_active_lru(new_lru) && old_type == new_type &&
 	    old_seq == lrugen->min_seq[new_type])
 		lrugen->evicted[new_type] += nr_pages;
@@ -258,7 +280,10 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 	unsigned long denom;
 	unsigned long anon_weight;
 	unsigned long file_weight;
+	unsigned long anon_old = 0;
+	unsigned long file_old = 0;
 	unsigned int preferred;
+	unsigned int zone;
 
 	if (!lru_gen_enabled() || !lrugen->enabled)
 		return;
@@ -276,6 +301,16 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 	 */
 	anon_weight = lrugen->pressure[LRU_GEN_ANON] + 1;
 	file_weight = lrugen->pressure[LRU_GEN_FILE] + 1;
+
+	for (zone = 0; zone < MAX_NR_ZONES; zone++) {
+		anon_old += lrugen->nr_pages[lrugen->min_seq[LRU_GEN_ANON] % MAX_NR_GENS]
+					  [LRU_GEN_ANON][zone];
+		file_old += lrugen->nr_pages[lrugen->min_seq[LRU_GEN_FILE] % MAX_NR_GENS]
+					  [LRU_GEN_FILE][zone];
+	}
+	anon_weight += anon_old / SWAP_CLUSTER_MAX;
+	file_weight += file_old / SWAP_CLUSTER_MAX;
+
 	if (!sc->may_swap || !total_swap_pages)
 		anon_weight = 0;
 	preferred = lru_gen_pick_scan_type(lrugen, sc);
