@@ -270,8 +270,6 @@ struct lru_gen_struct {
 	struct list_head lists[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
 	/* total pages per [gen][type][zone] */
 	long nr_pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
-	/* runtime kill switch */
-	bool enabled;
 	/* reclaim pressure score per type; higher means older/cooler */
 	unsigned long pressure[ANON_AND_FILE];
 	/* memcg-local reclaim tiers per type */
@@ -303,6 +301,8 @@ void lru_gen_note_lru_move(struct lruvec *lruvec, enum lru_list old_lru,
 void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc);
 void lru_gen_update_size(struct lruvec *lruvec, enum lru_list lru,
 			 enum zone_type zid, long delta);
+int lru_gen_set_state(bool enable);
+int lru_gen_get_state(void);
 #else
 static inline void lru_gen_init_lruvec(struct lruvec *lruvec)
 {
@@ -351,6 +351,14 @@ static inline void lru_gen_update_size(struct lruvec *lruvec,
 				       enum lru_list lru, enum zone_type zid,
 				       long delta)
 {
+}
+static inline int lru_gen_set_state(bool enable)
+{
+	return 0;
+}
+static inline int lru_gen_get_state(void)
+{
+	return 0;
 }
 #endif
 

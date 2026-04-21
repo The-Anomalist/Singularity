@@ -37,6 +37,7 @@ Currently, these files are in /proc/sys/vm:
 - laptop_mode
 - legacy_va_layout
 - lowmem_reserve_ratio
+- lru_gen_enabled
 - max_map_count
 - memory_failure_early_kill
 - memory_failure_recovery
@@ -874,6 +875,21 @@ initiate swap until the amount of free and file-backed pages is less
 than the high water mark in a zone.
 
 The default value is 60.
+
+==============================================================
+
+lru_gen_enabled
+
+This control enables or disables the Multi-Gen LRU reclaim policy at
+runtime.
+
+Valid values are:
+	0 - disable Multi-Gen LRU and fall back to classic reclaim heuristics
+	1 - enable Multi-Gen LRU reclaim decisions
+
+This setting is global and applies to reclaim behavior on all nodes.
+
+The default value follows the boot-time Multi-Gen LRU setting.
 
 ==============================================================
 

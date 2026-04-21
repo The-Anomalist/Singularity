@@ -308,6 +308,27 @@ static int bpf_unpriv_handler(struct ctl_table *table, int write,
 }
 #endif
 
+#ifdef CONFIG_LRU_GEN
+static int sysctl_lru_gen_enabled;
+
+static int lru_gen_sysctl_handler(struct ctl_table *table, int write,
+				  void __user *buffer, size_t *lenp,
+				  loff_t *ppos)
+{
+	struct ctl_table tmp = *table;
+	int state;
+	int ret;
+
+	state = lru_gen_get_state();
+	tmp.data = &state;
+	ret = proc_dointvec_minmax(&tmp, write, buffer, lenp, ppos);
+	if (ret || !write)
+		return ret;
+
+	return lru_gen_set_state(!!state);
+}
+#endif
+
 static struct ctl_table kern_table[];
 static struct ctl_table vm_table[];
 static struct ctl_table fs_table[];
@@ -1890,6 +1911,17 @@ static struct ctl_table vm_table[] = {
 		.extra1		= &zero,
 		.extra2		= &one_hundred,
 	},
+#ifdef CONFIG_LRU_GEN
+	{
+		.procname	= "lru_gen_enabled",
+		.data		= &sysctl_lru_gen_enabled,
+		.maxlen		= sizeof(sysctl_lru_gen_enabled),
+		.mode		= 0644,
+		.proc_handler	= lru_gen_sysctl_handler,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+#endif
 #ifdef CONFIG_HUGETLB_PAGE
 	{
 		.procname	= "nr_hugepages",

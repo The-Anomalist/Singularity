@@ -72,7 +72,7 @@ void lru_gen_update_size(struct lruvec *lruvec, enum lru_list lru,
 	unsigned int type, gen;
 	long *nr_pages;
 
-	if (!lru_gen_enabled() || !lrugen->enabled || lru == LRU_UNEVICTABLE || !delta)
+	if (!lru_gen_enabled() || !lru_gen_get_state() || lru == LRU_UNEVICTABLE || !delta)
 		return;
 
 	type = lru_gen_lru_type(lru);
@@ -134,6 +134,27 @@ bool lru_gen_enabled(void)
 	return static_branch_likely(&lru_gen_caps);
 }
 
+int lru_gen_get_state(void)
+{
+	return READ_ONCE(lru_gen_boot_enabled);
+}
+
+int lru_gen_set_state(bool enable)
+{
+	bool old = READ_ONCE(lru_gen_boot_enabled);
+
+	if (old == enable)
+		return 0;
+
+	WRITE_ONCE(lru_gen_boot_enabled, enable);
+	if (enable)
+		static_branch_enable(&lru_gen_caps);
+	else
+		static_branch_disable(&lru_gen_caps);
+
+	return 0;
+}
+
 void lru_gen_init_lruvec(struct lruvec *lruvec)
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
@@ -166,7 +187,6 @@ void lru_gen_init_lruvec(struct lruvec *lruvec)
 	lrugen->evicted[LRU_GEN_ANON] = 0;
 	lrugen->evicted[LRU_GEN_FILE] = 0;
 	lrugen->last_reclaim = jiffies;
-	lrugen->enabled = lru_gen_boot_enabled;
 }
 
 void lru_gen_track_page_scan(struct lruvec *lruvec, enum lru_list lru,
@@ -178,7 +198,7 @@ void lru_gen_track_page_scan(struct lruvec *lruvec, enum lru_list lru,
 	unsigned long delta;
 	int type;
 
-	if (!lru_gen_enabled() || !lrugen->enabled || !nr_scanned)
+	if (!lru_gen_enabled() || !lru_gen_get_state() || !nr_scanned)
 		return;
 
 	type = lru_gen_lru_type(lru);
@@ -210,7 +230,7 @@ void lru_gen_note_access(struct lruvec *lruvec, bool file)
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
 	unsigned int type = file ? LRU_GEN_FILE : LRU_GEN_ANON;
 
-	if (!lru_gen_enabled() || !lrugen->enabled)
+	if (!lru_gen_enabled() || !lru_gen_get_state())
 		return;
 
 	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
@@ -233,7 +253,7 @@ void lru_gen_note_lru_move(struct lruvec *lruvec, enum lru_list old_lru,
 	unsigned int old_type, new_type;
 	unsigned long old_seq;
 
-	if (!lru_gen_enabled() || !lrugen->enabled || !nr_pages)
+	if (!lru_gen_enabled() || !lru_gen_get_state() || !nr_pages)
 		return;
 
 	if (old_lru == LRU_UNEVICTABLE || new_lru == LRU_UNEVICTABLE)
@@ -255,7 +275,7 @@ void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc)
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
 	unsigned int gen;
 
-	if (!lru_gen_enabled() || !lrugen->enabled)
+	if (!lru_gen_enabled() || !lru_gen_get_state())
 		return;
 
 	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
@@ -285,7 +305,7 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 	unsigned int preferred;
 	unsigned int zone;
 
-	if (!lru_gen_enabled() || !lrugen->enabled)
+	if (!lru_gen_enabled() || !lru_gen_get_state())
 		return;
 
 	anon_scan = nr[LRU_INACTIVE_ANON] + nr[LRU_ACTIVE_ANON];
@@ -351,7 +371,7 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 	unsigned long now = jiffies;
 	unsigned long anon_eff = 0, file_eff = 0;
 
-	if (!lru_gen_enabled() || !lrugen->enabled || !scanned)
+	if (!lru_gen_enabled() || !lru_gen_get_state() || !scanned)
 		return;
 
 	/*

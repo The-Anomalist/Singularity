@@ -2979,13 +2979,10 @@ static bool shrink_node_reclaim(pg_data_t *pgdat, struct scan_control *sc,
 #ifdef CONFIG_LRU_GEN
 bool lru_gen_shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 {
-	struct lruvec *lruvec;
-
 	if (!lru_gen_enabled())
 		return false;
 
-	lruvec = node_lruvec(pgdat);
-	if (!lruvec->lrugen.enabled)
+	if (!lru_gen_get_state())
 		return false;
 
 	return shrink_node_reclaim(pgdat, sc, true);
