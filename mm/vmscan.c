@@ -2790,16 +2790,11 @@ static bool pgdat_memcg_congested(pg_data_t *pgdat, struct mem_cgroup *memcg)
 		(memcg && memcg_congested(pgdat, memcg));
 }
 
-static bool shrink_node_reclaim(pg_data_t *pgdat, struct scan_control *sc,
-				bool mglru)
+static bool shrink_node_reclaim(pg_data_t *pgdat, struct scan_control *sc)
 {
 	struct reclaim_state *reclaim_state = current->reclaim_state;
 	unsigned long nr_reclaimed, nr_scanned;
 	bool reclaimable = false;
-	struct lruvec *pgdat_lruvec = node_lruvec(pgdat);
-
-	if (mglru)
-		lru_gen_enter_reclaim(pgdat_lruvec, sc);
 
 	do {
 		struct mem_cgroup *root = sc->target_mem_cgroup;
@@ -2855,8 +2850,6 @@ static bool shrink_node_reclaim(pg_data_t *pgdat, struct scan_control *sc,
 
 			reclaimed = sc->nr_reclaimed;
 			scanned = sc->nr_scanned;
-			if (mglru)
-				lru_gen_enter_reclaim(mem_cgroup_lruvec(pgdat, memcg), sc);
 			shrink_node_memcg(pgdat, memcg, sc, &lru_pages);
 			node_lru_pages += lru_pages;
 
@@ -2982,6 +2975,45 @@ static bool shrink_node_reclaim(pg_data_t *pgdat, struct scan_control *sc,
 }
 
 #ifdef CONFIG_LRU_GEN
+static bool shrink_node_reclaim_mglru(pg_data_t *pgdat, struct scan_control *sc)
+{
+	unsigned long reclaimed_before = sc->nr_reclaimed;
+	unsigned long scanned_before = sc->nr_scanned;
+	bool reclaimable = false;
+	bool may_retry = true;
+	unsigned int pass;
+
+	/*
+	 * Run reclaim in multiple MGLRU-guided passes:
+	 *  - each pass refreshes generation aging signals;
+	 *  - stalled passes may retry once with soft memcg protection relaxed.
+	 */
+	for (pass = 0; pass < MIN_NR_GENS && may_retry; pass++) {
+		unsigned long reclaimed = sc->nr_reclaimed;
+		unsigned long scanned = sc->nr_scanned;
+
+		lru_gen_enter_reclaim(node_lruvec(pgdat), sc);
+		reclaimable |= shrink_node_reclaim(pgdat, sc);
+
+		if (!global_reclaim(sc) && sc->nr_reclaimed >= sc->nr_to_reclaim)
+			break;
+
+		if (sc->nr_reclaimed == reclaimed && sc->nr_scanned > scanned &&
+		    !sc->memcg_low_reclaim) {
+			sc->memcg_low_reclaim = 1;
+			continue;
+		}
+
+		may_retry = should_continue_reclaim(pgdat,
+						    sc->nr_reclaimed - reclaimed_before,
+						    sc->nr_scanned - scanned_before, sc);
+		reclaimed_before = sc->nr_reclaimed;
+		scanned_before = sc->nr_scanned;
+	}
+
+	return reclaimable;
+}
+
 bool lru_gen_shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 {
 	if (!lru_gen_enabled())
@@ -2990,7 +3022,7 @@ bool lru_gen_shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 	if (!lru_gen_get_state())
 		return false;
 
-	return shrink_node_reclaim(pgdat, sc, true);
+	return shrink_node_reclaim_mglru(pgdat, sc);
 }
 #endif
 
@@ -2999,7 +3031,7 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 	if (lru_gen_shrink_node(pgdat, sc))
 		return true;
 
-	return shrink_node_reclaim(pgdat, sc, false);
+	return shrink_node_reclaim(pgdat, sc);
 }
 
 /*
