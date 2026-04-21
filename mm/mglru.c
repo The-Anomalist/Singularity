@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Multi-Gen LRU groundwork for 4.19 backporting.
+ * Multi-Gen LRU aging and reclaim machinery for the 4.19 backport.
  */
 
 #include <linux/mm.h>
@@ -59,6 +59,18 @@ static void lru_gen_advance_seq(struct lruvec *lruvec)
 	}
 }
 
+static unsigned long lru_gen_count_old(struct lru_gen_struct *lrugen, int type)
+{
+	unsigned int zone;
+	unsigned long total = 0;
+	unsigned int gen = lrugen->min_seq[type] % MAX_NR_GENS;
+
+	for (zone = 0; zone < MAX_NR_ZONES; zone++)
+		total += max_t(long, 0, lrugen->nr_pages[gen][type][zone]);
+
+	return total;
+}
+
 static int lru_gen_lru_type(enum lru_list lru)
 {
 	return is_file_lru(lru) ? LRU_GEN_FILE : LRU_GEN_ANON;
@@ -103,8 +115,17 @@ static bool lru_gen_should_age(struct lru_gen_struct *lrugen,
 {
 	unsigned long gen = lrugen->max_seq % MAX_NR_GENS;
 	unsigned long age = jiffies - lrugen->timestamps[gen];
+	unsigned long anon_old = lru_gen_count_old(lrugen, LRU_GEN_ANON);
+	unsigned long file_old = lru_gen_count_old(lrugen, LRU_GEN_FILE);
 
 	if (age >= HZ)
+		return true;
+
+	/*
+	 * Keep aging forward if the oldest generation accumulates enough
+	 * pages, even under light reclaim pressure.
+	 */
+	if (anon_old + file_old >= SWAP_CLUSTER_MAX * 32)
 		return true;
 
 	if (sc && sc->priority <= DEF_PRIORITY - 2)
@@ -119,10 +140,14 @@ static unsigned int lru_gen_pick_scan_type(struct lru_gen_struct *lrugen,
 {
 	unsigned long anon = lrugen->pressure[LRU_GEN_ANON] + 1;
 	unsigned long file = lrugen->pressure[LRU_GEN_FILE] + 1;
+	unsigned long anon_old = lru_gen_count_old(lrugen, LRU_GEN_ANON);
+	unsigned long file_old = lru_gen_count_old(lrugen, LRU_GEN_FILE);
 
 	if (!sc->may_swap || !total_swap_pages)
 		return LRU_GEN_FILE;
 
+	anon += anon_old / SWAP_CLUSTER_MAX;
+	file += file_old / SWAP_CLUSTER_MAX;
 	anon += lrugen->tiers[LRU_GEN_ANON] * SWAP_CLUSTER_MAX;
 	file += lrugen->tiers[LRU_GEN_FILE] * SWAP_CLUSTER_MAX;
 
@@ -274,6 +299,7 @@ void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc)
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
 	unsigned int gen;
+	unsigned int type;
 
 	if (!lru_gen_enabled() || !lru_gen_get_state())
 		return;
@@ -286,6 +312,17 @@ void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc)
 		lrugen->evicted[LRU_GEN_ANON] = 0;
 		lrugen->evicted[LRU_GEN_FILE] = 0;
 		lru_gen_advance_seq(lruvec);
+	}
+
+	/*
+	 * Reclaim path for the oldest generations:
+	 * if an oldest generation is already drained, move its floor forward so
+	 * reclaim naturally shifts to the next oldest generation.
+	 */
+	for (type = 0; type < ANON_AND_FILE; type++) {
+		if (!lru_gen_count_old(lrugen, type) &&
+		    lrugen->min_seq[type] < lrugen->max_seq)
+			lrugen->min_seq[type]++;
 	}
 	spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 }
@@ -330,6 +367,10 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 	}
 	anon_weight += anon_old / SWAP_CLUSTER_MAX;
 	file_weight += file_old / SWAP_CLUSTER_MAX;
+	if (anon_old > file_old)
+		anon_weight += SWAP_CLUSTER_MAX / 2;
+	else if (file_old > anon_old)
+		file_weight += SWAP_CLUSTER_MAX / 2;
 
 	if (!sc->may_swap || !total_swap_pages)
 		anon_weight = 0;
