@@ -26,6 +26,9 @@ static bool __read_mostly lru_gen_boot_enabled =
 	IS_ENABLED(CONFIG_LRU_GEN_ENABLED);
 static unsigned int __read_mostly lru_gen_min_ttl_ms;
 static unsigned int __read_mostly lru_gen_age_period_ms = 1000;
+static unsigned int __read_mostly lru_gen_weight_anon_pct = 50;
+static unsigned int __read_mostly lru_gen_dedup_window_ms = 25;
+static bool __read_mostly lru_gen_pressure_normalize = true;
 #ifdef CONFIG_DEBUG_FS
 static struct dentry *mglru_debugfs_root;
 #endif
@@ -71,6 +74,48 @@ static int __init setup_lru_gen_age_period(char *str)
 	return 0;
 }
 early_param("lru_gen_age_period_ms", setup_lru_gen_age_period);
+
+static int __init setup_lru_gen_weight_anon(char *str)
+{
+	unsigned int val;
+
+	if (!str || kstrtouint(str, 0, &val))
+		return -EINVAL;
+
+	lru_gen_weight_anon_pct = min_t(unsigned int, val, 100);
+
+	return 0;
+}
+early_param("lru_gen_weight_anon_pct", setup_lru_gen_weight_anon);
+
+static int __init setup_lru_gen_dedup_window(char *str)
+{
+	unsigned int val;
+
+	if (!str || kstrtouint(str, 0, &val))
+		return -EINVAL;
+
+	lru_gen_dedup_window_ms = min_t(unsigned int, val, 1000);
+
+	return 0;
+}
+early_param("lru_gen_dedup_window_ms", setup_lru_gen_dedup_window);
+
+static int __init setup_lru_gen_normalize(char *str)
+{
+	if (!str)
+		return -EINVAL;
+
+	if (!strcmp(str, "1") || !strcmp(str, "on") || !strcmp(str, "y"))
+		lru_gen_pressure_normalize = true;
+	else if (!strcmp(str, "0") || !strcmp(str, "off") || !strcmp(str, "n"))
+		lru_gen_pressure_normalize = false;
+	else
+		return -EINVAL;
+
+	return 0;
+}
+early_param("lru_gen_pressure_normalize", setup_lru_gen_normalize);
 
 static int __init init_lru_gen(void)
 {
@@ -148,6 +193,41 @@ static void lru_gen_decay_pressure(struct lru_gen_struct *lrugen)
 
 	for (type = 0; type < ANON_AND_FILE; type++)
 		lrugen->pressure[type] -= lrugen->pressure[type] >> 3;
+}
+
+static void lru_gen_normalize_pressure(struct lru_gen_struct *lrugen)
+{
+	unsigned long floor, type;
+
+	if (!READ_ONCE(lru_gen_pressure_normalize))
+		return;
+
+	floor = min(lrugen->pressure[LRU_GEN_ANON], lrugen->pressure[LRU_GEN_FILE]);
+	if (!floor || floor <= SWAP_CLUSTER_MAX)
+		return;
+
+	for (type = 0; type < ANON_AND_FILE; type++) {
+		lrugen->pressure[type] -= floor - SWAP_CLUSTER_MAX;
+		lrugen->normalized[type]++;
+	}
+}
+
+static bool lru_gen_dedup_access(struct lru_gen_struct *lrugen, unsigned int type,
+				 unsigned long nr_pages)
+{
+	unsigned long now = jiffies;
+	unsigned long win = READ_ONCE(lru_gen_dedup_window_ms);
+
+	if (!win)
+		return false;
+
+	if (time_before(now, lrugen->access_stamp[type] + msecs_to_jiffies(win))) {
+		lrugen->deduped[type] += nr_pages;
+		return true;
+	}
+
+	lrugen->access_stamp[type] = now;
+	return false;
 }
 
 static bool lru_gen_min_ttl_protected(struct lru_gen_struct *lrugen, int type)
@@ -255,6 +335,39 @@ unsigned int lru_gen_get_age_period(void)
 	return READ_ONCE(lru_gen_age_period_ms);
 }
 
+int lru_gen_set_weight_anon(unsigned int anon_pct)
+{
+	WRITE_ONCE(lru_gen_weight_anon_pct, min_t(unsigned int, anon_pct, 100));
+	return 0;
+}
+
+unsigned int lru_gen_get_weight_anon(void)
+{
+	return READ_ONCE(lru_gen_weight_anon_pct);
+}
+
+int lru_gen_set_dedup_window(unsigned int window_ms)
+{
+	WRITE_ONCE(lru_gen_dedup_window_ms, min_t(unsigned int, window_ms, 1000));
+	return 0;
+}
+
+unsigned int lru_gen_get_dedup_window(void)
+{
+	return READ_ONCE(lru_gen_dedup_window_ms);
+}
+
+int lru_gen_set_normalize(bool enable)
+{
+	WRITE_ONCE(lru_gen_pressure_normalize, enable);
+	return 0;
+}
+
+int lru_gen_get_normalize(void)
+{
+	return READ_ONCE(lru_gen_pressure_normalize);
+}
+
 void lru_gen_init_lruvec(struct lruvec *lruvec)
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
@@ -286,6 +399,12 @@ void lru_gen_init_lruvec(struct lruvec *lruvec)
 	lrugen->accessed[LRU_GEN_FILE] = 0;
 	lrugen->evicted[LRU_GEN_ANON] = 0;
 	lrugen->evicted[LRU_GEN_FILE] = 0;
+	lrugen->access_stamp[LRU_GEN_ANON] = jiffies;
+	lrugen->access_stamp[LRU_GEN_FILE] = jiffies;
+	lrugen->deduped[LRU_GEN_ANON] = 0;
+	lrugen->deduped[LRU_GEN_FILE] = 0;
+	lrugen->normalized[LRU_GEN_ANON] = 0;
+	lrugen->normalized[LRU_GEN_FILE] = 0;
 	lrugen->last_reclaim = jiffies;
 }
 
@@ -334,6 +453,10 @@ void lru_gen_note_access(struct lruvec *lruvec, bool file)
 		return;
 
 	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+	if (lru_gen_dedup_access(lrugen, type, 1)) {
+		spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+		return;
+	}
 	lrugen->accessed[type]++;
 	count_vm_event(MGLRU_ACTIVATED);
 	/*
@@ -363,6 +486,10 @@ void lru_gen_note_page_referenced(struct lruvec *lruvec, struct page *page,
 	threshold = SWAP_CLUSTER_MAX * (from_reclaim ? 2 : 4);
 
 	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+	if (lru_gen_dedup_access(lrugen, type, nr_pages)) {
+		spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+		return;
+	}
 	lrugen->accessed[type] += nr_pages;
 	/*
 	 * Reclaim-driven references are collected from page table walks
@@ -480,6 +607,8 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 	}
 	anon_weight += anon_old / SWAP_CLUSTER_MAX;
 	file_weight += file_old / SWAP_CLUSTER_MAX;
+	anon_weight = anon_weight * READ_ONCE(lru_gen_weight_anon_pct);
+	file_weight = file_weight * (100 - READ_ONCE(lru_gen_weight_anon_pct));
 
 	/*
 	 * Respect optional working-set protection: until the oldest generation
@@ -573,6 +702,7 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 		lrugen->pressure[LRU_GEN_FILE] += SWAP_CLUSTER_MAX / 2;
 
 	lru_gen_decay_pressure(lrugen);
+	lru_gen_normalize_pressure(lrugen);
 
 	/*
 	 * Tier-aware aging: advance generations faster when reclaim is weak or
@@ -600,6 +730,9 @@ static void lru_gen_reset_lruvec(struct lruvec *lruvec)
 		lrugen->reclaimed[type] = 0;
 		lrugen->accessed[type] = 0;
 		lrugen->evicted[type] = 0;
+		lrugen->access_stamp[type] = jiffies;
+		lrugen->deduped[type] = 0;
+		lrugen->normalized[type] = 0;
 	}
 }
 
@@ -607,9 +740,11 @@ static int mglru_stats_show(struct seq_file *m, void *v)
 {
 	struct pglist_data *pgdat;
 
-	seq_printf(m, "enabled=%d min_ttl_ms=%u age_period_ms=%u\n",
+	seq_printf(m,
+		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d\n",
 		   lru_gen_get_state(), lru_gen_get_min_ttl(),
-		   lru_gen_get_age_period());
+		   lru_gen_get_age_period(), lru_gen_get_weight_anon(),
+		   lru_gen_get_dedup_window(), lru_gen_get_normalize());
 
 	for_each_online_pgdat(pgdat) {
 		struct lruvec *lruvec = node_lruvec(pgdat);
@@ -633,7 +768,7 @@ static int mglru_stats_show(struct seq_file *m, void *v)
 			   lrugen->min_seq[LRU_GEN_FILE], anon_old, file_old,
 			   anon_age, file_age);
 		seq_printf(m,
-			   "  pressure=(anon:%lu file:%lu) tier=(anon:%u file:%u) scanned=(anon:%lu file:%lu) reclaimed=(anon:%lu file:%lu) evicted=(anon:%lu file:%lu)\n",
+			   "  pressure=(anon:%lu file:%lu) tier=(anon:%u file:%u) scanned=(anon:%lu file:%lu) reclaimed=(anon:%lu file:%lu) evicted=(anon:%lu file:%lu) deduped=(anon:%lu file:%lu) normalized=(anon:%lu file:%lu)\n",
 			   lrugen->pressure[LRU_GEN_ANON],
 			   lrugen->pressure[LRU_GEN_FILE],
 			   lrugen->tiers[LRU_GEN_ANON],
@@ -643,7 +778,11 @@ static int mglru_stats_show(struct seq_file *m, void *v)
 			   lrugen->reclaimed[LRU_GEN_ANON],
 			   lrugen->reclaimed[LRU_GEN_FILE],
 			   lrugen->evicted[LRU_GEN_ANON],
-			   lrugen->evicted[LRU_GEN_FILE]);
+			   lrugen->evicted[LRU_GEN_FILE],
+			   lrugen->deduped[LRU_GEN_ANON],
+			   lrugen->deduped[LRU_GEN_FILE],
+			   lrugen->normalized[LRU_GEN_ANON],
+			   lrugen->normalized[LRU_GEN_FILE]);
 		seq_printf(m,
 			   "  protected=(anon:%d file:%d)\n",
 			   lru_gen_min_ttl_protected(lrugen, LRU_GEN_ANON),

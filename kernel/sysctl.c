@@ -312,7 +312,11 @@ static int bpf_unpriv_handler(struct ctl_table *table, int write,
 static int sysctl_lru_gen_enabled;
 static int sysctl_lru_gen_min_ttl_ms;
 static int sysctl_lru_gen_age_period_ms;
+static int sysctl_lru_gen_weight_anon_pct;
+static int sysctl_lru_gen_dedup_window_ms;
+static int sysctl_lru_gen_pressure_normalize;
 static int sixty_thousand = 60000;
+static int one_thousand = 1000;
 
 static int lru_gen_sysctl_handler(struct ctl_table *table, int write,
 				  void __user *buffer, size_t *lenp,
@@ -363,6 +367,57 @@ static int lru_gen_age_period_sysctl_handler(struct ctl_table *table, int write,
 		return ret;
 
 	return lru_gen_set_age_period(val);
+}
+
+static int lru_gen_weight_anon_sysctl_handler(struct ctl_table *table, int write,
+					      void __user *buffer, size_t *lenp,
+					      loff_t *ppos)
+{
+	struct ctl_table tmp = *table;
+	int val;
+	int ret;
+
+	val = lru_gen_get_weight_anon();
+	tmp.data = &val;
+	ret = proc_dointvec_minmax(&tmp, write, buffer, lenp, ppos);
+	if (ret || !write)
+		return ret;
+
+	return lru_gen_set_weight_anon(val);
+}
+
+static int lru_gen_dedup_window_sysctl_handler(struct ctl_table *table, int write,
+					       void __user *buffer, size_t *lenp,
+					       loff_t *ppos)
+{
+	struct ctl_table tmp = *table;
+	int val;
+	int ret;
+
+	val = lru_gen_get_dedup_window();
+	tmp.data = &val;
+	ret = proc_dointvec_minmax(&tmp, write, buffer, lenp, ppos);
+	if (ret || !write)
+		return ret;
+
+	return lru_gen_set_dedup_window(val);
+}
+
+static int lru_gen_normalize_sysctl_handler(struct ctl_table *table, int write,
+					    void __user *buffer, size_t *lenp,
+					    loff_t *ppos)
+{
+	struct ctl_table tmp = *table;
+	int state;
+	int ret;
+
+	state = lru_gen_get_normalize();
+	tmp.data = &state;
+	ret = proc_dointvec_minmax(&tmp, write, buffer, lenp, ppos);
+	if (ret || !write)
+		return ret;
+
+	return lru_gen_set_normalize(!!state);
 }
 #endif
 
@@ -1975,6 +2030,33 @@ static struct ctl_table vm_table[] = {
 		.proc_handler	= lru_gen_age_period_sysctl_handler,
 		.extra1		= &one_hundred,
 		.extra2		= &sixty_thousand,
+	},
+	{
+		.procname	= "lru_gen_weight_anon_pct",
+		.data		= &sysctl_lru_gen_weight_anon_pct,
+		.maxlen		= sizeof(sysctl_lru_gen_weight_anon_pct),
+		.mode		= 0644,
+		.proc_handler	= lru_gen_weight_anon_sysctl_handler,
+		.extra1		= &zero,
+		.extra2		= &one_hundred,
+	},
+	{
+		.procname	= "lru_gen_dedup_window_ms",
+		.data		= &sysctl_lru_gen_dedup_window_ms,
+		.maxlen		= sizeof(sysctl_lru_gen_dedup_window_ms),
+		.mode		= 0644,
+		.proc_handler	= lru_gen_dedup_window_sysctl_handler,
+		.extra1		= &zero,
+		.extra2		= &one_thousand,
+	},
+	{
+		.procname	= "lru_gen_pressure_normalize",
+		.data		= &sysctl_lru_gen_pressure_normalize,
+		.maxlen		= sizeof(sysctl_lru_gen_pressure_normalize),
+		.mode		= 0644,
+		.proc_handler	= lru_gen_normalize_sysctl_handler,
+		.extra1		= &zero,
+		.extra2		= &one,
 	},
 #endif
 #ifdef CONFIG_HUGETLB_PAGE

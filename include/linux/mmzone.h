@@ -283,6 +283,12 @@ struct lru_gen_struct {
 	unsigned long accessed[ANON_AND_FILE];
 	/* pages reclaimed from the oldest generations */
 	unsigned long evicted[ANON_AND_FILE];
+	/* dedup filter timestamps for access/reference feedback */
+	unsigned long access_stamp[ANON_AND_FILE];
+	/* number of samples filtered by dedup */
+	unsigned long deduped[ANON_AND_FILE];
+	/* number of pressure normalization operations */
+	unsigned long normalized[ANON_AND_FILE];
 	/* jiffies when reclaim feedback was last updated */
 	unsigned long last_reclaim;
 };
@@ -311,6 +317,12 @@ int lru_gen_set_min_ttl(unsigned int ttl_ms);
 unsigned int lru_gen_get_min_ttl(void);
 int lru_gen_set_age_period(unsigned int period_ms);
 unsigned int lru_gen_get_age_period(void);
+int lru_gen_set_weight_anon(unsigned int anon_pct);
+unsigned int lru_gen_get_weight_anon(void);
+int lru_gen_set_dedup_window(unsigned int window_ms);
+unsigned int lru_gen_get_dedup_window(void);
+int lru_gen_set_normalize(bool enable);
+int lru_gen_get_normalize(void);
 #else
 static inline void lru_gen_init_lruvec(struct lruvec *lruvec)
 {
@@ -386,6 +398,30 @@ static inline int lru_gen_set_age_period(unsigned int period_ms)
 	return 0;
 }
 static inline unsigned int lru_gen_get_age_period(void)
+{
+	return 0;
+}
+static inline int lru_gen_set_weight_anon(unsigned int anon_pct)
+{
+	return 0;
+}
+static inline unsigned int lru_gen_get_weight_anon(void)
+{
+	return 50;
+}
+static inline int lru_gen_set_dedup_window(unsigned int window_ms)
+{
+	return 0;
+}
+static inline unsigned int lru_gen_get_dedup_window(void)
+{
+	return 0;
+}
+static inline int lru_gen_set_normalize(bool enable)
+{
+	return 0;
+}
+static inline int lru_gen_get_normalize(void)
 {
 	return 0;
 }

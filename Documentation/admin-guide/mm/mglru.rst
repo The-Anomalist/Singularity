@@ -14,6 +14,9 @@ The following sysctls are available under ``/proc/sys/vm``:
 * ``lru_gen_enabled``: enable/disable MGLRU reclaim heuristics.
 * ``lru_gen_min_ttl_ms``: protect oldest generations for a minimum age.
 * ``lru_gen_age_period_ms``: target cadence for generation advancement.
+* ``lru_gen_weight_anon_pct``: bias anon-vs-file reclaim weighting.
+* ``lru_gen_dedup_window_ms``: deduplicate bursty access samples.
+* ``lru_gen_pressure_normalize``: normalize pressure counters over time.
 
 Debugfs interface
 =================
@@ -37,4 +40,3 @@ MGLRU contributes the following counters to ``/proc/vmstat`` when enabled:
 * ``mglru_aged``: number of generation-advance events.
 * ``mglru_evicted``: number of pages observed leaving active aging paths.
 * ``mglru_activated``: number of access samples fed into MGLRU feedback.
-

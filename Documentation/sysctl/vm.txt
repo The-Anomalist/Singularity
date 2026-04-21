@@ -927,6 +927,53 @@ The default value is 1000.
 
 ==============================================================
 
+lru_gen_weight_anon_pct
+
+This control applies an explicit weighting bias to Multi-Gen LRU scan
+selection.
+
+Valid values are:
+	0-100 - preferred anonymous-memory scan share in percent
+
+At 50, anon and file pressure are weighted neutrally. Lower values bias
+reclaim toward file cache. Higher values bias reclaim toward anonymous
+memory.
+
+The default value is 50.
+
+==============================================================
+
+lru_gen_dedup_window_ms
+
+This control deduplicates very-frequent access feedback samples under
+Multi-Gen LRU to avoid overweighting bursty access patterns.
+
+Valid values are:
+	0-1000 - deduplication window in milliseconds
+
+At 0, deduplication is disabled. Higher values suppress more repeated
+samples from short bursts.
+
+The default value is 25.
+
+==============================================================
+
+lru_gen_pressure_normalize
+
+This control enables or disables pressure normalization in Multi-Gen
+LRU.
+
+Valid values are:
+	0 - disable normalization
+	1 - normalize pressure counters to avoid long-term drift
+
+Normalization keeps reclaim pressure accounting numerically stable
+without changing relative pressure between anon and file types.
+
+The default value is 1.
+
+==============================================================
+
 unprivileged_userfaultfd
 
 This flag controls the mode in which unprivileged users can use the
