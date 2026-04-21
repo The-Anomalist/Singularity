@@ -13,6 +13,11 @@
 #include <linux/math64.h>
 #include <linux/string.h>
 #include <linux/swap.h>
+#include <linux/uaccess.h>
+#ifdef CONFIG_DEBUG_FS
+#include <linux/debugfs.h>
+#include <linux/seq_file.h>
+#endif
 
 #ifdef CONFIG_LRU_GEN
 static DEFINE_STATIC_KEY_FALSE(lru_gen_caps);
@@ -20,6 +25,9 @@ static bool __read_mostly lru_gen_boot_enabled =
 	IS_ENABLED(CONFIG_LRU_GEN_ENABLED);
 static unsigned int __read_mostly lru_gen_min_ttl_ms;
 static unsigned int __read_mostly lru_gen_age_period_ms = 1000;
+#ifdef CONFIG_DEBUG_FS
+static struct dentry *mglru_debugfs_root;
+#endif
 
 static int __init setup_lru_gen(char *str)
 {
@@ -137,6 +145,23 @@ static void lru_gen_decay_pressure(struct lru_gen_struct *lrugen)
 
 	for (type = 0; type < ANON_AND_FILE; type++)
 		lrugen->pressure[type] -= lrugen->pressure[type] >> 3;
+}
+
+static bool lru_gen_min_ttl_protected(struct lru_gen_struct *lrugen, int type)
+{
+	unsigned long min_ttl = READ_ONCE(lru_gen_min_ttl_ms);
+	unsigned long min_ttl_jiffies;
+	unsigned int gen;
+	unsigned long age;
+
+	if (!min_ttl)
+		return false;
+
+	min_ttl_jiffies = msecs_to_jiffies(min_ttl);
+	gen = lrugen->min_seq[type] % MAX_NR_GENS;
+	age = jiffies - lrugen->timestamps[gen];
+
+	return age < min_ttl_jiffies && lru_gen_count_old(lrugen, type);
 }
 
 static bool lru_gen_should_age(struct lru_gen_struct *lrugen)
@@ -420,10 +445,6 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 	unsigned long file_weight;
 	unsigned long anon_old = 0;
 	unsigned long file_old = 0;
-	unsigned long anon_old_age = 0;
-	unsigned long file_old_age = 0;
-	unsigned long min_ttl;
-	unsigned long min_ttl_jiffies;
 	unsigned int preferred;
 	unsigned int zone;
 
@@ -450,22 +471,17 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 		file_old += lrugen->nr_pages[lrugen->min_seq[LRU_GEN_FILE] % MAX_NR_GENS]
 					  [LRU_GEN_FILE][zone];
 	}
-	anon_old_age = jiffies - lrugen->timestamps[lrugen->min_seq[LRU_GEN_ANON] % MAX_NR_GENS];
-	file_old_age = jiffies - lrugen->timestamps[lrugen->min_seq[LRU_GEN_FILE] % MAX_NR_GENS];
-	min_ttl = READ_ONCE(lru_gen_min_ttl_ms);
-	min_ttl_jiffies = msecs_to_jiffies(min_ttl);
-
 	anon_weight += anon_old / SWAP_CLUSTER_MAX;
 	file_weight += file_old / SWAP_CLUSTER_MAX;
 
 	/*
 	 * Respect optional working-set protection: until the oldest generation
-	 * reaches min_ttl, de-emphasize it instead of scanning it aggressively.
+	 * reaches min_ttl, hard-throttle it and let the peer type absorb scan.
 	 */
-	if (min_ttl && anon_old_age < min_ttl_jiffies)
-		anon_weight >>= 1;
-	if (min_ttl && file_old_age < min_ttl_jiffies)
-		file_weight >>= 1;
+	if (lru_gen_min_ttl_protected(lrugen, LRU_GEN_ANON))
+		anon_weight = 0;
+	if (lru_gen_min_ttl_protected(lrugen, LRU_GEN_FILE))
+		file_weight = 0;
 
 	if (anon_old > file_old)
 		anon_weight += SWAP_CLUSTER_MAX / 2;
@@ -563,6 +579,145 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 	}
 	lrugen->last_reclaim = now;
 }
+
+#ifdef CONFIG_DEBUG_FS
+static void lru_gen_reset_lruvec(struct lruvec *lruvec)
+{
+	struct lru_gen_struct *lrugen = &lruvec->lrugen;
+	unsigned int type;
+
+	for (type = 0; type < ANON_AND_FILE; type++) {
+		lrugen->pressure[type] = 1;
+		lrugen->tiers[type] = 0;
+		lrugen->scanned[type] = 0;
+		lrugen->reclaimed[type] = 0;
+		lrugen->accessed[type] = 0;
+		lrugen->evicted[type] = 0;
+	}
+}
+
+static int mglru_stats_show(struct seq_file *m, void *v)
+{
+	struct pglist_data *pgdat;
+
+	seq_printf(m, "enabled=%d min_ttl_ms=%u age_period_ms=%u\n",
+		   lru_gen_get_state(), lru_gen_get_min_ttl(),
+		   lru_gen_get_age_period());
+
+	for_each_online_pgdat(pgdat) {
+		struct lruvec *lruvec = node_lruvec(pgdat);
+		struct lru_gen_struct *lrugen = &lruvec->lrugen;
+		unsigned long flags;
+		unsigned long anon_age, file_age;
+		unsigned long anon_old, file_old;
+
+		spin_lock_irqsave(&pgdat->lru_lock, flags);
+		anon_age = jiffies -
+			   lrugen->timestamps[lrugen->min_seq[LRU_GEN_ANON] % MAX_NR_GENS];
+		file_age = jiffies -
+			   lrugen->timestamps[lrugen->min_seq[LRU_GEN_FILE] % MAX_NR_GENS];
+		anon_old = lru_gen_count_old(lrugen, LRU_GEN_ANON);
+		file_old = lru_gen_count_old(lrugen, LRU_GEN_FILE);
+
+		seq_printf(m,
+			   "node=%d max_seq=%lu min_seq=(anon:%lu file:%lu) old=(anon:%lu file:%lu) age_jiffies=(anon:%lu file:%lu)\n",
+			   pgdat->node_id, lrugen->max_seq,
+			   lrugen->min_seq[LRU_GEN_ANON],
+			   lrugen->min_seq[LRU_GEN_FILE], anon_old, file_old,
+			   anon_age, file_age);
+		seq_printf(m,
+			   "  pressure=(anon:%lu file:%lu) tier=(anon:%u file:%u) scanned=(anon:%lu file:%lu) reclaimed=(anon:%lu file:%lu) evicted=(anon:%lu file:%lu)\n",
+			   lrugen->pressure[LRU_GEN_ANON],
+			   lrugen->pressure[LRU_GEN_FILE],
+			   lrugen->tiers[LRU_GEN_ANON],
+			   lrugen->tiers[LRU_GEN_FILE],
+			   lrugen->scanned[LRU_GEN_ANON],
+			   lrugen->scanned[LRU_GEN_FILE],
+			   lrugen->reclaimed[LRU_GEN_ANON],
+			   lrugen->reclaimed[LRU_GEN_FILE],
+			   lrugen->evicted[LRU_GEN_ANON],
+			   lrugen->evicted[LRU_GEN_FILE]);
+		seq_printf(m,
+			   "  protected=(anon:%d file:%d)\n",
+			   lru_gen_min_ttl_protected(lrugen, LRU_GEN_ANON),
+			   lru_gen_min_ttl_protected(lrugen, LRU_GEN_FILE));
+		spin_unlock_irqrestore(&pgdat->lru_lock, flags);
+	}
+
+	return 0;
+}
+
+static ssize_t mglru_stats_write(struct file *file, const char __user *buf,
+				 size_t count, loff_t *ppos)
+{
+	char cmd[16];
+	struct pglist_data *pgdat;
+
+	if (count >= sizeof(cmd))
+		return -EINVAL;
+
+	if (copy_from_user(cmd, buf, count))
+		return -EFAULT;
+
+	cmd[count] = '\0';
+	strim(cmd);
+
+	if (!strcmp(cmd, "age")) {
+		for_each_online_pgdat(pgdat) {
+			struct lruvec *lruvec = node_lruvec(pgdat);
+			unsigned long flags;
+
+			spin_lock_irqsave(&pgdat->lru_lock, flags);
+			lru_gen_advance_seq(lruvec);
+			spin_unlock_irqrestore(&pgdat->lru_lock, flags);
+		}
+		return count;
+	}
+
+	if (!strcmp(cmd, "reset")) {
+		for_each_online_pgdat(pgdat) {
+			struct lruvec *lruvec = node_lruvec(pgdat);
+			unsigned long flags;
+
+			spin_lock_irqsave(&pgdat->lru_lock, flags);
+			lru_gen_reset_lruvec(lruvec);
+			spin_unlock_irqrestore(&pgdat->lru_lock, flags);
+		}
+		return count;
+	}
+
+	return -EINVAL;
+}
+
+static int mglru_stats_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, mglru_stats_show, inode->i_private);
+}
+
+static const struct file_operations mglru_stats_fops = {
+	.owner = THIS_MODULE,
+	.open = mglru_stats_open,
+	.read = seq_read,
+	.write = mglru_stats_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static int __init mglru_debugfs_init(void)
+{
+	if (!debugfs_initialized())
+		return 0;
+
+	mglru_debugfs_root = debugfs_create_dir("mglru", NULL);
+	if (IS_ERR_OR_NULL(mglru_debugfs_root))
+		return -ENOMEM;
+
+	debugfs_create_file("stats", 0644, mglru_debugfs_root, NULL,
+			    &mglru_stats_fops);
+	return 0;
+}
+late_initcall(mglru_debugfs_init);
+#endif
 
 /*
  * Reclaim integration hook.
