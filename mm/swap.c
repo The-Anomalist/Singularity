@@ -416,6 +416,7 @@ static void __lru_cache_add(struct page *page)
  */
 void lru_cache_add_anon(struct page *page)
 {
+	lru_gen_note_access(mem_cgroup_page_lruvec(page, page_zone(page)->zone_pgdat), false);
 	if (PageActive(page))
 		ClearPageActive(page);
 	__lru_cache_add(page);
@@ -423,6 +424,7 @@ void lru_cache_add_anon(struct page *page)
 
 void lru_cache_add_file(struct page *page)
 {
+	lru_gen_note_access(mem_cgroup_page_lruvec(page, page_zone(page)->zone_pgdat), true);
 	if (PageActive(page))
 		ClearPageActive(page);
 	__lru_cache_add(page);

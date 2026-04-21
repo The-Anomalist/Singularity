@@ -14,6 +14,7 @@
 #include <linux/string.h>
 #include <linux/swap.h>
 #include <linux/uaccess.h>
+#include <linux/vmstat.h>
 #ifdef CONFIG_DEBUG_FS
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
@@ -94,6 +95,8 @@ static void lru_gen_advance_seq(struct lruvec *lruvec)
 		if (lrugen->min_seq[type] + MIN_NR_GENS <= seq)
 			lrugen->min_seq[type] = seq - MIN_NR_GENS + 1;
 	}
+
+	count_vm_event(MGLRU_AGED);
 }
 
 static unsigned long lru_gen_count_old(struct lru_gen_struct *lrugen, int type)
@@ -332,6 +335,7 @@ void lru_gen_note_access(struct lruvec *lruvec, bool file)
 
 	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 	lrugen->accessed[type]++;
+	count_vm_event(MGLRU_ACTIVATED);
 	/*
 	 * Age generations when enough new accesses arrive, so the reclaim
 	 * side can keep selecting truly older generations.
@@ -397,6 +401,9 @@ void lru_gen_note_lru_move(struct lruvec *lruvec, enum lru_list old_lru,
 	if (!is_active_lru(new_lru) && old_type == new_type &&
 	    old_seq == lrugen->min_seq[new_type])
 		lrugen->evicted[new_type] += nr_pages;
+
+	if (!is_active_lru(new_lru) && is_active_lru(old_lru))
+		count_vm_events(MGLRU_EVICTED, nr_pages);
 }
 
 void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc)
@@ -673,6 +680,12 @@ static ssize_t mglru_stats_write(struct file *file, const char __user *buf,
 		}
 		return count;
 	}
+
+	if (!strcmp(cmd, "enable"))
+		return lru_gen_set_state(true) ? : count;
+
+	if (!strcmp(cmd, "disable"))
+		return lru_gen_set_state(false) ? : count;
 
 	if (!strcmp(cmd, "reset")) {
 		for_each_online_pgdat(pgdat) {
