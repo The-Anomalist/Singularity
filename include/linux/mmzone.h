@@ -249,6 +249,8 @@ struct zone_reclaim_stat {
 	unsigned long		recent_scanned[2];
 };
 
+enum zone_type;
+
 #ifdef CONFIG_LRU_GEN
 #define MIN_NR_GENS	2U
 #define MAX_NR_GENS	4U
