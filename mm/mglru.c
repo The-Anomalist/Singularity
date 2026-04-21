@@ -571,6 +571,8 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 			 unsigned long *nr)
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
+	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
+	unsigned long flags;
 	unsigned long anon_scan;
 	unsigned long file_scan;
 	unsigned long total;
@@ -580,7 +582,6 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 	unsigned long anon_old = 0;
 	unsigned long file_old = 0;
 	unsigned int preferred;
-	unsigned int zone;
 
 	if (!lru_gen_enabled() || !lru_gen_get_state())
 		return;
@@ -591,6 +592,8 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 	if (!total)
 		return;
 
+	spin_lock_irqsave(&pgdat->lru_lock, flags);
+
 	/*
 	 * Eviction decision stage:
 	 * steer scan pressure toward colder generations using pressure[].
@@ -599,12 +602,8 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 	anon_weight = lrugen->pressure[LRU_GEN_ANON] + 1;
 	file_weight = lrugen->pressure[LRU_GEN_FILE] + 1;
 
-	for (zone = 0; zone < MAX_NR_ZONES; zone++) {
-		anon_old += lrugen->nr_pages[lrugen->min_seq[LRU_GEN_ANON] % MAX_NR_GENS]
-					  [LRU_GEN_ANON][zone];
-		file_old += lrugen->nr_pages[lrugen->min_seq[LRU_GEN_FILE] % MAX_NR_GENS]
-					  [LRU_GEN_FILE][zone];
-	}
+	anon_old = lru_gen_count_old(lrugen, LRU_GEN_ANON);
+	file_old = lru_gen_count_old(lrugen, LRU_GEN_FILE);
 	anon_weight += anon_old / SWAP_CLUSTER_MAX;
 	file_weight += file_old / SWAP_CLUSTER_MAX;
 	anon_weight = anon_weight * READ_ONCE(lru_gen_weight_anon_pct);
@@ -632,6 +631,7 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 		anon_weight += SWAP_CLUSTER_MAX;
 	else
 		file_weight += SWAP_CLUSTER_MAX;
+	spin_unlock_irqrestore(&pgdat->lru_lock, flags);
 
 	denom = anon_weight + file_weight;
 	if (!denom)
