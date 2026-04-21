@@ -15,9 +15,12 @@
 #include <linux/swap.h>
 #include <linux/uaccess.h>
 #include <linux/vmstat.h>
+#ifdef CONFIG_PROC_FS
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+#endif
 #ifdef CONFIG_DEBUG_FS
 #include <linux/debugfs.h>
-#include <linux/seq_file.h>
 #endif
 
 #ifdef CONFIG_LRU_GEN
@@ -31,6 +34,9 @@ static unsigned int __read_mostly lru_gen_dedup_window_ms = 25;
 static bool __read_mostly lru_gen_pressure_normalize = true;
 #ifdef CONFIG_DEBUG_FS
 static struct dentry *mglru_debugfs_root;
+#endif
+#ifdef CONFIG_PROC_FS
+static struct proc_dir_entry *mglru_proc_entry;
 #endif
 
 static int __init setup_lru_gen(char *str)
@@ -717,7 +723,7 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 	lrugen->last_reclaim = now;
 }
 
-#ifdef CONFIG_DEBUG_FS
+#if defined(CONFIG_DEBUG_FS) || defined(CONFIG_PROC_FS)
 static void lru_gen_reset_lruvec(struct lruvec *lruvec)
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
@@ -735,7 +741,9 @@ static void lru_gen_reset_lruvec(struct lruvec *lruvec)
 		lrugen->normalized[type] = 0;
 	}
 }
+#endif
 
+#ifdef CONFIG_DEBUG_FS
 static int mglru_stats_show(struct seq_file *m, void *v)
 {
 	struct pglist_data *pgdat;
@@ -869,6 +877,135 @@ static int __init mglru_debugfs_init(void)
 	return 0;
 }
 late_initcall(mglru_debugfs_init);
+#endif
+
+#ifdef CONFIG_PROC_FS
+static int mglru_proc_show(struct seq_file *m, void *v)
+{
+	struct pglist_data *pgdat;
+
+	seq_printf(m,
+		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d\n",
+		   lru_gen_get_state(), lru_gen_get_min_ttl(),
+		   lru_gen_get_age_period(), lru_gen_get_weight_anon(),
+		   lru_gen_get_dedup_window(), lru_gen_get_normalize());
+
+	for_each_online_pgdat(pgdat) {
+		struct lruvec *lruvec = node_lruvec(pgdat);
+		struct lru_gen_struct *lrugen = &lruvec->lrugen;
+		unsigned long flags;
+		unsigned long anon_old, file_old;
+
+		spin_lock_irqsave(&pgdat->lru_lock, flags);
+		anon_old = lru_gen_count_old(lrugen, LRU_GEN_ANON);
+		file_old = lru_gen_count_old(lrugen, LRU_GEN_FILE);
+		seq_printf(m,
+			   "node=%d max_seq=%lu min_seq=(anon:%lu file:%lu) old=(anon:%lu file:%lu) pressure=(anon:%lu file:%lu) tier=(anon:%u file:%u)\n",
+			   pgdat->node_id, lrugen->max_seq,
+			   lrugen->min_seq[LRU_GEN_ANON],
+			   lrugen->min_seq[LRU_GEN_FILE], anon_old, file_old,
+			   lrugen->pressure[LRU_GEN_ANON],
+			   lrugen->pressure[LRU_GEN_FILE],
+			   lrugen->tiers[LRU_GEN_ANON],
+			   lrugen->tiers[LRU_GEN_FILE]);
+		spin_unlock_irqrestore(&pgdat->lru_lock, flags);
+	}
+
+	return 0;
+}
+
+static int mglru_apply_command(const char *cmd)
+{
+	struct pglist_data *pgdat;
+	unsigned int val;
+
+	if (!strcmp(cmd, "age")) {
+		for_each_online_pgdat(pgdat) {
+			struct lruvec *lruvec = node_lruvec(pgdat);
+			unsigned long flags;
+
+			spin_lock_irqsave(&pgdat->lru_lock, flags);
+			lru_gen_advance_seq(lruvec);
+			spin_unlock_irqrestore(&pgdat->lru_lock, flags);
+		}
+		return 0;
+	}
+
+	if (!strcmp(cmd, "reset")) {
+		for_each_online_pgdat(pgdat) {
+			struct lruvec *lruvec = node_lruvec(pgdat);
+			unsigned long flags;
+
+			spin_lock_irqsave(&pgdat->lru_lock, flags);
+			lru_gen_reset_lruvec(lruvec);
+			spin_unlock_irqrestore(&pgdat->lru_lock, flags);
+		}
+		return 0;
+	}
+
+	if (!strcmp(cmd, "enable"))
+		return lru_gen_set_state(true);
+
+	if (!strcmp(cmd, "disable"))
+		return lru_gen_set_state(false);
+
+	if (sscanf(cmd, "min_ttl_ms=%u", &val) == 1)
+		return lru_gen_set_min_ttl(val);
+
+	if (sscanf(cmd, "age_period_ms=%u", &val) == 1)
+		return lru_gen_set_age_period(val);
+
+	if (sscanf(cmd, "weight_anon_pct=%u", &val) == 1)
+		return lru_gen_set_weight_anon(val);
+
+	if (sscanf(cmd, "dedup_window_ms=%u", &val) == 1)
+		return lru_gen_set_dedup_window(val);
+
+	if (sscanf(cmd, "normalize=%u", &val) == 1)
+		return lru_gen_set_normalize(!!val);
+
+	return -EINVAL;
+}
+
+static ssize_t mglru_proc_write(struct file *file, const char __user *buf,
+				size_t count, loff_t *ppos)
+{
+	char cmd[64];
+	int ret;
+
+	if (count >= sizeof(cmd))
+		return -EINVAL;
+
+	if (copy_from_user(cmd, buf, count))
+		return -EFAULT;
+
+	cmd[count] = '\0';
+	strim(cmd);
+	ret = mglru_apply_command(cmd);
+
+	return ret ? ret : count;
+}
+
+static int mglru_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, mglru_proc_show, inode->i_private);
+}
+
+static const struct file_operations mglru_proc_fops = {
+	.owner = THIS_MODULE,
+	.open = mglru_proc_open,
+	.read = seq_read,
+	.write = mglru_proc_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static int __init mglru_proc_init(void)
+{
+	mglru_proc_entry = proc_create("lru_gen", 0644, NULL, &mglru_proc_fops);
+	return mglru_proc_entry ? 0 : -ENOMEM;
+}
+late_initcall(mglru_proc_init);
 #endif
 
 /*

@@ -32,6 +32,24 @@ Writing supported commands:
 * ``enable``: turn MGLRU on (same effect as ``lru_gen_enabled=1``).
 * ``disable``: turn MGLRU off (same effect as ``lru_gen_enabled=0``).
 
+Procfs interface
+================
+
+MGLRU also exposes ``/proc/lru_gen`` for environments where debugfs is not
+mounted in production.
+
+Reading ``/proc/lru_gen`` returns a compact per-node snapshot similar to the
+debugfs stats output.
+
+Writing accepts the following commands:
+
+* ``age`` / ``reset`` / ``enable`` / ``disable`` (same semantics as debugfs).
+* ``min_ttl_ms=<n>``: set ``lru_gen_min_ttl_ms``.
+* ``age_period_ms=<n>``: set ``lru_gen_age_period_ms``.
+* ``weight_anon_pct=<n>``: set ``lru_gen_weight_anon_pct``.
+* ``dedup_window_ms=<n>``: set ``lru_gen_dedup_window_ms``.
+* ``normalize=<0|1>``: set ``lru_gen_pressure_normalize``.
+
 VM statistics
 =============
 
