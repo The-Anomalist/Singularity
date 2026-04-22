@@ -50,6 +50,12 @@ Writing supported commands:
 * ``disable``: turn MGLRU off (same effect as ``lru_gen_enabled=0``).
 * ``sample_mm``: run an immediate bounded PTE-young sampling pass over the
   current task MM on every online node.
+* ``min_ttl_ms=<n>``: set ``lru_gen_min_ttl_ms``.
+* ``age_period_ms=<n>``: set ``lru_gen_age_period_ms``.
+* ``weight_anon_pct=<n>``: set ``lru_gen_weight_anon_pct``.
+* ``dedup_window_ms=<n>``: set ``lru_gen_dedup_window_ms``.
+* ``normalize=<0|1>``: set ``lru_gen_pressure_normalize``.
+* ``ptwalk_pages=<n>``: set ``lru_gen_ptwalk_pages``.
 
 Procfs interface
 ================

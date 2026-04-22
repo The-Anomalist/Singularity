@@ -257,7 +257,6 @@ static void lru_gen_note_access_batch(struct lruvec *lruvec, unsigned int type,
 	spin_lock_irqsave(&lruvec_pgdat(lruvec)->lru_lock, flags);
 
 	if (lru_gen_dedup_access(lrugen, type, nr_pages)) {
-		lrugen->deduped[type] += nr_pages;
 		spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
 		return;
 	}
@@ -781,6 +780,7 @@ void lru_gen_note_page_referenced(struct lruvec *lruvec, struct page *page,
 	}
 
 	lrugen->accessed[type] += nr_pages;
+	count_vm_events(MGLRU_ACTIVATED, nr_pages);
 	/*
 	 * Reclaim-driven references are collected from page table walks
 	 * (via page_referenced()), so use them as a direct aging signal.
@@ -1213,6 +1213,21 @@ static ssize_t mglru_stats_write(struct file *file, const char __user *buf,
 		}
 		return count;
 	}
+
+	if (sscanf(cmd, "min_ttl_ms=%u", &val) == 1)
+		return lru_gen_set_min_ttl(val) ? : count;
+
+	if (sscanf(cmd, "age_period_ms=%u", &val) == 1)
+		return lru_gen_set_age_period(val) ? : count;
+
+	if (sscanf(cmd, "weight_anon_pct=%u", &val) == 1)
+		return lru_gen_set_weight_anon(val) ? : count;
+
+	if (sscanf(cmd, "dedup_window_ms=%u", &val) == 1)
+		return lru_gen_set_dedup_window(val) ? : count;
+
+	if (sscanf(cmd, "normalize=%u", &val) == 1)
+		return lru_gen_set_normalize(!!val) ? : count;
 
 	if (sscanf(cmd, "ptwalk_pages=%u", &val) == 1)
 		return lru_gen_set_ptwalk_pages(val) ? : count;
