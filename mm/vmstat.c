@@ -1300,6 +1300,10 @@ const char * const vmstat_text[] = {
 	"mglru_aged",
 	"mglru_evicted",
 	"mglru_activated",
+	"mglru_deduped",
+	"mglru_mm_walk_success",
+	"mglru_mm_walk_fail",
+	"mglru_mm_walk_fallback",
 #endif
 #endif /* CONFIG_VM_EVENT_COUNTERS */
 };

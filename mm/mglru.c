@@ -52,6 +52,17 @@ static bool lru_gen_dedup_access(struct lru_gen_struct *lrugen, unsigned int typ
 				 unsigned long nr_pages);
 static bool lru_gen_should_age(struct lru_gen_struct *lrugen);
 static void lru_gen_reset_lruvec(struct lruvec *lruvec);
+
+static void lru_gen_clamp_min_seq(struct lru_gen_struct *lrugen, unsigned int type)
+{
+	unsigned long floor = lrugen->max_seq - (MIN_NR_GENS - 1);
+
+	if (lrugen->min_seq[type] > lrugen->max_seq)
+		lrugen->min_seq[type] = lrugen->max_seq;
+	if (lrugen->min_seq[type] < floor)
+		lrugen->min_seq[type] = floor;
+}
+
 #define MGLRU_MAX_PRESSURE	(ULONG_MAX / 4)
 
 static void lru_gen_bump_pressure(struct lru_gen_struct *lrugen,
@@ -217,6 +228,7 @@ static void lru_gen_advance_seq(struct lruvec *lruvec)
 	for (type = 0; type < ANON_AND_FILE; type++) {
 		if (lrugen->min_seq[type] + MIN_NR_GENS <= seq)
 			lrugen->min_seq[type] = seq - MIN_NR_GENS + 1;
+		lru_gen_clamp_min_seq(lrugen, type);
 	}
 
 	trace_mm_vmscan_lru_gen_advance(pgdat->node_id, lrugen->max_seq,
@@ -693,6 +705,9 @@ void lru_gen_init_lruvec(struct lruvec *lruvec)
 	lrugen->mm_walk_sampled_ptes = 0;
 	lrugen->mm_walk_young_cleared = 0;
 	lrugen->reclaim_stall = 0;
+	lrugen->last_scanned = 0;
+	lrugen->last_reclaimed = 0;
+	lrugen->last_efficiency = 0;
 }
 
 void lru_gen_track_page_scan(struct lruvec *lruvec, enum lru_list lru,
@@ -861,6 +876,7 @@ void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc)
 		if (lru_gen_oldest_empty(lrugen, type) &&
 		    lrugen->min_seq[type] < lrugen->max_seq)
 			lrugen->min_seq[type]++;
+		lru_gen_clamp_min_seq(lrugen, type);
 	}
 	spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 }
@@ -968,10 +984,7 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 	if (!lru_gen_enabled() || !lru_gen_get_state() || !scanned)
 		return;
 
-	/*
-	 * memcg/tier tuning stage:
-	 * derive a coarse reclaim tier based on observed reclaim efficiency.
-	 */
+	/* memcg/tier tuning stage */
 	efficiency = reclaimed * 100 / scanned;
 	spin_lock_irqsave(&pgdat->lru_lock, flags);
 	anon_tier = min_t(unsigned int, MAX_NR_GENS - 1,
@@ -999,6 +1012,9 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 
 	lrugen->tiers[LRU_GEN_ANON] = anon_tier;
 	lrugen->tiers[LRU_GEN_FILE] = file_tier;
+	lrugen->last_scanned = scanned;
+	lrugen->last_reclaimed = reclaimed;
+	lrugen->last_efficiency = min_t(unsigned int, efficiency, 100U);
 
 	split = max_t(unsigned long, 1, scanned / 2);
 	if (reclaimed)
@@ -1024,10 +1040,7 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 					 lrugen->reclaimed[LRU_GEN_ANON],
 					 lrugen->reclaimed[LRU_GEN_FILE]);
 
-	/*
-	 * Tier-aware aging: advance generations faster when reclaim is weak or
-	 * when higher tiers are selected by pressure feedback.
-	 */
+	/* Tier-aware aging under weak reclaim or high pressure tiers. */
 	if (efficiency < 20 || anon_tier + file_tier >= MAX_NR_GENS ||
 	    lrugen->reclaim_stall >= 6 ||
 	    now - lrugen->last_reclaim >= HZ)
@@ -1061,6 +1074,9 @@ static void lru_gen_reset_lruvec(struct lruvec *lruvec)
 	lrugen->mm_walk_sampled_ptes = 0;
 	lrugen->mm_walk_young_cleared = 0;
 	lrugen->reclaim_stall = 0;
+	lrugen->last_scanned = 0;
+	lrugen->last_reclaimed = 0;
+	lrugen->last_efficiency = 0;
 }
 #endif
 
@@ -1126,10 +1142,12 @@ static int mglru_stats_show(struct seq_file *m, void *v)
 			   lrugen->normalized[LRU_GEN_ANON],
 			   lrugen->normalized[LRU_GEN_FILE]);
 		seq_printf(m,
-			   "  mm_walk=(ok:%lu fail:%lu fallback:%lu sampled:%lu young_cleared:%lu) stall=%u\n",
+			   "  mm_walk=(ok:%lu fail:%lu fallback:%lu sampled:%lu young_cleared:%lu) stall=%u last_cycle=(scanned:%lu reclaimed:%lu efficiency:%u%%)\n",
 			   lrugen->mm_walk_success, lrugen->mm_walk_failures,
 			   lrugen->mm_walk_fallback, lrugen->mm_walk_sampled_ptes,
-			   lrugen->mm_walk_young_cleared, lrugen->reclaim_stall);
+			   lrugen->mm_walk_young_cleared, lrugen->reclaim_stall,
+			   lrugen->last_scanned, lrugen->last_reclaimed,
+			   lrugen->last_efficiency);
 		seq_printf(m,
 			   "  protected=(anon:%d file:%d)\n",
 			   lru_gen_min_ttl_protected(lrugen, LRU_GEN_ANON),
@@ -1322,7 +1340,7 @@ static int mglru_proc_show(struct seq_file *m, void *v)
 		anon_old = lru_gen_count_old(lrugen, LRU_GEN_ANON);
 		file_old = lru_gen_count_old(lrugen, LRU_GEN_FILE);
 		seq_printf(m,
-			   "node=%d max_seq=%lu min_seq=(anon:%lu file:%lu) old=(anon:%lu file:%lu) pressure=(anon:%lu file:%lu) tier=(anon:%u file:%u) mm_walk=(ok:%lu fail:%lu fallback:%lu sampled:%lu young_cleared:%lu) stall=%u\n",
+			   "node=%d max_seq=%lu min_seq=(anon:%lu file:%lu) old=(anon:%lu file:%lu) pressure=(anon:%lu file:%lu) tier=(anon:%u file:%u) mm_walk=(ok:%lu fail:%lu fallback:%lu sampled:%lu young_cleared:%lu) stall=%u last_cycle=(scanned:%lu reclaimed:%lu efficiency:%u%%)\n",
 			   pgdat->node_id, lrugen->max_seq,
 			   lrugen->min_seq[LRU_GEN_ANON],
 			   lrugen->min_seq[LRU_GEN_FILE], anon_old, file_old,
@@ -1332,7 +1350,9 @@ static int mglru_proc_show(struct seq_file *m, void *v)
 			   lrugen->tiers[LRU_GEN_FILE],
 			   lrugen->mm_walk_success, lrugen->mm_walk_failures,
 			   lrugen->mm_walk_fallback, lrugen->mm_walk_sampled_ptes,
-			   lrugen->mm_walk_young_cleared, lrugen->reclaim_stall);
+			   lrugen->mm_walk_young_cleared, lrugen->reclaim_stall,
+			   lrugen->last_scanned, lrugen->last_reclaimed,
+			   lrugen->last_efficiency);
 		spin_unlock_irqrestore(&pgdat->lru_lock, flags);
 	}
 

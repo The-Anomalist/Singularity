@@ -300,6 +300,10 @@ struct lru_gen_struct {
 	unsigned long mm_walk_young_cleared;
 	/* streak of low-efficiency reclaim cycles */
 	unsigned int reclaim_stall;
+	/* last-cycle reclaim feedback snapshot */
+	unsigned long last_scanned;
+	unsigned long last_reclaimed;
+	unsigned int last_efficiency;
 };
 
 void lru_gen_init_lruvec(struct lruvec *lruvec);
