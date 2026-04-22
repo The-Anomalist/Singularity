@@ -22,6 +22,7 @@
 #include <asm/page.h>
 
 struct scan_control;
+bool scan_control_global_reclaim(struct scan_control *sc);
 struct lruvec;
 
 /* Free memory management - zoned buddy allocator.  */

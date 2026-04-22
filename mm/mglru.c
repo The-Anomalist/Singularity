@@ -401,7 +401,7 @@ static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *
 	if (mm) {
 		walked = lru_gen_scan_mm(lruvec, mm, budget);
 	} else if (time_after_eq(now, lrugen->mm_walk_seq + HZ / 2) &&
-		   (!sc || !sc->target_mem_cgroup)) {
+		   (!sc || scan_control_global_reclaim(sc))) {
 		mm = lru_gen_pick_fallback_mm();
 		if (mm) {
 			walked = lru_gen_scan_mm(lruvec, mm, max_t(unsigned long, budget / 2, 32));

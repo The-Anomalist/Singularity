@@ -334,6 +334,11 @@ static inline bool memcg_congested(struct pglist_data *pgdat,
 }
 #endif
 
+bool scan_control_global_reclaim(struct scan_control *sc)
+{
+	return global_reclaim(sc);
+}
+
 /*
  * This misses isolated pages which are not accounted for to save counters.
  * As the data only determines if reclaim or compaction continues, it is
