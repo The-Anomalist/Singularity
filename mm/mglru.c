@@ -137,7 +137,15 @@ static void lru_gen_advance_seq(struct lruvec *lruvec)
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
 	unsigned long seq = lrugen->max_seq + 1;
 	unsigned int gen = seq % MAX_NR_GENS;
-	unsigned int type;
+	unsigned int type, zone;
+
+	/*
+	 * Generation slots are reused in a ring. Reset the slot for the new
+	 * sequence to avoid carrying stale accounting after wrap-around.
+	 */
+	for (type = 0; type < ANON_AND_FILE; type++)
+		for (zone = 0; zone < MAX_NR_ZONES; zone++)
+			lrugen->nr_pages[gen][type][zone] = 0;
 
 	lrugen->max_seq = seq;
 	lrugen->timestamps[gen] = jiffies;
@@ -160,6 +168,22 @@ static unsigned long lru_gen_count_old(struct lru_gen_struct *lrugen, int type)
 		total += max_t(long, 0, lrugen->nr_pages[gen][type][zone]);
 
 	return total;
+}
+
+static void lru_gen_promote_oldest(struct lru_gen_struct *lrugen, unsigned int type,
+				   unsigned int zid, unsigned long nr_pages)
+{
+	unsigned int old_gen = lrugen->min_seq[type] % MAX_NR_GENS;
+	unsigned int new_gen = lrugen->max_seq % MAX_NR_GENS;
+	long *old = &lrugen->nr_pages[old_gen][type][zid];
+	long *new = &lrugen->nr_pages[new_gen][type][zid];
+	long moved = min_t(long, *old, nr_pages);
+
+	if (moved <= 0)
+		return;
+
+	*old -= moved;
+	*new += moved;
 }
 
 static int lru_gen_lru_type(enum lru_list lru)
@@ -480,22 +504,32 @@ void lru_gen_note_page_referenced(struct lruvec *lruvec, struct page *page,
 				  bool from_reclaim)
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
+	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
 	unsigned int type;
 	unsigned long nr_pages;
 	unsigned long threshold;
+	unsigned int zid;
 
 	if (!lru_gen_enabled() || !lru_gen_get_state())
 		return;
 
 	type = page_is_file_cache(page) ? LRU_GEN_FILE : LRU_GEN_ANON;
 	nr_pages = hpage_nr_pages(page);
+	zid = page_zonenum(page);
 	threshold = SWAP_CLUSTER_MAX * (from_reclaim ? 2 : 4);
 
-	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+	spin_lock_irq(&pgdat->lru_lock);
 	if (lru_gen_dedup_access(lrugen, type, nr_pages)) {
-		spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+		spin_unlock_irq(&pgdat->lru_lock);
 		return;
 	}
+
+	/*
+	 * Backport-friendly approximation of generation promotion: on observed
+	 * references, move sampled pages from the oldest bucket to the youngest.
+	 */
+	lru_gen_promote_oldest(lrugen, type, zid, nr_pages);
+
 	lrugen->accessed[type] += nr_pages;
 	/*
 	 * Reclaim-driven references are collected from page table walks
@@ -508,7 +542,7 @@ void lru_gen_note_page_referenced(struct lruvec *lruvec, struct page *page,
 		lrugen->accessed[type] = 0;
 		lru_gen_advance_seq(lruvec);
 	}
-	spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+	spin_unlock_irq(&pgdat->lru_lock);
 }
 
 void lru_gen_note_lru_move(struct lruvec *lruvec, enum lru_list old_lru,
@@ -746,6 +780,18 @@ static void lru_gen_reset_lruvec(struct lruvec *lruvec)
 #endif
 
 #ifdef CONFIG_DEBUG_FS
+static unsigned long mglru_gen_total(struct lru_gen_struct *lrugen,
+				     unsigned int gen, unsigned int type)
+{
+	unsigned int zone;
+	unsigned long total = 0;
+
+	for (zone = 0; zone < MAX_NR_ZONES; zone++)
+		total += max_t(long, 0, lrugen->nr_pages[gen][type][zone]);
+
+	return total;
+}
+
 static int mglru_stats_show(struct seq_file *m, void *v)
 {
 	struct pglist_data *pgdat;
@@ -797,6 +843,16 @@ static int mglru_stats_show(struct seq_file *m, void *v)
 			   "  protected=(anon:%d file:%d)\n",
 			   lru_gen_min_ttl_protected(lrugen, LRU_GEN_ANON),
 			   lru_gen_min_ttl_protected(lrugen, LRU_GEN_FILE));
+		seq_printf(m,
+			   "  gens=(g0 anon:%lu file:%lu) (g1 anon:%lu file:%lu) (g2 anon:%lu file:%lu) (g3 anon:%lu file:%lu)\n",
+			   mglru_gen_total(lrugen, 0, LRU_GEN_ANON),
+			   mglru_gen_total(lrugen, 0, LRU_GEN_FILE),
+			   mglru_gen_total(lrugen, 1, LRU_GEN_ANON),
+			   mglru_gen_total(lrugen, 1, LRU_GEN_FILE),
+			   mglru_gen_total(lrugen, 2, LRU_GEN_ANON),
+			   mglru_gen_total(lrugen, 2, LRU_GEN_FILE),
+			   mglru_gen_total(lrugen, 3, LRU_GEN_ANON),
+			   mglru_gen_total(lrugen, 3, LRU_GEN_FILE));
 		spin_unlock_irqrestore(&pgdat->lru_lock, flags);
 	}
 
