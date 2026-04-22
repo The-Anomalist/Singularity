@@ -316,7 +316,6 @@ static int sysctl_lru_gen_weight_anon_pct;
 static int sysctl_lru_gen_dedup_window_ms;
 static int sysctl_lru_gen_pressure_normalize;
 static int sixty_thousand = 60000;
-static int one_thousand = 1000;
 
 static int lru_gen_sysctl_handler(struct ctl_table *table, int write,
 				  void __user *buffer, size_t *lenp,
