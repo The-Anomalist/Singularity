@@ -47,6 +47,23 @@ static bool lru_gen_dedup_access(struct lru_gen_struct *lrugen, unsigned int typ
 				 unsigned long nr_pages);
 static bool lru_gen_should_age(struct lru_gen_struct *lrugen);
 static void lru_gen_reset_lruvec(struct lruvec *lruvec);
+#define MGLRU_MAX_PRESSURE	(ULONG_MAX / 4)
+
+static void lru_gen_bump_pressure(struct lru_gen_struct *lrugen,
+				  unsigned int type, unsigned long delta)
+{
+	unsigned long pressure = lrugen->pressure[type];
+
+	if (!delta)
+		return;
+
+	if (pressure > MGLRU_MAX_PRESSURE - delta)
+		pressure = MGLRU_MAX_PRESSURE;
+	else
+		pressure += delta;
+
+	lrugen->pressure[type] = pressure;
+}
 
 static void lru_gen_reset_all_lruvecs(void)
 {
@@ -622,7 +639,7 @@ void lru_gen_track_page_scan(struct lruvec *lruvec, enum lru_list lru,
 	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 	lrugen->timestamps[gen] = jiffies;
 	delta = nr_taken + nr_scanned - min(nr_reclaimed, nr_taken);
-	lrugen->pressure[type] += delta;
+	lru_gen_bump_pressure(lrugen, type, delta);
 	lrugen->scanned[type] += nr_scanned;
 	lrugen->reclaimed[type] += nr_reclaimed;
 	if (is_active_lru(lru) && lrugen->pressure[type] > nr_reclaimed)
@@ -686,7 +703,9 @@ void lru_gen_note_page_referenced(struct lruvec *lruvec, struct page *page,
 	 * (via page_referenced()), so use them as a direct aging signal.
 	 */
 	if (from_reclaim)
-		lrugen->pressure[type] += min_t(unsigned long, nr_pages, SWAP_CLUSTER_MAX);
+		lru_gen_bump_pressure(lrugen, type,
+				      min_t(unsigned long, nr_pages,
+					    SWAP_CLUSTER_MAX));
 
 	if (lrugen->accessed[type] >= threshold) {
 		lrugen->accessed[type] = 0;
@@ -896,9 +915,9 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 			   (scanned - split);
 
 	if (anon_eff + 5 < file_eff)
-		lrugen->pressure[LRU_GEN_ANON] += SWAP_CLUSTER_MAX / 2;
+		lru_gen_bump_pressure(lrugen, LRU_GEN_ANON, SWAP_CLUSTER_MAX / 2);
 	else if (file_eff + 5 < anon_eff)
-		lrugen->pressure[LRU_GEN_FILE] += SWAP_CLUSTER_MAX / 2;
+		lru_gen_bump_pressure(lrugen, LRU_GEN_FILE, SWAP_CLUSTER_MAX / 2);
 
 	lru_gen_decay_pressure(lrugen);
 	lru_gen_normalize_pressure(lrugen);
@@ -1053,6 +1072,24 @@ static ssize_t mglru_stats_write(struct file *file, const char __user *buf,
 		return count;
 	}
 
+	if (sscanf(cmd, "age=%u", &val) == 1) {
+		unsigned int i, steps = min_t(unsigned int, val, MAX_NR_GENS);
+
+		if (!steps)
+			return -EINVAL;
+
+		for_each_online_pgdat(pgdat) {
+			struct lruvec *lruvec = node_lruvec(pgdat);
+			unsigned long flags;
+
+			spin_lock_irqsave(&pgdat->lru_lock, flags);
+			for (i = 0; i < steps; i++)
+				lru_gen_advance_seq(lruvec);
+			spin_unlock_irqrestore(&pgdat->lru_lock, flags);
+		}
+		return count;
+	}
+
 	if (!strcmp(cmd, "enable"))
 		return lru_gen_set_state(true) ? : count;
 
@@ -1073,6 +1110,12 @@ static ssize_t mglru_stats_write(struct file *file, const char __user *buf,
 
 	if (sscanf(cmd, "ptwalk_pages=%u", &val) == 1)
 		return lru_gen_set_ptwalk_pages(val) ? : count;
+
+	if (!strcmp(cmd, "sample_mm")) {
+		for_each_online_pgdat(pgdat)
+			lru_gen_scan_current_mm(node_lruvec(pgdat));
+		return count;
+	}
 
 	return -EINVAL;
 }
@@ -1108,6 +1151,35 @@ late_initcall(mglru_debugfs_init);
 #endif
 
 #ifdef CONFIG_PROC_FS
+static int mglru_advance_all_nodes(unsigned int nr_to_advance)
+{
+	struct pglist_data *pgdat;
+	unsigned int i;
+
+	if (!nr_to_advance)
+		return -EINVAL;
+
+	for_each_online_pgdat(pgdat) {
+		struct lruvec *lruvec = node_lruvec(pgdat);
+		unsigned long flags;
+
+		spin_lock_irqsave(&pgdat->lru_lock, flags);
+		for (i = 0; i < nr_to_advance; i++)
+			lru_gen_advance_seq(lruvec);
+		spin_unlock_irqrestore(&pgdat->lru_lock, flags);
+	}
+
+	return 0;
+}
+
+static void mglru_sample_current_mm_all_nodes(void)
+{
+	struct pglist_data *pgdat;
+
+	for_each_online_pgdat(pgdat)
+		lru_gen_scan_current_mm(node_lruvec(pgdat));
+}
+
 static int mglru_proc_show(struct seq_file *m, void *v)
 {
 	struct pglist_data *pgdat;
@@ -1145,22 +1217,17 @@ static int mglru_proc_show(struct seq_file *m, void *v)
 
 static int mglru_apply_command(const char *cmd)
 {
-	struct pglist_data *pgdat;
-	unsigned int val;
+	unsigned int val, nr_to_advance = 1;
 
-	if (!strcmp(cmd, "age")) {
-		for_each_online_pgdat(pgdat) {
-			struct lruvec *lruvec = node_lruvec(pgdat);
-			unsigned long flags;
+	if (!strcmp(cmd, "age"))
+		return mglru_advance_all_nodes(1);
 
-			spin_lock_irqsave(&pgdat->lru_lock, flags);
-			lru_gen_advance_seq(lruvec);
-			spin_unlock_irqrestore(&pgdat->lru_lock, flags);
-		}
-		return 0;
-	}
+	if (sscanf(cmd, "age=%u", &nr_to_advance) == 1)
+		return mglru_advance_all_nodes(min_t(unsigned int, nr_to_advance, MAX_NR_GENS));
 
 	if (!strcmp(cmd, "reset")) {
+		struct pglist_data *pgdat;
+
 		for_each_online_pgdat(pgdat) {
 			struct lruvec *lruvec = node_lruvec(pgdat);
 			unsigned long flags;
@@ -1195,6 +1262,11 @@ static int mglru_apply_command(const char *cmd)
 
 	if (sscanf(cmd, "ptwalk_pages=%u", &val) == 1)
 		return lru_gen_set_ptwalk_pages(val);
+
+	if (!strcmp(cmd, "sample_mm")) {
+		mglru_sample_current_mm_all_nodes();
+		return 0;
+	}
 
 	return -EINVAL;
 }

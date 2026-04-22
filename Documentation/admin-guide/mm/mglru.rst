@@ -29,9 +29,13 @@ Reading this file shows per-node generation and pressure state.
 Writing supported commands:
 
 * ``age``: force one generation advance on each online node.
+* ``age=<n>``: force up to ``n`` generation advances per online node
+  (clamped to ``MAX_NR_GENS``).
 * ``reset``: reset pressure/tier accounting without disabling MGLRU.
 * ``enable``: turn MGLRU on (same effect as ``lru_gen_enabled=1``).
 * ``disable``: turn MGLRU off (same effect as ``lru_gen_enabled=0``).
+* ``sample_mm``: run an immediate bounded PTE-young sampling pass over the
+  current task MM on every online node.
 
 Procfs interface
 ================
@@ -44,7 +48,8 @@ debugfs stats output.
 
 Writing accepts the following commands:
 
-* ``age`` / ``reset`` / ``enable`` / ``disable`` (same semantics as debugfs).
+* ``age`` / ``age=<n>`` / ``reset`` / ``enable`` / ``disable`` /
+  ``sample_mm`` (same semantics as debugfs).
 * ``min_ttl_ms=<n>``: set ``lru_gen_min_ttl_ms``.
 * ``age_period_ms=<n>``: set ``lru_gen_age_period_ms``.
 * ``weight_anon_pct=<n>``: set ``lru_gen_weight_anon_pct``.
