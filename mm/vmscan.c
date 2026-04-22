@@ -3125,10 +3125,18 @@ bool lru_gen_shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 
 static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 {
-	if (lru_gen_shrink_node(pgdat, sc))
+	unsigned long reclaimed_before = sc->nr_reclaimed;
+	bool mglru_reclaimable = false;
+
+	/*
+	 * Always try MGLRU first when enabled. If it fails to reclaim pages in
+	 * this round, immediately fall back to the legacy reclaim path.
+	 */
+	mglru_reclaimable = lru_gen_shrink_node(pgdat, sc);
+	if (sc->nr_reclaimed > reclaimed_before)
 		return true;
 
-	return shrink_node_reclaim(pgdat, sc);
+	return shrink_node_reclaim(pgdat, sc) || mglru_reclaimable;
 }
 
 /*
