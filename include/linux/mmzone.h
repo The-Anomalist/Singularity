@@ -323,6 +323,8 @@ int lru_gen_set_dedup_window(unsigned int window_ms);
 unsigned int lru_gen_get_dedup_window(void);
 int lru_gen_set_normalize(bool enable);
 int lru_gen_get_normalize(void);
+int lru_gen_set_ptwalk_pages(unsigned int pages);
+unsigned int lru_gen_get_ptwalk_pages(void);
 #else
 static inline void lru_gen_init_lruvec(struct lruvec *lruvec)
 {
@@ -422,6 +424,14 @@ static inline int lru_gen_set_normalize(bool enable)
 	return 0;
 }
 static inline int lru_gen_get_normalize(void)
+{
+	return 0;
+}
+static inline int lru_gen_set_ptwalk_pages(unsigned int pages)
+{
+	return -EINVAL;
+}
+static inline unsigned int lru_gen_get_ptwalk_pages(void)
 {
 	return 0;
 }

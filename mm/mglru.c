@@ -6,11 +6,13 @@
 #include <linux/mm.h>
 #include <linux/mm_inline.h>
 #include <linux/mmzone.h>
+#include <linux/memcontrol.h>
 #include <linux/jump_label.h>
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/jiffies.h>
 #include <linux/math64.h>
+#include <linux/sched/mm.h>
 #include <linux/string.h>
 #include <linux/swap.h>
 #include <linux/uaccess.h>
@@ -33,6 +35,7 @@ static unsigned int __read_mostly lru_gen_age_period_ms = 1000;
 static unsigned int __read_mostly lru_gen_weight_anon_pct = 50;
 static unsigned int __read_mostly lru_gen_dedup_window_ms = 25;
 static bool __read_mostly lru_gen_pressure_normalize = true;
+static unsigned int __read_mostly lru_gen_ptwalk_pages = 256;
 #ifdef CONFIG_DEBUG_FS
 static struct dentry *mglru_debugfs_root;
 #endif
@@ -40,6 +43,30 @@ static struct dentry *mglru_debugfs_root;
 static struct proc_dir_entry *mglru_proc_entry;
 #endif
 static unsigned long lru_gen_count_old(struct lru_gen_struct *lrugen, int type);
+static bool lru_gen_dedup_access(struct lru_gen_struct *lrugen, unsigned int type,
+				 unsigned long nr_pages);
+static bool lru_gen_should_age(struct lru_gen_struct *lrugen);
+static void lru_gen_reset_lruvec(struct lruvec *lruvec);
+
+static void lru_gen_reset_all_lruvecs(void)
+{
+	struct mem_cgroup *memcg = NULL;
+
+	memcg = mem_cgroup_iter(NULL, NULL, NULL);
+	do {
+		int nid;
+
+		for_each_node(nid) {
+			pg_data_t *pgdat = NODE_DATA(nid);
+			struct lruvec *lruvec = mem_cgroup_lruvec(pgdat, memcg);
+			unsigned long flags;
+
+			spin_lock_irqsave(&pgdat->lru_lock, flags);
+			lru_gen_reset_lruvec(lruvec);
+			spin_unlock_irqrestore(&pgdat->lru_lock, flags);
+		}
+	} while ((memcg = mem_cgroup_iter(NULL, memcg, NULL)));
+}
 
 static int __init setup_lru_gen(char *str)
 {
@@ -125,6 +152,18 @@ static int __init setup_lru_gen_normalize(char *str)
 }
 early_param("lru_gen_pressure_normalize", setup_lru_gen_normalize);
 
+static int __init setup_lru_gen_ptwalk_pages(char *str)
+{
+	unsigned int val;
+
+	if (!str || kstrtouint(str, 0, &val))
+		return -EINVAL;
+
+	lru_gen_ptwalk_pages = clamp_t(unsigned int, val, 32, 16384);
+	return 0;
+}
+early_param("lru_gen_ptwalk_pages", setup_lru_gen_ptwalk_pages);
+
 static int __init init_lru_gen(void)
 {
 	if (lru_gen_boot_enabled)
@@ -182,6 +221,101 @@ static unsigned long lru_gen_count_old(struct lru_gen_struct *lrugen, int type)
 static int lru_gen_lru_type(enum lru_list lru)
 {
 	return is_file_lru(lru) ? LRU_GEN_FILE : LRU_GEN_ANON;
+}
+
+static void lru_gen_note_access_batch(struct lruvec *lruvec, unsigned int type,
+				      unsigned long nr_pages)
+{
+	struct lru_gen_struct *lrugen = &lruvec->lrugen;
+	unsigned long flags;
+
+	if (!nr_pages || !lru_gen_enabled() || !lru_gen_get_state())
+		return;
+
+	spin_lock_irqsave(&lruvec_pgdat(lruvec)->lru_lock, flags);
+
+	if (lru_gen_dedup_access(lrugen, type, nr_pages)) {
+		lrugen->deduped[type] += nr_pages;
+		spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
+		return;
+	}
+
+	lrugen->accessed[type] += nr_pages;
+	count_vm_events(MGLRU_ACTIVATED, nr_pages);
+
+	if (lru_gen_should_age(lrugen))
+		lru_gen_advance_seq(lruvec);
+
+	spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
+}
+
+struct lru_gen_ptwalk {
+	unsigned long budget;
+	unsigned long anon;
+	unsigned long file;
+};
+
+static int lru_gen_ptwalk_test(unsigned long addr, unsigned long next,
+			       struct mm_walk *walk)
+{
+	struct vm_area_struct *vma = walk->vma;
+	(void)addr;
+	(void)next;
+
+	if (!vma)
+		return 1;
+
+	if (vma->vm_flags & (VM_IO | VM_PFNMAP | VM_HUGETLB))
+		return 1;
+
+	return 0;
+}
+
+static int lru_gen_ptwalk_pte_entry(pte_t *pte, unsigned long addr,
+				    unsigned long next, struct mm_walk *walk)
+{
+	struct lru_gen_ptwalk *ptw = walk->private;
+	(void)addr;
+	(void)next;
+
+	if (!ptw->budget)
+		return -EAGAIN;
+
+	if (pte_present(*pte) && pte_young(*pte)) {
+		if (walk->vma->vm_file)
+			ptw->file++;
+		else
+			ptw->anon++;
+	}
+
+	ptw->budget--;
+	return 0;
+}
+
+static void lru_gen_scan_current_mm(struct lruvec *lruvec)
+{
+	struct mm_struct *mm = current->mm;
+	struct lru_gen_ptwalk ptw = {
+		.budget = READ_ONCE(lru_gen_ptwalk_pages),
+	};
+	struct mm_walk walk = {
+		.mm = mm,
+		.private = &ptw,
+		.test_walk = lru_gen_ptwalk_test,
+		.pte_entry = lru_gen_ptwalk_pte_entry,
+	};
+
+	if (!mm || !ptw.budget)
+		return;
+
+	if (!down_read_trylock(&mm->mmap_sem))
+		return;
+
+	walk_page_range(0, TASK_SIZE, &walk);
+	up_read(&mm->mmap_sem);
+
+	lru_gen_note_access_batch(lruvec, LRU_GEN_ANON, ptw.anon);
+	lru_gen_note_access_batch(lruvec, LRU_GEN_FILE, ptw.file);
 }
 
 void lru_gen_update_size(struct lruvec *lruvec, enum lru_list lru,
@@ -346,6 +480,12 @@ int lru_gen_set_state(bool enable)
 	else
 		static_branch_disable(&lru_gen_caps);
 
+	/*
+	 * Avoid carrying stale generation timestamps and pressure signals
+	 * across runtime toggles; restart tracking from a clean baseline.
+	 */
+	lru_gen_reset_all_lruvecs();
+
 	return 0;
 }
 
@@ -402,6 +542,18 @@ int lru_gen_set_normalize(bool enable)
 int lru_gen_get_normalize(void)
 {
 	return READ_ONCE(lru_gen_pressure_normalize);
+}
+
+int lru_gen_set_ptwalk_pages(unsigned int pages)
+{
+	WRITE_ONCE(lru_gen_ptwalk_pages,
+		   clamp_t(unsigned int, pages, 32, 16384));
+	return 0;
+}
+
+unsigned int lru_gen_get_ptwalk_pages(void)
+{
+	return READ_ONCE(lru_gen_ptwalk_pages);
 }
 
 void lru_gen_init_lruvec(struct lruvec *lruvec)
@@ -581,6 +733,12 @@ void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc)
 
 	if (!lru_gen_enabled() || !lru_gen_get_state())
 		return;
+
+	/*
+	 * Feed a bounded amount of page-table access information from
+	 * direct reclaim contexts into generation aging.
+	 */
+	lru_gen_scan_current_mm(lruvec);
 
 	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 	gen = lrugen->max_seq % MAX_NR_GENS;
@@ -804,10 +962,11 @@ static int mglru_stats_show(struct seq_file *m, void *v)
 	struct pglist_data *pgdat;
 
 	seq_printf(m,
-		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d\n",
+		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d ptwalk_pages=%u\n",
 		   lru_gen_get_state(), lru_gen_get_min_ttl(),
 		   lru_gen_get_age_period(), lru_gen_get_weight_anon(),
-		   lru_gen_get_dedup_window(), lru_gen_get_normalize());
+		   lru_gen_get_dedup_window(), lru_gen_get_normalize(),
+		   lru_gen_get_ptwalk_pages());
 
 	for_each_online_pgdat(pgdat) {
 		struct lruvec *lruvec = node_lruvec(pgdat);
@@ -869,8 +1028,9 @@ static int mglru_stats_show(struct seq_file *m, void *v)
 static ssize_t mglru_stats_write(struct file *file, const char __user *buf,
 				 size_t count, loff_t *ppos)
 {
-	char cmd[16];
+	char cmd[64];
 	struct pglist_data *pgdat;
+	unsigned int val;
 
 	if (count >= sizeof(cmd))
 		return -EINVAL;
@@ -911,6 +1071,9 @@ static ssize_t mglru_stats_write(struct file *file, const char __user *buf,
 		return count;
 	}
 
+	if (sscanf(cmd, "ptwalk_pages=%u", &val) == 1)
+		return lru_gen_set_ptwalk_pages(val) ? : count;
+
 	return -EINVAL;
 }
 
@@ -950,10 +1113,11 @@ static int mglru_proc_show(struct seq_file *m, void *v)
 	struct pglist_data *pgdat;
 
 	seq_printf(m,
-		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d\n",
+		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d ptwalk_pages=%u\n",
 		   lru_gen_get_state(), lru_gen_get_min_ttl(),
 		   lru_gen_get_age_period(), lru_gen_get_weight_anon(),
-		   lru_gen_get_dedup_window(), lru_gen_get_normalize());
+		   lru_gen_get_dedup_window(), lru_gen_get_normalize(),
+		   lru_gen_get_ptwalk_pages());
 
 	for_each_online_pgdat(pgdat) {
 		struct lruvec *lruvec = node_lruvec(pgdat);
@@ -1029,6 +1193,9 @@ static int mglru_apply_command(const char *cmd)
 	if (sscanf(cmd, "normalize=%u", &val) == 1)
 		return lru_gen_set_normalize(!!val);
 
+	if (sscanf(cmd, "ptwalk_pages=%u", &val) == 1)
+		return lru_gen_set_ptwalk_pages(val);
+
 	return -EINVAL;
 }
 
@@ -1073,11 +1240,4 @@ static int __init mglru_proc_init(void)
 late_initcall(mglru_proc_init);
 #endif
 
-/*
- * Reclaim integration hook.
- *
- * This is intentionally conservative for the first stage of this backport:
- * keep classic reclaim behavior unless full MGLRU scan/evict wiring is
- * available. Returning false hands control back to legacy shrink_node().
- */
 #endif

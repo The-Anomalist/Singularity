@@ -2201,6 +2201,11 @@
 			[MM] Normalize anon/file pressure counters over time.
 			Format: { on | off | 1 | 0 | y | n }
 
+	lru_gen_ptwalk_pages=
+			[MM] Per-reclaim upper bound of PTEs sampled from
+			current->mm for MGLRU aging signals.
+			Range: 32..16384.
+
 	libata.dma=	[LIBATA] DMA control
 			libata.dma=0	  Disable all PATA and SATA DMA
 			libata.dma=1	  PATA and SATA Disk DMA only

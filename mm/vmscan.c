@@ -2899,6 +2899,9 @@ static bool shrink_node_reclaim(pg_data_t *pgdat, struct scan_control *sc)
 
 			reclaimed = sc->nr_reclaimed;
 			scanned = sc->nr_scanned;
+#ifdef CONFIG_LRU_GEN
+			lru_gen_enter_reclaim(mem_cgroup_lruvec(pgdat, memcg), sc);
+#endif
 			shrink_node_memcg(pgdat, memcg, sc, &lru_pages);
 			node_lru_pages += lru_pages;
 

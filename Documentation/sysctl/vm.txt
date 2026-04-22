@@ -38,6 +38,7 @@ Currently, these files are in /proc/sys/vm:
 - legacy_va_layout
 - lowmem_reserve_ratio
 - lru_gen_enabled
+- lru_gen_ptwalk_pages
 - max_map_count
 - memory_failure_early_kill
 - memory_failure_recovery
@@ -971,6 +972,23 @@ Normalization keeps reclaim pressure accounting numerically stable
 without changing relative pressure between anon and file types.
 
 The default value is 1.
+
+==============================================================
+
+lru_gen_ptwalk_pages
+
+This control configures the number of PTEs that Multi-Gen LRU samples
+from the current task's address space while entering direct reclaim.
+This page-table walk feedback augments aging with MMU access-bit
+signals.
+
+Valid values are:
+	32-16384 - maximum PTEs sampled per reclaim entry
+
+Lower values reduce reclaim-entry overhead. Higher values provide richer
+aging signals at increased CPU cost.
+
+The default value is 256.
 
 ==============================================================
 

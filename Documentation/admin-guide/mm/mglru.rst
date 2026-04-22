@@ -17,6 +17,7 @@ The following sysctls are available under ``/proc/sys/vm``:
 * ``lru_gen_weight_anon_pct``: bias anon-vs-file reclaim weighting.
 * ``lru_gen_dedup_window_ms``: deduplicate bursty access samples.
 * ``lru_gen_pressure_normalize``: normalize pressure counters over time.
+* ``lru_gen_ptwalk_pages``: cap PTE samples per reclaim-triggered page table walk.
 
 Debugfs interface
 =================
@@ -49,6 +50,7 @@ Writing accepts the following commands:
 * ``weight_anon_pct=<n>``: set ``lru_gen_weight_anon_pct``.
 * ``dedup_window_ms=<n>``: set ``lru_gen_dedup_window_ms``.
 * ``normalize=<0|1>``: set ``lru_gen_pressure_normalize``.
+* ``ptwalk_pages=<n>``: set ``lru_gen_ptwalk_pages``.
 
 VM statistics
 =============
@@ -81,3 +83,5 @@ loop per node:
   produces no reclaimed pages;
 * exits early when oldest generations are empty so classic reclaim logic can
   continue balancing without spinning in empty MGLRU generations.
+* samples young PTEs from direct-reclaim callers (bounded by
+  ``lru_gen_ptwalk_pages``) to provide page-table-walk aging feedback.

@@ -315,7 +315,10 @@ static int sysctl_lru_gen_age_period_ms;
 static int sysctl_lru_gen_weight_anon_pct;
 static int sysctl_lru_gen_dedup_window_ms;
 static int sysctl_lru_gen_pressure_normalize;
+static int sysctl_lru_gen_ptwalk_pages;
 static int sixty_thousand = 60000;
+static int sixteen_thousand = 16384;
+static int thirty_two = 32;
 
 static int lru_gen_sysctl_handler(struct ctl_table *table, int write,
 				  void __user *buffer, size_t *lenp,
@@ -417,6 +420,23 @@ static int lru_gen_normalize_sysctl_handler(struct ctl_table *table, int write,
 		return ret;
 
 	return lru_gen_set_normalize(!!state);
+}
+
+static int lru_gen_ptwalk_pages_sysctl_handler(struct ctl_table *table, int write,
+					       void __user *buffer, size_t *lenp,
+					       loff_t *ppos)
+{
+	struct ctl_table tmp = *table;
+	int val;
+	int ret;
+
+	val = lru_gen_get_ptwalk_pages();
+	tmp.data = &val;
+	ret = proc_dointvec_minmax(&tmp, write, buffer, lenp, ppos);
+	if (ret || !write)
+		return ret;
+
+	return lru_gen_set_ptwalk_pages(val);
 }
 #endif
 
@@ -2056,6 +2076,15 @@ static struct ctl_table vm_table[] = {
 		.proc_handler	= lru_gen_normalize_sysctl_handler,
 		.extra1		= &zero,
 		.extra2		= &one,
+	},
+	{
+		.procname	= "lru_gen_ptwalk_pages",
+		.data		= &sysctl_lru_gen_ptwalk_pages,
+		.maxlen		= sizeof(sysctl_lru_gen_ptwalk_pages),
+		.mode		= 0644,
+		.proc_handler	= lru_gen_ptwalk_pages_sysctl_handler,
+		.extra1		= &thirty_two,
+		.extra2		= &sixteen_thousand,
 	},
 #endif
 #ifdef CONFIG_HUGETLB_PAGE
