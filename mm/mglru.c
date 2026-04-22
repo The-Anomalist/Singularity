@@ -396,14 +396,18 @@ static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *
 			walked = lru_gen_scan_mm(lruvec, mm, max_t(unsigned long, budget / 2, 32));
 			mmput(mm);
 			lrugen->mm_walk_fallback++;
+			count_vm_event(MGLRU_MM_WALK_FALLBACK);
 		}
 	}
 
 	lrugen->mm_walk_seq = now;
-	if (walked)
+	if (walked) {
 		lrugen->mm_walk_success++;
-	else
+		count_vm_event(MGLRU_MM_WALK_SUCCESS);
+	} else {
 		lrugen->mm_walk_failures++;
+		count_vm_event(MGLRU_MM_WALK_FAIL);
+	}
 }
 
 void lru_gen_update_size(struct lruvec *lruvec, enum lru_list lru,
@@ -468,6 +472,7 @@ static bool lru_gen_dedup_access(struct lru_gen_struct *lrugen, unsigned int typ
 
 	if (time_before(now, lrugen->access_stamp[type] + msecs_to_jiffies(win))) {
 		lrugen->deduped[type] += nr_pages;
+		count_vm_events(MGLRU_DEDUPED, nr_pages);
 		return true;
 	}
 

@@ -79,6 +79,13 @@ MGLRU contributes the following counters to ``/proc/vmstat`` when enabled:
 * ``mglru_aged``: number of generation-advance events.
 * ``mglru_evicted``: number of pages observed leaving active aging paths.
 * ``mglru_activated``: number of access samples fed into MGLRU feedback.
+* ``mglru_deduped``: number of access samples filtered by deduplication.
+* ``mglru_mm_walk_success``: number of reclaim-time MM walks that found young
+  pages to age.
+* ``mglru_mm_walk_fail``: number of reclaim-time MM walks that produced no
+  aging signal.
+* ``mglru_mm_walk_fallback``: number of MM walk attempts that used a fallback
+  process context instead of ``current``.
 * debugfs/proc snapshots include ``mm_walk=(ok/fail/fallback)`` and ``stall``
   to show MM walk coverage and reclaim-stall feedback state.
 

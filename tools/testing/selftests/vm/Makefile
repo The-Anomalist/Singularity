@@ -24,7 +24,7 @@ TEST_GEN_FILES += virtual_address_range
 
 TEST_PROGS := run_vmtests
 
-TEST_FILES := test_vmalloc.sh
+TEST_FILES := test_vmalloc.sh test_mglru.sh
 
 KSFT_KHDR_INSTALL := 1
 include ../lib.mk
