@@ -58,3 +58,16 @@ MGLRU contributes the following counters to ``/proc/vmstat`` when enabled:
 * ``mglru_aged``: number of generation-advance events.
 * ``mglru_evicted``: number of pages observed leaving active aging paths.
 * ``mglru_activated``: number of access samples fed into MGLRU feedback.
+
+Reclaim integration
+===================
+
+MGLRU hooks into reclaim through vmscan and now uses an extended multi-pass
+loop per node:
+
+* tries multiple generation-aware reclaim passes before giving up;
+* retries with ``memcg_low_reclaim`` enabled if early passes stall;
+* temporarily increases reclaim aggressiveness when scanning repeatedly
+  produces no reclaimed pages;
+* exits early when oldest generations are empty so classic reclaim logic can
+  continue balancing without spinning in empty MGLRU generations.
