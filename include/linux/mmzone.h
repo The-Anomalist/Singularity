@@ -296,6 +296,8 @@ struct lru_gen_struct {
 	unsigned long mm_walk_success;
 	unsigned long mm_walk_failures;
 	unsigned long mm_walk_fallback;
+	unsigned long mm_walk_sampled_ptes;
+	unsigned long mm_walk_young_cleared;
 	/* streak of low-efficiency reclaim cycles */
 	unsigned int reclaim_stall;
 };

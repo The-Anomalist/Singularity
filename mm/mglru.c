@@ -273,6 +273,8 @@ static void lru_gen_note_access_batch(struct lruvec *lruvec, unsigned int type,
 
 struct lru_gen_ptwalk {
 	unsigned long budget;
+	unsigned long sampled;
+	unsigned long cleared;
 	unsigned long anon;
 	unsigned long file;
 };
@@ -303,7 +305,11 @@ static int lru_gen_ptwalk_pte_entry(pte_t *pte, unsigned long addr,
 	if (!ptw->budget)
 		return -EAGAIN;
 
-	if (pte_present(*pte) && pte_young(*pte)) {
+	ptw->sampled++;
+
+	if (pte_present(*pte) &&
+	    ptep_test_and_clear_young(walk->vma, addr, pte)) {
+		ptw->cleared++;
 		if (walk->vma->vm_file)
 			ptw->file++;
 		else
@@ -335,6 +341,16 @@ static bool lru_gen_scan_mm(struct lruvec *lruvec, struct mm_struct *mm,
 
 	walk_page_range(0, TASK_SIZE, &walk);
 	up_read(&mm->mmap_sem);
+
+	if (ptw.sampled) {
+		unsigned long flags;
+		struct lru_gen_struct *lrugen = &lruvec->lrugen;
+
+		spin_lock_irqsave(&lruvec_pgdat(lruvec)->lru_lock, flags);
+		lrugen->mm_walk_sampled_ptes += ptw.sampled;
+		lrugen->mm_walk_young_cleared += ptw.cleared;
+		spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
+	}
 
 	lru_gen_note_access_batch(lruvec, LRU_GEN_ANON, ptw.anon);
 	lru_gen_note_access_batch(lruvec, LRU_GEN_FILE, ptw.file);
@@ -670,6 +686,8 @@ void lru_gen_init_lruvec(struct lruvec *lruvec)
 	lrugen->mm_walk_success = 0;
 	lrugen->mm_walk_failures = 0;
 	lrugen->mm_walk_fallback = 0;
+	lrugen->mm_walk_sampled_ptes = 0;
+	lrugen->mm_walk_young_cleared = 0;
 	lrugen->reclaim_stall = 0;
 }
 
@@ -1035,6 +1053,8 @@ static void lru_gen_reset_lruvec(struct lruvec *lruvec)
 	lrugen->mm_walk_success = 0;
 	lrugen->mm_walk_failures = 0;
 	lrugen->mm_walk_fallback = 0;
+	lrugen->mm_walk_sampled_ptes = 0;
+	lrugen->mm_walk_young_cleared = 0;
 	lrugen->reclaim_stall = 0;
 }
 #endif
@@ -1101,9 +1121,10 @@ static int mglru_stats_show(struct seq_file *m, void *v)
 			   lrugen->normalized[LRU_GEN_ANON],
 			   lrugen->normalized[LRU_GEN_FILE]);
 		seq_printf(m,
-			   "  mm_walk=(ok:%lu fail:%lu fallback:%lu) stall=%u\n",
+			   "  mm_walk=(ok:%lu fail:%lu fallback:%lu sampled:%lu young_cleared:%lu) stall=%u\n",
 			   lrugen->mm_walk_success, lrugen->mm_walk_failures,
-			   lrugen->mm_walk_fallback, lrugen->reclaim_stall);
+			   lrugen->mm_walk_fallback, lrugen->mm_walk_sampled_ptes,
+			   lrugen->mm_walk_young_cleared, lrugen->reclaim_stall);
 		seq_printf(m,
 			   "  protected=(anon:%d file:%d)\n",
 			   lru_gen_min_ttl_protected(lrugen, LRU_GEN_ANON),
@@ -1281,7 +1302,7 @@ static int mglru_proc_show(struct seq_file *m, void *v)
 		anon_old = lru_gen_count_old(lrugen, LRU_GEN_ANON);
 		file_old = lru_gen_count_old(lrugen, LRU_GEN_FILE);
 		seq_printf(m,
-			   "node=%d max_seq=%lu min_seq=(anon:%lu file:%lu) old=(anon:%lu file:%lu) pressure=(anon:%lu file:%lu) tier=(anon:%u file:%u) mm_walk=(ok:%lu fail:%lu fallback:%lu) stall=%u\n",
+			   "node=%d max_seq=%lu min_seq=(anon:%lu file:%lu) old=(anon:%lu file:%lu) pressure=(anon:%lu file:%lu) tier=(anon:%u file:%u) mm_walk=(ok:%lu fail:%lu fallback:%lu sampled:%lu young_cleared:%lu) stall=%u\n",
 			   pgdat->node_id, lrugen->max_seq,
 			   lrugen->min_seq[LRU_GEN_ANON],
 			   lrugen->min_seq[LRU_GEN_FILE], anon_old, file_old,
@@ -1290,7 +1311,8 @@ static int mglru_proc_show(struct seq_file *m, void *v)
 			   lrugen->tiers[LRU_GEN_ANON],
 			   lrugen->tiers[LRU_GEN_FILE],
 			   lrugen->mm_walk_success, lrugen->mm_walk_failures,
-			   lrugen->mm_walk_fallback, lrugen->reclaim_stall);
+			   lrugen->mm_walk_fallback, lrugen->mm_walk_sampled_ptes,
+			   lrugen->mm_walk_young_cleared, lrugen->reclaim_stall);
 		spin_unlock_irqrestore(&pgdat->lru_lock, flags);
 	}
 
