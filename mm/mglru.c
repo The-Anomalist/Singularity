@@ -13,6 +13,7 @@
 #include <linux/jiffies.h>
 #include <linux/math64.h>
 #include <linux/sched/mm.h>
+#include <linux/sched/signal.h>
 #include <linux/string.h>
 #include <linux/swap.h>
 #include <linux/uaccess.h>
@@ -309,11 +310,11 @@ static int lru_gen_ptwalk_pte_entry(pte_t *pte, unsigned long addr,
 	return 0;
 }
 
-static void lru_gen_scan_current_mm(struct lruvec *lruvec)
+static bool lru_gen_scan_mm(struct lruvec *lruvec, struct mm_struct *mm,
+			    unsigned long budget)
 {
-	struct mm_struct *mm = current->mm;
 	struct lru_gen_ptwalk ptw = {
-		.budget = READ_ONCE(lru_gen_ptwalk_pages),
+		.budget = budget,
 	};
 	struct mm_walk walk = {
 		.mm = mm,
@@ -323,16 +324,66 @@ static void lru_gen_scan_current_mm(struct lruvec *lruvec)
 	};
 
 	if (!mm || !ptw.budget)
-		return;
+		return false;
 
 	if (!down_read_trylock(&mm->mmap_sem))
-		return;
+		return false;
 
 	walk_page_range(0, TASK_SIZE, &walk);
 	up_read(&mm->mmap_sem);
 
 	lru_gen_note_access_batch(lruvec, LRU_GEN_ANON, ptw.anon);
 	lru_gen_note_access_batch(lruvec, LRU_GEN_FILE, ptw.file);
+	return ptw.anon + ptw.file > 0;
+}
+
+static struct mm_struct *lru_gen_pick_fallback_mm(void)
+{
+	struct task_struct *task;
+	struct mm_struct *mm = NULL;
+
+	rcu_read_lock();
+	for_each_process(task) {
+		if (task == current || (task->flags & PF_KTHREAD))
+			continue;
+
+		mm = get_task_mm(task);
+		if (mm)
+			break;
+	}
+	rcu_read_unlock();
+
+	return mm;
+}
+
+static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *sc)
+{
+	struct lru_gen_struct *lrugen = &lruvec->lrugen;
+	struct mm_struct *mm = current->mm;
+	unsigned long budget = READ_ONCE(lru_gen_ptwalk_pages);
+	unsigned long now = jiffies;
+	bool walked = false;
+
+	if (!budget)
+		return;
+
+	if (mm) {
+		walked = lru_gen_scan_mm(lruvec, mm, budget);
+	} else if (time_after_eq(now, lrugen->mm_walk_seq + HZ / 2) &&
+		   (!sc || !sc->target_mem_cgroup)) {
+		mm = lru_gen_pick_fallback_mm();
+		if (mm) {
+			walked = lru_gen_scan_mm(lruvec, mm, max_t(unsigned long, budget / 2, 32));
+			mmput(mm);
+			lrugen->mm_walk_fallback++;
+		}
+	}
+
+	lrugen->mm_walk_seq = now;
+	if (walked)
+		lrugen->mm_walk_success++;
+	else
+		lrugen->mm_walk_failures++;
 }
 
 void lru_gen_update_size(struct lruvec *lruvec, enum lru_list lru,
@@ -611,6 +662,11 @@ void lru_gen_init_lruvec(struct lruvec *lruvec)
 	lrugen->normalized[LRU_GEN_ANON] = 0;
 	lrugen->normalized[LRU_GEN_FILE] = 0;
 	lrugen->last_reclaim = jiffies;
+	lrugen->mm_walk_seq = jiffies;
+	lrugen->mm_walk_success = 0;
+	lrugen->mm_walk_failures = 0;
+	lrugen->mm_walk_fallback = 0;
+	lrugen->reclaim_stall = 0;
 }
 
 void lru_gen_track_page_scan(struct lruvec *lruvec, enum lru_list lru,
@@ -757,7 +813,7 @@ void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc)
 	 * Feed a bounded amount of page-table access information from
 	 * direct reclaim contexts into generation aging.
 	 */
-	lru_gen_scan_current_mm(lruvec);
+	lru_gen_scan_current_mm(lruvec, sc);
 
 	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 	gen = lrugen->max_seq % MAX_NR_GENS;
@@ -904,6 +960,16 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 		file_tier = file_tier ? file_tier - 1 : 0;
 	}
 
+	if (!reclaimed && scanned >= SWAP_CLUSTER_MAX)
+		lrugen->reclaim_stall = min_t(unsigned int, lrugen->reclaim_stall + 1, 16);
+	else if (lrugen->reclaim_stall)
+		lrugen->reclaim_stall >>= 1;
+
+	if (lrugen->reclaim_stall >= 4) {
+		lru_gen_bump_pressure(lrugen, LRU_GEN_ANON, SWAP_CLUSTER_MAX / 2);
+		lru_gen_bump_pressure(lrugen, LRU_GEN_FILE, SWAP_CLUSTER_MAX / 2);
+	}
+
 	lrugen->tiers[LRU_GEN_ANON] = anon_tier;
 	lrugen->tiers[LRU_GEN_FILE] = file_tier;
 
@@ -936,6 +1002,7 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 	 * when higher tiers are selected by pressure feedback.
 	 */
 	if (efficiency < 20 || anon_tier + file_tier >= MAX_NR_GENS ||
+	    lrugen->reclaim_stall >= 6 ||
 	    now - lrugen->last_reclaim >= HZ)
 		lru_gen_advance_seq(lruvec);
 
@@ -960,6 +1027,11 @@ static void lru_gen_reset_lruvec(struct lruvec *lruvec)
 		lrugen->deduped[type] = 0;
 		lrugen->normalized[type] = 0;
 	}
+	lrugen->mm_walk_seq = jiffies;
+	lrugen->mm_walk_success = 0;
+	lrugen->mm_walk_failures = 0;
+	lrugen->mm_walk_fallback = 0;
+	lrugen->reclaim_stall = 0;
 }
 #endif
 
@@ -1024,6 +1096,10 @@ static int mglru_stats_show(struct seq_file *m, void *v)
 			   lrugen->deduped[LRU_GEN_FILE],
 			   lrugen->normalized[LRU_GEN_ANON],
 			   lrugen->normalized[LRU_GEN_FILE]);
+		seq_printf(m,
+			   "  mm_walk=(ok:%lu fail:%lu fallback:%lu) stall=%u\n",
+			   lrugen->mm_walk_success, lrugen->mm_walk_failures,
+			   lrugen->mm_walk_fallback, lrugen->reclaim_stall);
 		seq_printf(m,
 			   "  protected=(anon:%d file:%d)\n",
 			   lru_gen_min_ttl_protected(lrugen, LRU_GEN_ANON),
@@ -1113,7 +1189,7 @@ static ssize_t mglru_stats_write(struct file *file, const char __user *buf,
 
 	if (!strcmp(cmd, "sample_mm")) {
 		for_each_online_pgdat(pgdat)
-			lru_gen_scan_current_mm(node_lruvec(pgdat));
+			lru_gen_scan_current_mm(node_lruvec(pgdat), NULL);
 		return count;
 	}
 
@@ -1177,7 +1253,7 @@ static void mglru_sample_current_mm_all_nodes(void)
 	struct pglist_data *pgdat;
 
 	for_each_online_pgdat(pgdat)
-		lru_gen_scan_current_mm(node_lruvec(pgdat));
+		lru_gen_scan_current_mm(node_lruvec(pgdat), NULL);
 }
 
 static int mglru_proc_show(struct seq_file *m, void *v)
@@ -1201,14 +1277,16 @@ static int mglru_proc_show(struct seq_file *m, void *v)
 		anon_old = lru_gen_count_old(lrugen, LRU_GEN_ANON);
 		file_old = lru_gen_count_old(lrugen, LRU_GEN_FILE);
 		seq_printf(m,
-			   "node=%d max_seq=%lu min_seq=(anon:%lu file:%lu) old=(anon:%lu file:%lu) pressure=(anon:%lu file:%lu) tier=(anon:%u file:%u)\n",
+			   "node=%d max_seq=%lu min_seq=(anon:%lu file:%lu) old=(anon:%lu file:%lu) pressure=(anon:%lu file:%lu) tier=(anon:%u file:%u) mm_walk=(ok:%lu fail:%lu fallback:%lu) stall=%u\n",
 			   pgdat->node_id, lrugen->max_seq,
 			   lrugen->min_seq[LRU_GEN_ANON],
 			   lrugen->min_seq[LRU_GEN_FILE], anon_old, file_old,
 			   lrugen->pressure[LRU_GEN_ANON],
 			   lrugen->pressure[LRU_GEN_FILE],
 			   lrugen->tiers[LRU_GEN_ANON],
-			   lrugen->tiers[LRU_GEN_FILE]);
+			   lrugen->tiers[LRU_GEN_FILE],
+			   lrugen->mm_walk_success, lrugen->mm_walk_failures,
+			   lrugen->mm_walk_fallback, lrugen->reclaim_stall);
 		spin_unlock_irqrestore(&pgdat->lru_lock, flags);
 	}
 

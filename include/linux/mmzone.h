@@ -291,6 +291,13 @@ struct lru_gen_struct {
 	unsigned long normalized[ANON_AND_FILE];
 	/* jiffies when reclaim feedback was last updated */
 	unsigned long last_reclaim;
+	/* bookkeeping for broader reclaim-context mm walks */
+	unsigned long mm_walk_seq;
+	unsigned long mm_walk_success;
+	unsigned long mm_walk_failures;
+	unsigned long mm_walk_fallback;
+	/* streak of low-efficiency reclaim cycles */
+	unsigned int reclaim_stall;
 };
 
 void lru_gen_init_lruvec(struct lruvec *lruvec);

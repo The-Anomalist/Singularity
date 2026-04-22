@@ -18,6 +18,9 @@ The following sysctls are available under ``/proc/sys/vm``:
 * ``lru_gen_dedup_window_ms``: deduplicate bursty access samples.
 * ``lru_gen_pressure_normalize``: normalize pressure counters over time.
 * ``lru_gen_ptwalk_pages``: cap PTE samples per reclaim-triggered page table walk.
+* reclaim-context MM walks first sample ``current->mm`` and can
+  opportunistically sample a fallback userspace mm during global reclaim
+  when reclaim runs in kernel threads.
 
 Debugfs interface
 =================
@@ -65,6 +68,8 @@ MGLRU contributes the following counters to ``/proc/vmstat`` when enabled:
 * ``mglru_aged``: number of generation-advance events.
 * ``mglru_evicted``: number of pages observed leaving active aging paths.
 * ``mglru_activated``: number of access samples fed into MGLRU feedback.
+* debugfs/proc snapshots include ``mm_walk=(ok/fail/fallback)`` and ``stall``
+  to show MM walk coverage and reclaim-stall feedback state.
 
 Tracepoints
 ===========
@@ -90,3 +95,23 @@ loop per node:
   continue balancing without spinning in empty MGLRU generations.
 * samples young PTEs from direct-reclaim callers (bounded by
   ``lru_gen_ptwalk_pages``) to provide page-table-walk aging feedback.
+* in kernel-thread reclaim contexts, periodically samples a fallback userspace
+  mm to keep aging signals active when ``current->mm`` is unavailable.
+* tracks reclaim-stall streaks and accelerates aging/pressure feedback under
+  persistent low reclaim efficiency.
+
+Validation guidance (long-tail workloads)
+=========================================
+
+For correctness/performance validation across mixed workloads, exercise at
+least these scenarios while collecting ``/proc/lru_gen`` snapshots before,
+during, and after pressure:
+
+* latency-sensitive anon-heavy reclaim (app switch + foreground service load);
+* file-cache-heavy streaming + background writes (sustained dirty/writeback);
+* memcg-protected hierarchies (``memory.low``/``memory.min`` stress);
+* kswapd-only pressure windows (background reclaim without direct reclaim mm).
+
+Track whether ``stall`` converges back down after pressure relief and whether
+``mm_walk fallback`` remains bounded (indicating reclaim-context MM sampling
+helps coverage without over-triggering).
