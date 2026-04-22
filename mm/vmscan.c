@@ -1754,6 +1754,7 @@ static unsigned long isolate_lru_pages(unsigned long nr_to_scan,
 #ifdef CONFIG_LRU_GEN
 	unsigned int type = is_file_lru(lru) ? LRU_GEN_FILE : LRU_GEN_ANON;
 	unsigned long seq;
+	int selected_zid = 0;
 #endif
 
 	scan = 0;
@@ -1784,6 +1785,7 @@ static unsigned long isolate_lru_pages(unsigned long nr_to_scan,
 
 				src = &lruvec->lrugen.lists[seq % MAX_NR_GENS][type][zid];
 				if (!list_empty(src)) {
+					selected_zid = zid;
 					found = true;
 					break;
 				}
@@ -1804,6 +1806,15 @@ static unsigned long isolate_lru_pages(unsigned long nr_to_scan,
 			nr_skipped[page_zonenum(page)]++;
 			continue;
 		}
+#ifdef CONFIG_LRU_GEN
+		if (gen_native && page_zonenum(page) != selected_zid) {
+			enum zone_type zid = page_zonenum(page);
+
+			list_move(&page->lru, lruvec_lru_list(lruvec, lru, zid));
+			nr_skipped[zid]++;
+			continue;
+		}
+#endif
 
 		/*
 		 * Do not count skipped pages because that makes the function

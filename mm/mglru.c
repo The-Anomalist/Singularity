@@ -179,22 +179,6 @@ static unsigned long lru_gen_count_old(struct lru_gen_struct *lrugen, int type)
 	return total;
 }
 
-static void lru_gen_promote_oldest(struct lru_gen_struct *lrugen, unsigned int type,
-				   unsigned int zid, unsigned long nr_pages)
-{
-	unsigned int old_gen = lrugen->min_seq[type] % MAX_NR_GENS;
-	unsigned int new_gen = lrugen->max_seq % MAX_NR_GENS;
-	long *old = &lrugen->nr_pages[old_gen][type][zid];
-	long *new = &lrugen->nr_pages[new_gen][type][zid];
-	long moved = min_t(long, *old, nr_pages);
-
-	if (moved <= 0)
-		return;
-
-	*old -= moved;
-	*new += moved;
-}
-
 static int lru_gen_lru_type(enum lru_list lru)
 {
 	return is_file_lru(lru) ? LRU_GEN_FILE : LRU_GEN_ANON;
@@ -324,6 +308,19 @@ static unsigned int lru_gen_pick_scan_type(struct lru_gen_struct *lrugen)
 	file += lrugen->tiers[LRU_GEN_FILE] * SWAP_CLUSTER_MAX;
 
 	return anon >= file ? LRU_GEN_ANON : LRU_GEN_FILE;
+}
+
+static bool lru_gen_oldest_empty(struct lru_gen_struct *lrugen, unsigned int type)
+{
+	unsigned int gen = lrugen->min_seq[type] % MAX_NR_GENS;
+	unsigned int zid;
+
+	for (zid = 0; zid < MAX_NR_ZONES; zid++) {
+		if (!list_empty(&lrugen->lists[gen][type][zid]))
+			return false;
+	}
+
+	return true;
 }
 
 bool lru_gen_enabled(void)
@@ -517,14 +514,12 @@ void lru_gen_note_page_referenced(struct lruvec *lruvec, struct page *page,
 	unsigned int type;
 	unsigned long nr_pages;
 	unsigned long threshold;
-	unsigned int zid;
 
 	if (!lru_gen_enabled() || !lru_gen_get_state())
 		return;
 
 	type = page_is_file_cache(page) ? LRU_GEN_FILE : LRU_GEN_ANON;
 	nr_pages = hpage_nr_pages(page);
-	zid = page_zonenum(page);
 	threshold = SWAP_CLUSTER_MAX * (from_reclaim ? 2 : 4);
 
 	spin_lock_irq(&pgdat->lru_lock);
@@ -532,12 +527,6 @@ void lru_gen_note_page_referenced(struct lruvec *lruvec, struct page *page,
 		spin_unlock_irq(&pgdat->lru_lock);
 		return;
 	}
-
-	/*
-	 * Backport-friendly approximation of generation promotion: on observed
-	 * references, move sampled pages from the oldest bucket to the youngest.
-	 */
-	lru_gen_promote_oldest(lrugen, type, zid, nr_pages);
 
 	lrugen->accessed[type] += nr_pages;
 	/*
@@ -609,7 +598,7 @@ void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc)
 	 * reclaim naturally shifts to the next oldest generation.
 	 */
 	for (type = 0; type < ANON_AND_FILE; type++) {
-		if (!lru_gen_count_old(lrugen, type) &&
+		if (lru_gen_oldest_empty(lrugen, type) &&
 		    lrugen->min_seq[type] < lrugen->max_seq)
 			lrugen->min_seq[type]++;
 	}
