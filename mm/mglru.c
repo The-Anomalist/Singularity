@@ -552,7 +552,7 @@ void lru_gen_enter_reclaim(struct lruvec *lruvec, struct scan_control *sc)
 
 	spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
 	gen = lrugen->max_seq % MAX_NR_GENS;
-	if (lrugen->timestamps[gen] + HZ / 4 < jiffies)
+	if (time_before(lrugen->timestamps[gen] + HZ / 4, jiffies))
 		lrugen->timestamps[gen] = jiffies;
 	if (lru_gen_should_age(lrugen)) {
 		lrugen->evicted[LRU_GEN_ANON] = 0;
@@ -666,6 +666,8 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 			unsigned long reclaimed, unsigned long scanned)
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
+	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
+	unsigned long flags;
 	unsigned int anon_tier, file_tier;
 	unsigned long efficiency, split;
 	unsigned long now = jiffies;
@@ -679,6 +681,7 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 	 * derive a coarse reclaim tier based on observed reclaim efficiency.
 	 */
 	efficiency = reclaimed * 100 / scanned;
+	spin_lock_irqsave(&pgdat->lru_lock, flags);
 	anon_tier = min_t(unsigned int, MAX_NR_GENS - 1,
 			  lrugen->pressure[LRU_GEN_ANON] / (8 * SWAP_CLUSTER_MAX));
 	file_tier = min_t(unsigned int, MAX_NR_GENS - 1,
@@ -715,12 +718,11 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 	 * when higher tiers are selected by pressure feedback.
 	 */
 	if (efficiency < 20 || anon_tier + file_tier >= MAX_NR_GENS ||
-	    now - lrugen->last_reclaim >= HZ) {
-		spin_lock_irq(&lruvec_pgdat(lruvec)->lru_lock);
+	    now - lrugen->last_reclaim >= HZ)
 		lru_gen_advance_seq(lruvec);
-		spin_unlock_irq(&lruvec_pgdat(lruvec)->lru_lock);
-	}
+
 	lrugen->last_reclaim = now;
+	spin_unlock_irqrestore(&pgdat->lru_lock, flags);
 }
 
 #if defined(CONFIG_DEBUG_FS) || defined(CONFIG_PROC_FS)
