@@ -59,6 +59,16 @@ MGLRU contributes the following counters to ``/proc/vmstat`` when enabled:
 * ``mglru_evicted``: number of pages observed leaving active aging paths.
 * ``mglru_activated``: number of access samples fed into MGLRU feedback.
 
+Tracepoints
+===========
+
+MGLRU also exports reclaim tracepoints under the ``vmscan`` tracepoint group:
+
+* ``mm_vmscan_lru_gen_advance``: emitted when a node advances to a new
+  generation sequence and reports oldest-generation state.
+* ``mm_vmscan_lru_gen_feedback``: emitted when reclaim feedback retunes MGLRU
+  pressure/tier heuristics.
+
 Reclaim integration
 ===================
 

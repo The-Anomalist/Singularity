@@ -15,6 +15,7 @@
 #include <linux/swap.h>
 #include <linux/uaccess.h>
 #include <linux/vmstat.h>
+#include <trace/events/vmscan.h>
 #ifdef CONFIG_PROC_FS
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
@@ -38,6 +39,7 @@ static struct dentry *mglru_debugfs_root;
 #ifdef CONFIG_PROC_FS
 static struct proc_dir_entry *mglru_proc_entry;
 #endif
+static unsigned long lru_gen_count_old(struct lru_gen_struct *lrugen, int type);
 
 static int __init setup_lru_gen(char *str)
 {
@@ -135,6 +137,7 @@ late_initcall(init_lru_gen);
 static void lru_gen_advance_seq(struct lruvec *lruvec)
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
+	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
 	unsigned long seq = lrugen->max_seq + 1;
 	unsigned int gen = seq % MAX_NR_GENS;
 	unsigned int type, zone;
@@ -154,6 +157,12 @@ static void lru_gen_advance_seq(struct lruvec *lruvec)
 		if (lrugen->min_seq[type] + MIN_NR_GENS <= seq)
 			lrugen->min_seq[type] = seq - MIN_NR_GENS + 1;
 	}
+
+	trace_mm_vmscan_lru_gen_advance(pgdat->node_id, lrugen->max_seq,
+					lrugen->min_seq[LRU_GEN_ANON],
+					lrugen->min_seq[LRU_GEN_FILE],
+					lru_gen_count_old(lrugen, LRU_GEN_ANON),
+					lru_gen_count_old(lrugen, LRU_GEN_FILE));
 
 	count_vm_event(MGLRU_AGED);
 }
@@ -746,6 +755,15 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 
 	lru_gen_decay_pressure(lrugen);
 	lru_gen_normalize_pressure(lrugen);
+	trace_mm_vmscan_lru_gen_feedback(pgdat->node_id,
+					 lrugen->pressure[LRU_GEN_ANON],
+					 lrugen->pressure[LRU_GEN_FILE],
+					 lrugen->tiers[LRU_GEN_ANON],
+					 lrugen->tiers[LRU_GEN_FILE],
+					 lrugen->scanned[LRU_GEN_ANON],
+					 lrugen->scanned[LRU_GEN_FILE],
+					 lrugen->reclaimed[LRU_GEN_ANON],
+					 lrugen->reclaimed[LRU_GEN_FILE]);
 
 	/*
 	 * Tier-aware aging: advance generations faster when reclaim is weak or
