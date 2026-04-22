@@ -1743,26 +1743,63 @@ static unsigned long isolate_lru_pages(unsigned long nr_to_scan,
 		unsigned long *nr_scanned, struct scan_control *sc,
 		isolate_mode_t mode, enum lru_list lru)
 {
-	struct list_head *src = &lruvec->lists[lru];
+	struct list_head *src;
 	unsigned long nr_taken = 0;
 	unsigned long nr_zone_taken[MAX_NR_ZONES] = { 0 };
 	unsigned long nr_skipped[MAX_NR_ZONES] = { 0, };
 	unsigned long skipped = 0;
 	unsigned long scan, total_scan, nr_pages;
 	LIST_HEAD(pages_skipped);
+	bool gen_native = false;
+#ifdef CONFIG_LRU_GEN
+	unsigned int type = is_file_lru(lru) ? LRU_GEN_FILE : LRU_GEN_ANON;
+	unsigned long seq;
+#endif
 
 	scan = 0;
+#ifdef CONFIG_LRU_GEN
+	gen_native = lru_gen_enabled() && lru_gen_get_state() && lru != LRU_UNEVICTABLE;
+#endif
+
 	for (total_scan = 0;
-	     scan < nr_to_scan && nr_taken < nr_to_scan && !list_empty(src);
+	     scan < nr_to_scan && nr_taken < nr_to_scan;
 	     total_scan++) {
 		struct page *page;
+
+		if (!gen_native) {
+			src = &lruvec->lists[lru];
+			if (list_empty(src))
+				break;
+		}
+#ifdef CONFIG_LRU_GEN
+		else {
+			int zid;
+			bool found = false;
+
+			for (zid = sc->reclaim_idx; zid >= 0; zid--) {
+				if (is_active_lru(lru))
+					seq = lruvec->lrugen.max_seq;
+				else
+					seq = lruvec->lrugen.min_seq[type];
+
+				src = &lruvec->lrugen.lists[seq % MAX_NR_GENS][type][zid];
+				if (!list_empty(src)) {
+					found = true;
+					break;
+				}
+			}
+
+			if (!found)
+				break;
+		}
+#endif
 
 		page = lru_to_page(src);
 		prefetchw_prev_lru_page(page, src, flags);
 
 		VM_BUG_ON_PAGE(!PageLRU(page), page);
 
-		if (page_zonenum(page) > sc->reclaim_idx) {
+		if (!gen_native && page_zonenum(page) > sc->reclaim_idx) {
 			list_move(&page->lru, &pages_skipped);
 			nr_skipped[page_zonenum(page)]++;
 			continue;
@@ -1800,7 +1837,7 @@ static unsigned long isolate_lru_pages(unsigned long nr_to_scan,
 	 * scanning would soon rescan the same pages to skip and put the
 	 * system at risk of premature OOM.
 	 */
-	if (!list_empty(&pages_skipped)) {
+	if (!gen_native && !list_empty(&pages_skipped)) {
 		int zid;
 
 		list_splice(&pages_skipped, src);
@@ -2133,7 +2170,8 @@ static unsigned move_active_pages_to_lru(struct lruvec *lruvec,
 
 		nr_pages = hpage_nr_pages(page);
 		update_lru_size(lruvec, lru, page_zonenum(page), nr_pages);
-		list_move(&page->lru, &lruvec->lists[lru]);
+		list_move(&page->lru,
+			  lruvec_lru_list(lruvec, lru, page_zonenum(page)));
 		lru_gen_note_lru_move(lruvec,
 				      is_active_lru(lru) ? lru : lru + LRU_ACTIVE,
 				      lru, nr_pages);
