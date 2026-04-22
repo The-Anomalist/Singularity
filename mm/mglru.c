@@ -16,6 +16,7 @@
 #include <linux/sched/signal.h>
 #include <linux/string.h>
 #include <linux/swap.h>
+#include <linux/sysfs.h>
 #include <linux/uaccess.h>
 #include <linux/vmstat.h>
 #include <trace/events/vmscan.h>
@@ -42,6 +43,9 @@ static struct dentry *mglru_debugfs_root;
 #endif
 #ifdef CONFIG_PROC_FS
 static struct proc_dir_entry *mglru_proc_entry;
+#endif
+#ifdef CONFIG_SYSFS
+static struct kobject *mglru_kobj;
 #endif
 static unsigned long lru_gen_count_old(struct lru_gen_struct *lrugen, int type);
 static bool lru_gen_dedup_access(struct lru_gen_struct *lrugen, unsigned int type,
@@ -1388,6 +1392,239 @@ static int __init mglru_proc_init(void)
 	return mglru_proc_entry ? 0 : -ENOMEM;
 }
 late_initcall(mglru_proc_init);
+#endif
+
+#ifdef CONFIG_SYSFS
+static ssize_t enabled_show(struct kobject *kobj, struct kobj_attribute *attr,
+			    char *buf)
+{
+	(void)kobj;
+	(void)attr;
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", lru_gen_get_state());
+}
+
+static ssize_t enabled_store(struct kobject *kobj, struct kobj_attribute *attr,
+			     const char *buf, size_t count)
+{
+	bool val;
+	int ret;
+
+	(void)kobj;
+	(void)attr;
+
+	ret = kstrtobool(buf, &val);
+	if (ret)
+		return ret;
+
+	ret = lru_gen_set_state(val);
+	return ret ? ret : count;
+}
+
+static ssize_t min_ttl_ms_show(struct kobject *kobj, struct kobj_attribute *attr,
+			       char *buf)
+{
+	(void)kobj;
+	(void)attr;
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", lru_gen_get_min_ttl());
+}
+
+static ssize_t min_ttl_ms_store(struct kobject *kobj, struct kobj_attribute *attr,
+				const char *buf, size_t count)
+{
+	unsigned int val;
+	int ret;
+
+	(void)kobj;
+	(void)attr;
+
+	ret = kstrtouint(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	ret = lru_gen_set_min_ttl(val);
+	return ret ? ret : count;
+}
+
+static ssize_t age_period_ms_show(struct kobject *kobj, struct kobj_attribute *attr,
+				  char *buf)
+{
+	(void)kobj;
+	(void)attr;
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", lru_gen_get_age_period());
+}
+
+static ssize_t age_period_ms_store(struct kobject *kobj, struct kobj_attribute *attr,
+				   const char *buf, size_t count)
+{
+	unsigned int val;
+	int ret;
+
+	(void)kobj;
+	(void)attr;
+
+	ret = kstrtouint(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	ret = lru_gen_set_age_period(val);
+	return ret ? ret : count;
+}
+
+static ssize_t weight_anon_pct_show(struct kobject *kobj,
+				    struct kobj_attribute *attr, char *buf)
+{
+	(void)kobj;
+	(void)attr;
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", lru_gen_get_weight_anon());
+}
+
+static ssize_t weight_anon_pct_store(struct kobject *kobj,
+				     struct kobj_attribute *attr,
+				     const char *buf, size_t count)
+{
+	unsigned int val;
+	int ret;
+
+	(void)kobj;
+	(void)attr;
+
+	ret = kstrtouint(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	ret = lru_gen_set_weight_anon(val);
+	return ret ? ret : count;
+}
+
+static ssize_t dedup_window_ms_show(struct kobject *kobj,
+				    struct kobj_attribute *attr, char *buf)
+{
+	(void)kobj;
+	(void)attr;
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", lru_gen_get_dedup_window());
+}
+
+static ssize_t dedup_window_ms_store(struct kobject *kobj,
+				     struct kobj_attribute *attr,
+				     const char *buf, size_t count)
+{
+	unsigned int val;
+	int ret;
+
+	(void)kobj;
+	(void)attr;
+
+	ret = kstrtouint(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	ret = lru_gen_set_dedup_window(val);
+	return ret ? ret : count;
+}
+
+static ssize_t pressure_normalize_show(struct kobject *kobj,
+				       struct kobj_attribute *attr, char *buf)
+{
+	(void)kobj;
+	(void)attr;
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", lru_gen_get_normalize());
+}
+
+static ssize_t pressure_normalize_store(struct kobject *kobj,
+					struct kobj_attribute *attr,
+					const char *buf, size_t count)
+{
+	bool val;
+	int ret;
+
+	(void)kobj;
+	(void)attr;
+
+	ret = kstrtobool(buf, &val);
+	if (ret)
+		return ret;
+
+	ret = lru_gen_set_normalize(val);
+	return ret ? ret : count;
+}
+
+static ssize_t ptwalk_pages_show(struct kobject *kobj,
+				 struct kobj_attribute *attr, char *buf)
+{
+	(void)kobj;
+	(void)attr;
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", lru_gen_get_ptwalk_pages());
+}
+
+static ssize_t ptwalk_pages_store(struct kobject *kobj,
+				  struct kobj_attribute *attr,
+				  const char *buf, size_t count)
+{
+	unsigned int val;
+	int ret;
+
+	(void)kobj;
+	(void)attr;
+
+	ret = kstrtouint(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	ret = lru_gen_set_ptwalk_pages(val);
+	return ret ? ret : count;
+}
+
+static struct kobj_attribute enabled_attr = __ATTR_RW(enabled);
+static struct kobj_attribute min_ttl_ms_attr = __ATTR_RW(min_ttl_ms);
+static struct kobj_attribute age_period_ms_attr = __ATTR_RW(age_period_ms);
+static struct kobj_attribute weight_anon_pct_attr = __ATTR_RW(weight_anon_pct);
+static struct kobj_attribute dedup_window_ms_attr = __ATTR_RW(dedup_window_ms);
+static struct kobj_attribute pressure_normalize_attr =
+	__ATTR_RW(pressure_normalize);
+static struct kobj_attribute ptwalk_pages_attr = __ATTR_RW(ptwalk_pages);
+
+static struct attribute *mglru_sysfs_attrs[] = {
+	&enabled_attr.attr,
+	&min_ttl_ms_attr.attr,
+	&age_period_ms_attr.attr,
+	&weight_anon_pct_attr.attr,
+	&dedup_window_ms_attr.attr,
+	&pressure_normalize_attr.attr,
+	&ptwalk_pages_attr.attr,
+	NULL,
+};
+
+static struct attribute_group mglru_sysfs_attr_group = {
+	.attrs = mglru_sysfs_attrs,
+};
+
+static int __init mglru_sysfs_init(void)
+{
+	int ret;
+
+	if (!mm_kobj)
+		return 0;
+
+	mglru_kobj = kobject_create_and_add("lru_gen", mm_kobj);
+	if (!mglru_kobj)
+		return -ENOMEM;
+
+	ret = sysfs_create_group(mglru_kobj, &mglru_sysfs_attr_group);
+	if (ret) {
+		kobject_put(mglru_kobj);
+		mglru_kobj = NULL;
+	}
+
+	return ret;
+}
+late_initcall(mglru_sysfs_init);
 #endif
 
 #endif

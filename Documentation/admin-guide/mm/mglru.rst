@@ -22,6 +22,17 @@ The following sysctls are available under ``/proc/sys/vm``:
   opportunistically sample a fallback userspace mm during global reclaim
   when reclaim runs in kernel threads.
 
+When ``CONFIG_SYSFS=y``, the same tunables are also available under
+``/sys/kernel/mm/lru_gen/``:
+
+* ``enabled``
+* ``min_ttl_ms``
+* ``age_period_ms``
+* ``weight_anon_pct``
+* ``dedup_window_ms``
+* ``pressure_normalize``
+* ``ptwalk_pages``
+
 Debugfs interface
 =================
 
