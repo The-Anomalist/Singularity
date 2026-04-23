@@ -368,6 +368,25 @@ static bool lru_gen_scan_mm(struct lruvec *lruvec, struct mm_struct *mm,
 	return ptw.anon + ptw.file > 0;
 }
 
+static struct mm_struct *lru_gen_pick_fallback_mm(void)
+{
+	struct task_struct *task;
+	struct mm_struct *mm = NULL;
+
+	rcu_read_lock();
+	for_each_process(task) {
+		if (task == current)
+			continue;
+
+		mm = get_task_mm(task);
+		if (mm)
+			break;
+	}
+	rcu_read_unlock();
+
+	return mm;
+}
+
 static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *sc)
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
