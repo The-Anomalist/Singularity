@@ -38,6 +38,7 @@ static unsigned int __read_mostly lru_gen_weight_anon_pct = 50;
 static unsigned int __read_mostly lru_gen_dedup_window_ms = 25;
 static bool __read_mostly lru_gen_pressure_normalize = true;
 static unsigned int __read_mostly lru_gen_ptwalk_pages = 256;
+static bool __read_mostly lru_gen_ptwalk_fallback;
 #ifdef CONFIG_DEBUG_FS
 static struct dentry *mglru_debugfs_root;
 #endif
@@ -393,6 +394,7 @@ static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *
 	struct mm_struct *mm = current->mm;
 	unsigned long budget = READ_ONCE(lru_gen_ptwalk_pages);
 	unsigned long now = jiffies;
+	unsigned long interval = HZ;
 	unsigned long last_seq;
 	unsigned long flags;
 	bool walked = false;
@@ -401,12 +403,27 @@ static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *
 		return;
 
 	/*
+	 * Reclaim-time page-table walks are meant to provide low-overhead hints
+	 * to direct reclaim. Running them from kswapd or memcg reclaim contexts
+	 * increases contention with mmap writers while providing weaker locality.
+	 */
+	if (sc && (current_is_kswapd() || !scan_control_global_reclaim(sc)))
+		return;
+
+	/*
+	 * Debug/proactive paths can call this function without a scan_control.
+	 * Keep those paths responsive by using a shorter throttle interval.
+	 */
+	if (!sc)
+		interval = HZ / 4;
+
+	/*
 	 * Throttle page-table sampling in reclaim contexts to avoid reclaim
 	 * stalls under sustained memory pressure.
 	 */
 	spin_lock_irqsave(&lruvec_pgdat(lruvec)->lru_lock, flags);
 	last_seq = lrugen->mm_walk_seq;
-	if (time_before(now, last_seq + HZ / 4)) {
+	if (time_before(now, last_seq + interval)) {
 		spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
 		return;
 	}
@@ -415,8 +432,8 @@ static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *
 
 	if (mm) {
 		walked = lru_gen_scan_mm(lruvec, mm, budget);
-	} else if (time_after_eq(now, last_seq + HZ / 2) &&
-		   (!sc || scan_control_global_reclaim(sc))) {
+	} else if (READ_ONCE(lru_gen_ptwalk_fallback) &&
+		   time_after_eq(now, last_seq + 2 * interval)) {
 		mm = lru_gen_pick_fallback_mm();
 		if (mm) {
 			walked = lru_gen_scan_mm(lruvec, mm,
