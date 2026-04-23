@@ -368,50 +368,49 @@ static bool lru_gen_scan_mm(struct lruvec *lruvec, struct mm_struct *mm,
 	return ptw.anon + ptw.file > 0;
 }
 
-static struct mm_struct *lru_gen_pick_fallback_mm(void)
-{
-	struct task_struct *task;
-	struct mm_struct *mm = NULL;
-
-	rcu_read_lock();
-	for_each_process(task) {
-		if (task == current || (task->flags & PF_KTHREAD))
-			continue;
-
-		mm = get_task_mm(task);
-		if (mm)
-			break;
-	}
-	rcu_read_unlock();
-
-	return mm;
-}
-
 static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *sc)
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
 	struct mm_struct *mm = current->mm;
 	unsigned long budget = READ_ONCE(lru_gen_ptwalk_pages);
 	unsigned long now = jiffies;
+	unsigned long last_seq;
+	unsigned long flags;
 	bool walked = false;
 
 	if (!budget)
 		return;
 
+	/*
+	 * Throttle page-table sampling in reclaim contexts to avoid reclaim
+	 * stalls under sustained memory pressure.
+	 */
+	spin_lock_irqsave(&lruvec_pgdat(lruvec)->lru_lock, flags);
+	last_seq = lrugen->mm_walk_seq;
+	if (time_before(now, last_seq + HZ / 4)) {
+		spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
+		return;
+	}
+	lrugen->mm_walk_seq = now;
+	spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
+
 	if (mm) {
 		walked = lru_gen_scan_mm(lruvec, mm, budget);
-	} else if (time_after_eq(now, lrugen->mm_walk_seq + HZ / 2) &&
+	} else if (time_after_eq(now, last_seq + HZ / 2) &&
 		   (!sc || scan_control_global_reclaim(sc))) {
 		mm = lru_gen_pick_fallback_mm();
 		if (mm) {
-			walked = lru_gen_scan_mm(lruvec, mm, max_t(unsigned long, budget / 2, 32));
+			walked = lru_gen_scan_mm(lruvec, mm,
+						 max_t(unsigned long, budget / 2, 32));
 			mmput(mm);
+			spin_lock_irqsave(&lruvec_pgdat(lruvec)->lru_lock, flags);
 			lrugen->mm_walk_fallback++;
+			spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
 			count_vm_event(MGLRU_MM_WALK_FALLBACK);
 		}
 	}
 
-	lrugen->mm_walk_seq = now;
+	spin_lock_irqsave(&lruvec_pgdat(lruvec)->lru_lock, flags);
 	if (walked) {
 		lrugen->mm_walk_success++;
 		count_vm_event(MGLRU_MM_WALK_SUCCESS);
@@ -419,8 +418,8 @@ static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *
 		lrugen->mm_walk_failures++;
 		count_vm_event(MGLRU_MM_WALK_FAIL);
 	}
+	spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
 }
-
 void lru_gen_update_size(struct lruvec *lruvec, enum lru_list lru,
 			 enum zone_type zid, long delta)
 {
