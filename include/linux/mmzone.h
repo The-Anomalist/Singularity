@@ -339,6 +339,8 @@ int lru_gen_set_normalize(bool enable);
 int lru_gen_get_normalize(void);
 int lru_gen_set_ptwalk_pages(unsigned int pages);
 unsigned int lru_gen_get_ptwalk_pages(void);
+int lru_gen_set_ptwalk_clear_young(bool enable);
+int lru_gen_get_ptwalk_clear_young(void);
 #else
 static inline void lru_gen_init_lruvec(struct lruvec *lruvec)
 {
@@ -446,6 +448,14 @@ static inline int lru_gen_set_ptwalk_pages(unsigned int pages)
 	return -EINVAL;
 }
 static inline unsigned int lru_gen_get_ptwalk_pages(void)
+{
+	return 0;
+}
+static inline int lru_gen_set_ptwalk_clear_young(bool enable)
+{
+	return -EINVAL;
+}
+static inline int lru_gen_get_ptwalk_clear_young(void)
 {
 	return 0;
 }

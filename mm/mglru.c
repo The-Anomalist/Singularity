@@ -38,6 +38,7 @@ static unsigned int __read_mostly lru_gen_weight_anon_pct = 50;
 static unsigned int __read_mostly lru_gen_dedup_window_ms = 25;
 static bool __read_mostly lru_gen_pressure_normalize = true;
 static unsigned int __read_mostly lru_gen_ptwalk_pages = 256;
+static bool __read_mostly lru_gen_ptwalk_clear_young;
 static bool __read_mostly lru_gen_ptwalk_fallback;
 #ifdef CONFIG_DEBUG_FS
 static struct dentry *mglru_debugfs_root;
@@ -198,6 +199,22 @@ static int __init setup_lru_gen_ptwalk_pages(char *str)
 }
 early_param("lru_gen_ptwalk_pages", setup_lru_gen_ptwalk_pages);
 
+static int __init setup_lru_gen_ptwalk_clear_young(char *str)
+{
+	if (!str)
+		return -EINVAL;
+
+	if (!strcmp(str, "1") || !strcmp(str, "on") || !strcmp(str, "y"))
+		lru_gen_ptwalk_clear_young = true;
+	else if (!strcmp(str, "0") || !strcmp(str, "off") || !strcmp(str, "n"))
+		lru_gen_ptwalk_clear_young = false;
+	else
+		return -EINVAL;
+
+	return 0;
+}
+early_param("lru_gen_ptwalk_clear_young", setup_lru_gen_ptwalk_clear_young);
+
 static int __init init_lru_gen(void)
 {
 	if (lru_gen_boot_enabled)
@@ -289,6 +306,7 @@ struct lru_gen_ptwalk {
 	unsigned long cleared;
 	unsigned long anon;
 	unsigned long file;
+	bool clear_young;
 };
 
 static int lru_gen_ptwalk_test(unsigned long addr, unsigned long next,
@@ -311,6 +329,7 @@ static int lru_gen_ptwalk_pte_entry(pte_t *pte, unsigned long addr,
 				    unsigned long next, struct mm_walk *walk)
 {
 	struct lru_gen_ptwalk *ptw = walk->private;
+	bool young;
 	(void)addr;
 	(void)next;
 
@@ -319,9 +338,13 @@ static int lru_gen_ptwalk_pte_entry(pte_t *pte, unsigned long addr,
 
 	ptw->sampled++;
 
-	if (pte_present(*pte) &&
-	    ptep_test_and_clear_young(walk->vma, addr, pte)) {
-		ptw->cleared++;
+	young = pte_present(*pte) &&
+		(ptw->clear_young ?
+		 ptep_test_and_clear_young(walk->vma, addr, pte) :
+		 pte_young(*pte));
+	if (young) {
+		if (ptw->clear_young)
+			ptw->cleared++;
 		if (walk->vma->vm_file)
 			ptw->file++;
 		else
@@ -337,6 +360,7 @@ static bool lru_gen_scan_mm(struct lruvec *lruvec, struct mm_struct *mm,
 {
 	struct lru_gen_ptwalk ptw = {
 		.budget = budget,
+		.clear_young = READ_ONCE(lru_gen_ptwalk_clear_young),
 	};
 	struct mm_walk walk = {
 		.mm = mm,
@@ -693,6 +717,17 @@ int lru_gen_set_ptwalk_pages(unsigned int pages)
 unsigned int lru_gen_get_ptwalk_pages(void)
 {
 	return READ_ONCE(lru_gen_ptwalk_pages);
+}
+
+int lru_gen_set_ptwalk_clear_young(bool enable)
+{
+	WRITE_ONCE(lru_gen_ptwalk_clear_young, enable);
+	return 0;
+}
+
+int lru_gen_get_ptwalk_clear_young(void)
+{
+	return READ_ONCE(lru_gen_ptwalk_clear_young);
 }
 
 void lru_gen_init_lruvec(struct lruvec *lruvec)
@@ -1133,11 +1168,12 @@ static int mglru_stats_show(struct seq_file *m, void *v)
 	struct pglist_data *pgdat;
 
 	seq_printf(m,
-		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d ptwalk_pages=%u\n",
+		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d ptwalk_pages=%u ptwalk_clear_young=%d\n",
 		   lru_gen_get_state(), lru_gen_get_min_ttl(),
 		   lru_gen_get_age_period(), lru_gen_get_weight_anon(),
 		   lru_gen_get_dedup_window(), lru_gen_get_normalize(),
-		   lru_gen_get_ptwalk_pages());
+		   lru_gen_get_ptwalk_pages(),
+		   lru_gen_get_ptwalk_clear_young());
 
 	for_each_online_pgdat(pgdat) {
 		struct lruvec *lruvec = node_lruvec(pgdat);
@@ -1285,6 +1321,9 @@ static ssize_t mglru_stats_write(struct file *file, const char __user *buf,
 	if (sscanf(cmd, "ptwalk_pages=%u", &val) == 1)
 		return lru_gen_set_ptwalk_pages(val) ? : count;
 
+	if (sscanf(cmd, "ptwalk_clear_young=%u", &val) == 1)
+		return lru_gen_set_ptwalk_clear_young(!!val) ? : count;
+
 	if (!strcmp(cmd, "sample_mm")) {
 		for_each_online_pgdat(pgdat)
 			lru_gen_scan_current_mm(node_lruvec(pgdat), NULL);
@@ -1359,11 +1398,12 @@ static int mglru_proc_show(struct seq_file *m, void *v)
 	struct pglist_data *pgdat;
 
 	seq_printf(m,
-		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d ptwalk_pages=%u\n",
+		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d ptwalk_pages=%u ptwalk_clear_young=%d\n",
 		   lru_gen_get_state(), lru_gen_get_min_ttl(),
 		   lru_gen_get_age_period(), lru_gen_get_weight_anon(),
 		   lru_gen_get_dedup_window(), lru_gen_get_normalize(),
-		   lru_gen_get_ptwalk_pages());
+		   lru_gen_get_ptwalk_pages(),
+		   lru_gen_get_ptwalk_clear_young());
 
 	for_each_online_pgdat(pgdat) {
 		struct lruvec *lruvec = node_lruvec(pgdat);
@@ -1441,6 +1481,9 @@ static int mglru_apply_command(const char *cmd)
 
 	if (sscanf(cmd, "ptwalk_pages=%u", &val) == 1)
 		return lru_gen_set_ptwalk_pages(val);
+
+	if (sscanf(cmd, "ptwalk_clear_young=%u", &val) == 1)
+		return lru_gen_set_ptwalk_clear_young(!!val);
 
 	if (!strcmp(cmd, "sample_mm")) {
 		mglru_sample_current_mm_all_nodes();
@@ -1678,6 +1721,33 @@ static ssize_t ptwalk_pages_store(struct kobject *kobj,
 	return ret ? ret : count;
 }
 
+static ssize_t ptwalk_clear_young_show(struct kobject *kobj,
+				       struct kobj_attribute *attr, char *buf)
+{
+	(void)kobj;
+	(void)attr;
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", lru_gen_get_ptwalk_clear_young());
+}
+
+static ssize_t ptwalk_clear_young_store(struct kobject *kobj,
+					struct kobj_attribute *attr,
+					const char *buf, size_t count)
+{
+	bool val;
+	int ret;
+
+	(void)kobj;
+	(void)attr;
+
+	ret = kstrtobool(buf, &val);
+	if (ret)
+		return ret;
+
+	ret = lru_gen_set_ptwalk_clear_young(val);
+	return ret ? ret : count;
+}
+
 static struct kobj_attribute enabled_attr = __ATTR_RW(enabled);
 static struct kobj_attribute min_ttl_ms_attr = __ATTR_RW(min_ttl_ms);
 static struct kobj_attribute age_period_ms_attr = __ATTR_RW(age_period_ms);
@@ -1686,6 +1756,8 @@ static struct kobj_attribute dedup_window_ms_attr = __ATTR_RW(dedup_window_ms);
 static struct kobj_attribute pressure_normalize_attr =
 	__ATTR_RW(pressure_normalize);
 static struct kobj_attribute ptwalk_pages_attr = __ATTR_RW(ptwalk_pages);
+static struct kobj_attribute ptwalk_clear_young_attr =
+	__ATTR_RW(ptwalk_clear_young);
 
 static struct attribute *mglru_sysfs_attrs[] = {
 	&enabled_attr.attr,
@@ -1695,6 +1767,7 @@ static struct attribute *mglru_sysfs_attrs[] = {
 	&dedup_window_ms_attr.attr,
 	&pressure_normalize_attr.attr,
 	&ptwalk_pages_attr.attr,
+	&ptwalk_clear_young_attr.attr,
 	NULL,
 };
 
