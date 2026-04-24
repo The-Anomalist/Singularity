@@ -3134,11 +3134,15 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 	bool mglru_reclaimable = false;
 
 	/*
-	 * Always try MGLRU first when enabled. If it fails to reclaim pages in
-	 * this round, immediately fall back to the legacy reclaim path.
+	 * Always try MGLRU first when enabled. If MGLRU reports reclaimable
+	 * generations but does not reclaim in this round, keep reclaim on the
+	 * MGLRU path instead of immediately doubling work with legacy reclaim.
+	 * Fall back only when MGLRU has no reclaimable generations.
 	 */
 	mglru_reclaimable = lru_gen_shrink_node(pgdat, sc);
 	if (sc->nr_reclaimed > reclaimed_before)
+		return true;
+	if (mglru_reclaimable)
 		return true;
 
 	return shrink_node_reclaim(pgdat, sc) || mglru_reclaimable;
