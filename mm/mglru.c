@@ -18,6 +18,7 @@
 #include <linux/swap.h>
 #include <linux/sysfs.h>
 #include <linux/uaccess.h>
+#include <linux/mmu_notifier.h>
 #include <linux/vmstat.h>
 #include <trace/events/vmscan.h>
 #ifdef CONFIG_PROC_FS
@@ -354,10 +355,12 @@ static int lru_gen_ptwalk_pte_entry(pte_t *pte, unsigned long addr,
 		return -EAGAIN;
 
 	ptw->sampled++;
+	if (!(ptw->sampled & 63))
+		cond_resched();
 
 	young = pte_present(*pte) &&
 		(ptw->clear_young ?
-		 ptep_test_and_clear_young(walk->vma, addr, pte) :
+		 ptep_clear_young_notify(walk->vma, addr, pte) :
 		 pte_young(*pte));
 	if (young) {
 		if (ptw->clear_young)
@@ -477,7 +480,7 @@ static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *
 
 	if (mm) {
 		walked = lru_gen_scan_mm(lruvec, mm, budget);
-	} else if (READ_ONCE(lru_gen_ptwalk_fallback) &&
+	} else if (!sc && READ_ONCE(lru_gen_ptwalk_fallback) &&
 		   time_after_eq(now, last_seq + 2 * interval)) {
 		mm = lru_gen_pick_fallback_mm();
 		if (mm) {
