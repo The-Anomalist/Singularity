@@ -39,6 +39,7 @@ static unsigned int __read_mostly lru_gen_dedup_window_ms = 25;
 static bool __read_mostly lru_gen_pressure_normalize = true;
 static unsigned int __read_mostly lru_gen_ptwalk_pages = 256;
 static bool __read_mostly lru_gen_ptwalk_clear_young;
+static bool __read_mostly lru_gen_reclaim_ptwalk;
 static bool __read_mostly lru_gen_ptwalk_fallback;
 #ifdef CONFIG_DEBUG_FS
 static struct dentry *mglru_debugfs_root;
@@ -214,6 +215,22 @@ static int __init setup_lru_gen_ptwalk_clear_young(char *str)
 	return 0;
 }
 early_param("lru_gen_ptwalk_clear_young", setup_lru_gen_ptwalk_clear_young);
+
+static int __init setup_lru_gen_reclaim_ptwalk(char *str)
+{
+	if (!str)
+		return -EINVAL;
+
+	if (!strcmp(str, "1") || !strcmp(str, "on") || !strcmp(str, "y"))
+		lru_gen_reclaim_ptwalk = true;
+	else if (!strcmp(str, "0") || !strcmp(str, "off") || !strcmp(str, "n"))
+		lru_gen_reclaim_ptwalk = false;
+	else
+		return -EINVAL;
+
+	return 0;
+}
+early_param("lru_gen_reclaim_ptwalk", setup_lru_gen_reclaim_ptwalk);
 
 static int __init init_lru_gen(void)
 {
@@ -424,6 +441,10 @@ static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *
 	bool walked = false;
 
 	if (!budget)
+		return;
+
+	/* Keep reclaim path predictable unless explicitly opted in. */
+	if (sc && !READ_ONCE(lru_gen_reclaim_ptwalk))
 		return;
 
 	/*
@@ -717,6 +738,17 @@ int lru_gen_set_ptwalk_pages(unsigned int pages)
 unsigned int lru_gen_get_ptwalk_pages(void)
 {
 	return READ_ONCE(lru_gen_ptwalk_pages);
+}
+
+int lru_gen_set_reclaim_ptwalk(bool enable)
+{
+	WRITE_ONCE(lru_gen_reclaim_ptwalk, enable);
+	return 0;
+}
+
+int lru_gen_get_reclaim_ptwalk(void)
+{
+	return READ_ONCE(lru_gen_reclaim_ptwalk);
 }
 
 int lru_gen_set_ptwalk_clear_young(bool enable)
@@ -1045,6 +1077,7 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
 	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
+	bool ptwalk_reclaim_enabled = READ_ONCE(lru_gen_reclaim_ptwalk);
 	unsigned long flags;
 	unsigned int anon_tier, file_tier;
 	unsigned long efficiency, split;
@@ -1070,12 +1103,18 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 		file_tier = file_tier ? file_tier - 1 : 0;
 	}
 
-	if (!reclaimed && scanned >= SWAP_CLUSTER_MAX)
-		lrugen->reclaim_stall = min_t(unsigned int, lrugen->reclaim_stall + 1, 16);
+	/*
+	 * When reclaim-time ptwalk is enabled, avoid feeding no-progress stalls
+	 * back into pressure escalation. This prevents positive feedback loops
+	 * between MM walk hints and reclaim aggressiveness.
+	 */
+	if (!ptwalk_reclaim_enabled && !reclaimed && scanned >= SWAP_CLUSTER_MAX)
+		lrugen->reclaim_stall = min_t(unsigned int,
+					      lrugen->reclaim_stall + 1, 16);
 	else if (lrugen->reclaim_stall)
 		lrugen->reclaim_stall >>= 1;
 
-	if (lrugen->reclaim_stall >= 4) {
+	if (!ptwalk_reclaim_enabled && lrugen->reclaim_stall >= 4) {
 		lru_gen_bump_pressure(lrugen, LRU_GEN_ANON, SWAP_CLUSTER_MAX / 2);
 		lru_gen_bump_pressure(lrugen, LRU_GEN_FILE, SWAP_CLUSTER_MAX / 2);
 	}
@@ -1112,7 +1151,7 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 
 	/* Tier-aware aging under weak reclaim or high pressure tiers. */
 	if (efficiency < 20 || anon_tier + file_tier >= MAX_NR_GENS ||
-	    lrugen->reclaim_stall >= 6 ||
+	    (!ptwalk_reclaim_enabled && lrugen->reclaim_stall >= 6) ||
 	    now - lrugen->last_reclaim >= HZ)
 		lru_gen_advance_seq(lruvec);
 
@@ -1168,11 +1207,11 @@ static int mglru_stats_show(struct seq_file *m, void *v)
 	struct pglist_data *pgdat;
 
 	seq_printf(m,
-		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d ptwalk_pages=%u ptwalk_clear_young=%d\n",
+		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d ptwalk_pages=%u reclaim_ptwalk=%d ptwalk_clear_young=%d\n",
 		   lru_gen_get_state(), lru_gen_get_min_ttl(),
 		   lru_gen_get_age_period(), lru_gen_get_weight_anon(),
 		   lru_gen_get_dedup_window(), lru_gen_get_normalize(),
-		   lru_gen_get_ptwalk_pages(),
+		   lru_gen_get_ptwalk_pages(), lru_gen_get_reclaim_ptwalk(),
 		   lru_gen_get_ptwalk_clear_young());
 
 	for_each_online_pgdat(pgdat) {
@@ -1321,6 +1360,9 @@ static ssize_t mglru_stats_write(struct file *file, const char __user *buf,
 	if (sscanf(cmd, "ptwalk_pages=%u", &val) == 1)
 		return lru_gen_set_ptwalk_pages(val) ? : count;
 
+	if (sscanf(cmd, "reclaim_ptwalk=%u", &val) == 1)
+		return lru_gen_set_reclaim_ptwalk(!!val) ? : count;
+
 	if (sscanf(cmd, "ptwalk_clear_young=%u", &val) == 1)
 		return lru_gen_set_ptwalk_clear_young(!!val) ? : count;
 
@@ -1398,11 +1440,11 @@ static int mglru_proc_show(struct seq_file *m, void *v)
 	struct pglist_data *pgdat;
 
 	seq_printf(m,
-		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d ptwalk_pages=%u ptwalk_clear_young=%d\n",
+		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d ptwalk_pages=%u reclaim_ptwalk=%d ptwalk_clear_young=%d\n",
 		   lru_gen_get_state(), lru_gen_get_min_ttl(),
 		   lru_gen_get_age_period(), lru_gen_get_weight_anon(),
 		   lru_gen_get_dedup_window(), lru_gen_get_normalize(),
-		   lru_gen_get_ptwalk_pages(),
+		   lru_gen_get_ptwalk_pages(), lru_gen_get_reclaim_ptwalk(),
 		   lru_gen_get_ptwalk_clear_young());
 
 	for_each_online_pgdat(pgdat) {
@@ -1481,6 +1523,9 @@ static int mglru_apply_command(const char *cmd)
 
 	if (sscanf(cmd, "ptwalk_pages=%u", &val) == 1)
 		return lru_gen_set_ptwalk_pages(val);
+
+	if (sscanf(cmd, "reclaim_ptwalk=%u", &val) == 1)
+		return lru_gen_set_reclaim_ptwalk(!!val);
 
 	if (sscanf(cmd, "ptwalk_clear_young=%u", &val) == 1)
 		return lru_gen_set_ptwalk_clear_young(!!val);
@@ -1748,6 +1793,33 @@ static ssize_t ptwalk_clear_young_store(struct kobject *kobj,
 	return ret ? ret : count;
 }
 
+static ssize_t reclaim_ptwalk_show(struct kobject *kobj,
+				   struct kobj_attribute *attr, char *buf)
+{
+	(void)kobj;
+	(void)attr;
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", lru_gen_get_reclaim_ptwalk());
+}
+
+static ssize_t reclaim_ptwalk_store(struct kobject *kobj,
+				    struct kobj_attribute *attr,
+				    const char *buf, size_t count)
+{
+	bool val;
+	int ret;
+
+	(void)kobj;
+	(void)attr;
+
+	ret = kstrtobool(buf, &val);
+	if (ret)
+		return ret;
+
+	ret = lru_gen_set_reclaim_ptwalk(val);
+	return ret ? ret : count;
+}
+
 static struct kobj_attribute enabled_attr = __ATTR_RW(enabled);
 static struct kobj_attribute min_ttl_ms_attr = __ATTR_RW(min_ttl_ms);
 static struct kobj_attribute age_period_ms_attr = __ATTR_RW(age_period_ms);
@@ -1756,6 +1828,7 @@ static struct kobj_attribute dedup_window_ms_attr = __ATTR_RW(dedup_window_ms);
 static struct kobj_attribute pressure_normalize_attr =
 	__ATTR_RW(pressure_normalize);
 static struct kobj_attribute ptwalk_pages_attr = __ATTR_RW(ptwalk_pages);
+static struct kobj_attribute reclaim_ptwalk_attr = __ATTR_RW(reclaim_ptwalk);
 static struct kobj_attribute ptwalk_clear_young_attr =
 	__ATTR_RW(ptwalk_clear_young);
 
@@ -1767,6 +1840,7 @@ static struct attribute *mglru_sysfs_attrs[] = {
 	&dedup_window_ms_attr.attr,
 	&pressure_normalize_attr.attr,
 	&ptwalk_pages_attr.attr,
+	&reclaim_ptwalk_attr.attr,
 	&ptwalk_clear_young_attr.attr,
 	NULL,
 };
