@@ -39,6 +39,8 @@ Currently, these files are in /proc/sys/vm:
 - lowmem_reserve_ratio
 - lru_gen_enabled
 - lru_gen_ptwalk_pages
+- lru_gen_ptwalk_clear_young
+- lru_gen_reclaim_ptwalk
 - max_map_count
 - memory_failure_early_kill
 - memory_failure_recovery
@@ -902,7 +904,7 @@ it is scanned aggressively.
 
 Valid values are:
 	0      - disable TTL protection
-	1-60000 - minimum age (in milliseconds) for oldest generations
+	1-2147483647 - minimum age (in milliseconds) for oldest generations
 
 Larger values can reduce refaults and improve latency for interactive
 workloads, but may delay reclaim and increase OOM risk under sustained
@@ -989,6 +991,39 @@ Lower values reduce reclaim-entry overhead. Higher values provide richer
 aging signals at increased CPU cost.
 
 The default value is 256.
+
+==============================================================
+
+lru_gen_ptwalk_clear_young
+
+This control toggles whether reclaim-triggered page-table sampling also
+clears PTE young/accessed bits while collecting MGLRU feedback.
+
+Valid values are:
+	0 - sample only (do not clear PTE young bits)
+	1 - sample and clear young bits during the walk
+
+Clearing young bits can improve recency signal quality for subsequent
+walks, but may add MMU/TLB churn on some workloads.
+
+The default value is 0.
+
+==============================================================
+
+lru_gen_reclaim_ptwalk
+
+This control toggles fallback page-table walks used by MGLRU in reclaim
+contexts that do not have a userspace ``current->mm`` (for example,
+kswapd).
+
+Valid values are:
+	0 - disable reclaim-context fallback MM walks
+	1 - enable fallback userspace MM sampling during reclaim
+
+Enabling this can improve aging coverage in kernel-thread reclaim
+contexts, at the cost of additional page-table walk overhead.
+
+The default value is 0.
 
 ==============================================================
 

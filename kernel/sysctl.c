@@ -316,6 +316,8 @@ static int sysctl_lru_gen_weight_anon_pct;
 static int sysctl_lru_gen_dedup_window_ms;
 static int sysctl_lru_gen_pressure_normalize;
 static int sysctl_lru_gen_ptwalk_pages;
+static int sysctl_lru_gen_ptwalk_clear_young;
+static int sysctl_lru_gen_reclaim_ptwalk;
 static int sixty_thousand = 60000;
 static int sixteen_thousand = 16384;
 static int thirty_two = 32;
@@ -437,6 +439,40 @@ static int lru_gen_ptwalk_pages_sysctl_handler(struct ctl_table *table, int writ
 		return ret;
 
 	return lru_gen_set_ptwalk_pages(val);
+}
+
+static int lru_gen_ptwalk_clear_young_sysctl_handler(struct ctl_table *table,
+						     int write, void __user *buffer,
+						     size_t *lenp, loff_t *ppos)
+{
+	struct ctl_table tmp = *table;
+	int state;
+	int ret;
+
+	state = lru_gen_get_ptwalk_clear_young();
+	tmp.data = &state;
+	ret = proc_dointvec_minmax(&tmp, write, buffer, lenp, ppos);
+	if (ret || !write)
+		return ret;
+
+	return lru_gen_set_ptwalk_clear_young(!!state);
+}
+
+static int lru_gen_reclaim_ptwalk_sysctl_handler(struct ctl_table *table, int write,
+						 void __user *buffer, size_t *lenp,
+						 loff_t *ppos)
+{
+	struct ctl_table tmp = *table;
+	int state;
+	int ret;
+
+	state = lru_gen_get_reclaim_ptwalk();
+	tmp.data = &state;
+	ret = proc_dointvec_minmax(&tmp, write, buffer, lenp, ppos);
+	if (ret || !write)
+		return ret;
+
+	return lru_gen_set_reclaim_ptwalk(!!state);
 }
 #endif
 
@@ -2039,7 +2075,7 @@ static struct ctl_table vm_table[] = {
 		.mode		= 0644,
 		.proc_handler	= lru_gen_min_ttl_sysctl_handler,
 		.extra1		= &zero,
-		.extra2		= &sixty_thousand,
+		.extra2		= &int_max,
 	},
 	{
 		.procname	= "lru_gen_age_period_ms",
@@ -2085,6 +2121,24 @@ static struct ctl_table vm_table[] = {
 		.proc_handler	= lru_gen_ptwalk_pages_sysctl_handler,
 		.extra1		= &thirty_two,
 		.extra2		= &sixteen_thousand,
+	},
+	{
+		.procname	= "lru_gen_ptwalk_clear_young",
+		.data		= &sysctl_lru_gen_ptwalk_clear_young,
+		.maxlen		= sizeof(sysctl_lru_gen_ptwalk_clear_young),
+		.mode		= 0644,
+		.proc_handler	= lru_gen_ptwalk_clear_young_sysctl_handler,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+	{
+		.procname	= "lru_gen_reclaim_ptwalk",
+		.data		= &sysctl_lru_gen_reclaim_ptwalk,
+		.maxlen		= sizeof(sysctl_lru_gen_reclaim_ptwalk),
+		.mode		= 0644,
+		.proc_handler	= lru_gen_reclaim_ptwalk_sysctl_handler,
+		.extra1		= &zero,
+		.extra2		= &one,
 	},
 #endif
 #ifdef CONFIG_HUGETLB_PAGE

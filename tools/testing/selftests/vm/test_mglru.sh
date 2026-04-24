@@ -66,6 +66,8 @@ require_file "$sysctl_dir/lru_gen_weight_anon_pct"
 require_file "$sysctl_dir/lru_gen_dedup_window_ms"
 require_file "$sysctl_dir/lru_gen_pressure_normalize"
 require_file "$sysctl_dir/lru_gen_ptwalk_pages"
+require_file "$sysctl_dir/lru_gen_ptwalk_clear_young"
+require_file "$sysctl_dir/lru_gen_reclaim_ptwalk"
 require_file "$proc_lru_gen"
 require_vmstat_key mglru_aged
 require_vmstat_key mglru_mm_walk_success
@@ -84,6 +86,8 @@ orig_weight=$(read_int "$sysctl_dir/lru_gen_weight_anon_pct")
 orig_dedup=$(read_int "$sysctl_dir/lru_gen_dedup_window_ms")
 orig_norm=$(read_int "$sysctl_dir/lru_gen_pressure_normalize")
 orig_ptwalk=$(read_int "$sysctl_dir/lru_gen_ptwalk_pages")
+orig_ptwalk_clear=$(read_int "$sysctl_dir/lru_gen_ptwalk_clear_young")
+orig_reclaim_ptwalk=$(read_int "$sysctl_dir/lru_gen_reclaim_ptwalk")
 
 cleanup()
 {
@@ -94,6 +98,8 @@ cleanup()
 	write_int "$orig_dedup" "$sysctl_dir/lru_gen_dedup_window_ms" || true
 	write_int "$orig_norm" "$sysctl_dir/lru_gen_pressure_normalize" || true
 	write_int "$orig_ptwalk" "$sysctl_dir/lru_gen_ptwalk_pages" || true
+	write_int "$orig_ptwalk_clear" "$sysctl_dir/lru_gen_ptwalk_clear_young" || true
+	write_int "$orig_reclaim_ptwalk" "$sysctl_dir/lru_gen_reclaim_ptwalk" || true
 }
 trap cleanup EXIT
 
@@ -106,6 +112,9 @@ write_int 1 "$sysctl_dir/lru_gen_enabled"
 [ "$(read_int "$sysctl_dir/lru_gen_enabled")" = "1" ] || exit 1
 
 # Verify range clamping behavior exposed by implementation.
+write_int 120000 "$sysctl_dir/lru_gen_min_ttl_ms"
+[ "$(read_int "$sysctl_dir/lru_gen_min_ttl_ms")" = "120000" ] || exit 1
+
 write_int 1 "$sysctl_dir/lru_gen_age_period_ms"
 [ "$(read_int "$sysctl_dir/lru_gen_age_period_ms")" = "100" ] || exit 1
 write_int 999999 "$sysctl_dir/lru_gen_age_period_ms"
@@ -121,6 +130,14 @@ write_int 1 "$sysctl_dir/lru_gen_ptwalk_pages"
 [ "$(read_int "$sysctl_dir/lru_gen_ptwalk_pages")" = "32" ] || exit 1
 write_int 999999 "$sysctl_dir/lru_gen_ptwalk_pages"
 [ "$(read_int "$sysctl_dir/lru_gen_ptwalk_pages")" = "16384" ] || exit 1
+write_int 1 "$sysctl_dir/lru_gen_ptwalk_clear_young"
+[ "$(read_int "$sysctl_dir/lru_gen_ptwalk_clear_young")" = "1" ] || exit 1
+write_int 0 "$sysctl_dir/lru_gen_ptwalk_clear_young"
+[ "$(read_int "$sysctl_dir/lru_gen_ptwalk_clear_young")" = "0" ] || exit 1
+write_int 1 "$sysctl_dir/lru_gen_reclaim_ptwalk"
+[ "$(read_int "$sysctl_dir/lru_gen_reclaim_ptwalk")" = "1" ] || exit 1
+write_int 0 "$sysctl_dir/lru_gen_reclaim_ptwalk"
+[ "$(read_int "$sysctl_dir/lru_gen_reclaim_ptwalk")" = "0" ] || exit 1
 
 # Validate /proc/lru_gen controls and output shape.
 aged_before=$(vmstat_read mglru_aged)
@@ -137,6 +154,10 @@ echo normalize=0 > "$proc_lru_gen"
 [ "$(read_int "$sysctl_dir/lru_gen_pressure_normalize")" = "0" ] || exit 1
 echo normalize=1 > "$proc_lru_gen"
 [ "$(read_int "$sysctl_dir/lru_gen_pressure_normalize")" = "1" ] || exit 1
+echo ptwalk_clear_young=1 > "$proc_lru_gen"
+[ "$(read_int "$sysctl_dir/lru_gen_ptwalk_clear_young")" = "1" ] || exit 1
+echo reclaim_ptwalk=1 > "$proc_lru_gen"
+[ "$(read_int "$sysctl_dir/lru_gen_reclaim_ptwalk")" = "1" ] || exit 1
 echo reset > "$proc_lru_gen"
 if echo definitely_invalid_command > "$proc_lru_gen" 2>/dev/null; then
 	echo "[FAIL] invalid /proc/lru_gen command unexpectedly succeeded"

@@ -18,6 +18,8 @@ The following sysctls are available under ``/proc/sys/vm``:
 * ``lru_gen_dedup_window_ms``: deduplicate bursty access samples.
 * ``lru_gen_pressure_normalize``: normalize pressure counters over time.
 * ``lru_gen_ptwalk_pages``: cap PTE samples per reclaim-triggered page table walk.
+* ``lru_gen_ptwalk_clear_young``: clear sampled PTE young bits while walking.
+* ``lru_gen_reclaim_ptwalk``: allow fallback MM sampling in reclaim contexts.
 * reclaim-context MM walks first sample ``current->mm`` and can
   opportunistically sample a fallback userspace mm during global reclaim
   when reclaim runs in kernel threads.
@@ -32,6 +34,8 @@ When ``CONFIG_SYSFS=y``, the same tunables are also available under
 * ``dedup_window_ms``
 * ``pressure_normalize``
 * ``ptwalk_pages``
+* ``ptwalk_clear_young``
+* ``reclaim_ptwalk``
 
 Debugfs interface
 =================
@@ -56,6 +60,8 @@ Writing supported commands:
 * ``dedup_window_ms=<n>``: set ``lru_gen_dedup_window_ms``.
 * ``normalize=<0|1>``: set ``lru_gen_pressure_normalize``.
 * ``ptwalk_pages=<n>``: set ``lru_gen_ptwalk_pages``.
+* ``ptwalk_clear_young=<0|1>``: set ``lru_gen_ptwalk_clear_young``.
+* ``reclaim_ptwalk=<0|1>``: set ``lru_gen_reclaim_ptwalk``.
 
 Procfs interface
 ================
@@ -76,6 +82,8 @@ Writing accepts the following commands:
 * ``dedup_window_ms=<n>``: set ``lru_gen_dedup_window_ms``.
 * ``normalize=<0|1>``: set ``lru_gen_pressure_normalize``.
 * ``ptwalk_pages=<n>``: set ``lru_gen_ptwalk_pages``.
+* ``ptwalk_clear_young=<0|1>``: set ``lru_gen_ptwalk_clear_young``.
+* ``reclaim_ptwalk=<0|1>``: set ``lru_gen_reclaim_ptwalk``.
 
 VM statistics
 =============
