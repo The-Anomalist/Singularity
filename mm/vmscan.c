@@ -3142,7 +3142,13 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 	mglru_reclaimable = lru_gen_shrink_node(pgdat, sc);
 	if (sc->nr_reclaimed > reclaimed_before)
 		return true;
-	if (mglru_reclaimable)
+	/*
+	 * Keep kswapd on the MGLRU path, but let direct reclaim fall back to
+	 * legacy reclaim when MGLRU reports reclaimable generations without
+	 * making progress in this round. This avoids long foreground stalls
+	 * under sustained pressure (e.g. interactive unlock paths).
+	 */
+	if (mglru_reclaimable && current_is_kswapd())
 		return true;
 
 	return shrink_node_reclaim(pgdat, sc) || mglru_reclaimable;
