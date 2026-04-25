@@ -37,6 +37,10 @@ Currently, these files are in /proc/sys/vm:
 - laptop_mode
 - legacy_va_layout
 - lowmem_reserve_ratio
+- lru_gen_enabled
+- lru_gen_ptwalk_pages
+- lru_gen_ptwalk_clear_young
+- lru_gen_reclaim_ptwalk
 - max_map_count
 - memory_failure_early_kill
 - memory_failure_recovery
@@ -874,6 +878,152 @@ initiate swap until the amount of free and file-backed pages is less
 than the high water mark in a zone.
 
 The default value is 60.
+
+==============================================================
+
+lru_gen_enabled
+
+This control enables or disables the Multi-Gen LRU reclaim policy at
+runtime.
+
+Valid values are:
+	0 - disable Multi-Gen LRU and fall back to classic reclaim heuristics
+	1 - enable Multi-Gen LRU reclaim decisions
+
+This setting is global and applies to reclaim behavior on all nodes.
+
+The default value follows the boot-time Multi-Gen LRU setting.
+
+==============================================================
+
+lru_gen_min_ttl_ms
+
+This control protects hot working sets under Multi-Gen LRU by applying
+an optional minimum time-to-live (TTL) for the oldest generation before
+it is scanned aggressively.
+
+Valid values are:
+	0      - disable TTL protection
+	1-2147483647 - minimum age (in milliseconds) for oldest generations
+
+Larger values can reduce refaults and improve latency for interactive
+workloads, but may delay reclaim and increase OOM risk under sustained
+memory pressure.
+
+The default value is 0.
+
+==============================================================
+
+lru_gen_age_period_ms
+
+This control adjusts how frequently Multi-Gen LRU advances generations
+based on elapsed time.
+
+Valid values are:
+	100-60000 - target aging period in milliseconds
+
+Lower values age generations more frequently (more responsive reclaim
+feedback). Higher values retain current generations longer (more stable
+but less reactive reclaim behavior).
+
+The default value is 1000.
+
+==============================================================
+
+lru_gen_weight_anon_pct
+
+This control applies an explicit weighting bias to Multi-Gen LRU scan
+selection.
+
+Valid values are:
+	0-100 - preferred anonymous-memory scan share in percent
+
+At 50, anon and file pressure are weighted neutrally. Lower values bias
+reclaim toward file cache. Higher values bias reclaim toward anonymous
+memory.
+
+The default value is 50.
+
+==============================================================
+
+lru_gen_dedup_window_ms
+
+This control deduplicates very-frequent access feedback samples under
+Multi-Gen LRU to avoid overweighting bursty access patterns.
+
+Valid values are:
+	0-1000 - deduplication window in milliseconds
+
+At 0, deduplication is disabled. Higher values suppress more repeated
+samples from short bursts.
+
+The default value is 25.
+
+==============================================================
+
+lru_gen_pressure_normalize
+
+This control enables or disables pressure normalization in Multi-Gen
+LRU.
+
+Valid values are:
+	0 - disable normalization
+	1 - normalize pressure counters to avoid long-term drift
+
+Normalization keeps reclaim pressure accounting numerically stable
+without changing relative pressure between anon and file types.
+
+The default value is 1.
+
+==============================================================
+
+lru_gen_ptwalk_pages
+
+This control configures the number of PTEs that Multi-Gen LRU samples
+from the current task's address space while entering direct reclaim.
+This page-table walk feedback augments aging with MMU access-bit
+signals.
+
+Valid values are:
+	32-16384 - maximum PTEs sampled per reclaim entry
+
+Lower values reduce reclaim-entry overhead. Higher values provide richer
+aging signals at increased CPU cost.
+
+The default value is 256.
+
+==============================================================
+
+lru_gen_ptwalk_clear_young
+
+This control toggles whether reclaim-triggered page-table sampling also
+clears PTE young/accessed bits while collecting MGLRU feedback.
+
+Valid values are:
+	0 - sample only (do not clear PTE young bits)
+	1 - sample and clear young bits during the walk
+
+Clearing young bits can improve recency signal quality for subsequent
+walks, but may add MMU/TLB churn on some workloads.
+
+The default value is 0.
+
+==============================================================
+
+lru_gen_reclaim_ptwalk
+
+This control toggles fallback page-table walks used by MGLRU in reclaim
+contexts that do not have a userspace ``current->mm`` (for example,
+kswapd).
+
+Valid values are:
+	0 - disable reclaim-context fallback MM walks
+	1 - enable fallback userspace MM sampling during reclaim
+
+Enabling this can improve aging coverage in kernel-thread reclaim
+contexts, at the cost of additional page-table walk overhead.
+
+The default value is 0.
 
 ==============================================================
 

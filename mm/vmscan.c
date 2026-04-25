@@ -334,6 +334,11 @@ static inline bool memcg_congested(struct pglist_data *pgdat,
 }
 #endif
 
+bool scan_control_global_reclaim(struct scan_control *sc)
+{
+	return global_reclaim(sc);
+}
+
 /*
  * This misses isolated pages which are not accounted for to save counters.
  * As the data only determines if reclaim or compaction continues, it is
@@ -1299,8 +1304,12 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 
 		switch (references) {
 		case PAGEREF_ACTIVATE:
+			lru_gen_note_page_referenced(mem_cgroup_page_lruvec(page, pgdat),
+						     page, true);
 			goto activate_locked;
 		case PAGEREF_KEEP:
+			lru_gen_note_page_referenced(mem_cgroup_page_lruvec(page, pgdat),
+						     page, true);
 			nr_ref_keep++;
 			goto keep_locked;
 		case PAGEREF_RECLAIM:
@@ -1739,30 +1748,78 @@ static unsigned long isolate_lru_pages(unsigned long nr_to_scan,
 		unsigned long *nr_scanned, struct scan_control *sc,
 		isolate_mode_t mode, enum lru_list lru)
 {
-	struct list_head *src = &lruvec->lists[lru];
+	struct list_head *src;
 	unsigned long nr_taken = 0;
 	unsigned long nr_zone_taken[MAX_NR_ZONES] = { 0 };
 	unsigned long nr_skipped[MAX_NR_ZONES] = { 0, };
 	unsigned long skipped = 0;
 	unsigned long scan, total_scan, nr_pages;
 	LIST_HEAD(pages_skipped);
+	bool gen_native = false;
+#ifdef CONFIG_LRU_GEN
+	unsigned int type = is_file_lru(lru) ? LRU_GEN_FILE : LRU_GEN_ANON;
+	unsigned long seq;
+	int selected_zid = 0;
+#endif
 
 	scan = 0;
+#ifdef CONFIG_LRU_GEN
+	gen_native = lru_gen_enabled() && lru_gen_get_state() && lru != LRU_UNEVICTABLE;
+#endif
+
 	for (total_scan = 0;
-	     scan < nr_to_scan && nr_taken < nr_to_scan && !list_empty(src);
+	     scan < nr_to_scan && nr_taken < nr_to_scan;
 	     total_scan++) {
 		struct page *page;
+
+		if (!gen_native) {
+			src = &lruvec->lists[lru];
+			if (list_empty(src))
+				break;
+		}
+#ifdef CONFIG_LRU_GEN
+		else {
+			int zid;
+			bool found = false;
+
+			for (zid = sc->reclaim_idx; zid >= 0; zid--) {
+				if (is_active_lru(lru))
+					seq = lruvec->lrugen.max_seq;
+				else
+					seq = lruvec->lrugen.min_seq[type];
+
+				src = &lruvec->lrugen.lists[seq % MAX_NR_GENS][type][zid];
+				if (!list_empty(src)) {
+					selected_zid = zid;
+					found = true;
+					break;
+				}
+			}
+
+			if (!found)
+				break;
+		}
+#endif
 
 		page = lru_to_page(src);
 		prefetchw_prev_lru_page(page, src, flags);
 
 		VM_BUG_ON_PAGE(!PageLRU(page), page);
 
-		if (page_zonenum(page) > sc->reclaim_idx) {
+		if (!gen_native && page_zonenum(page) > sc->reclaim_idx) {
 			list_move(&page->lru, &pages_skipped);
 			nr_skipped[page_zonenum(page)]++;
 			continue;
 		}
+#ifdef CONFIG_LRU_GEN
+		if (gen_native && page_zonenum(page) != selected_zid) {
+			enum zone_type zid = page_zonenum(page);
+
+			list_move(&page->lru, lruvec_lru_list(lruvec, lru, zid));
+			nr_skipped[zid]++;
+			continue;
+		}
+#endif
 
 		/*
 		 * Do not count skipped pages because that makes the function
@@ -1796,7 +1853,7 @@ static unsigned long isolate_lru_pages(unsigned long nr_to_scan,
 	 * scanning would soon rescan the same pages to skip and put the
 	 * system at risk of premature OOM.
 	 */
-	if (!list_empty(&pages_skipped)) {
+	if (!gen_native && !list_empty(&pages_skipped)) {
 		int zid;
 
 		list_splice(&pages_skipped, src);
@@ -2032,6 +2089,8 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 	if (nr_taken == 0)
 		return 0;
 
+	lru_gen_track_page_scan(lruvec, lru, nr_scanned, nr_taken, 0);
+
 	nr_reclaimed = shrink_page_list(&page_list, pgdat, sc, 0,
 				&stat, false);
 
@@ -2071,6 +2130,8 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 	 */
 	if (stat.nr_unqueued_dirty == nr_taken)
 		wakeup_flusher_threads(WB_REASON_VMSCAN);
+
+	lru_gen_track_page_scan(lruvec, lru, nr_scanned, nr_taken, nr_reclaimed);
 
 	sc->nr.dirty += stat.nr_dirty;
 	sc->nr.congested += stat.nr_congested;
@@ -2125,7 +2186,11 @@ static unsigned move_active_pages_to_lru(struct lruvec *lruvec,
 
 		nr_pages = hpage_nr_pages(page);
 		update_lru_size(lruvec, lru, page_zonenum(page), nr_pages);
-		list_move(&page->lru, &lruvec->lists[lru]);
+		list_move(&page->lru,
+			  lruvec_lru_list(lruvec, lru, page_zonenum(page)));
+		lru_gen_note_lru_move(lruvec,
+				      is_active_lru(lru) ? lru : lru + LRU_ACTIVE,
+				      lru, nr_pages);
 
 		if (put_page_testzero(page)) {
 			__ClearPageLRU(page);
@@ -2190,6 +2255,8 @@ static void shrink_active_list(unsigned long nr_to_scan,
 
 	spin_unlock_irq(&pgdat->lru_lock);
 
+	lru_gen_track_page_scan(lruvec, lru, nr_scanned, nr_taken, 0);
+
 	while (!list_empty(&l_hold)) {
 		cond_resched();
 		page = lru_to_page(&l_hold);
@@ -2210,6 +2277,7 @@ static void shrink_active_list(unsigned long nr_to_scan,
 
 		if (page_referenced(page, 0, sc->target_mem_cgroup,
 				    &vm_flags)) {
+			lru_gen_note_page_referenced(lruvec, page, true);
 			nr_rotated += hpage_nr_pages(page);
 			/*
 			 * Identify referenced, file-backed active pages and
@@ -2558,6 +2626,8 @@ out:
 		*lru_pages += size;
 		nr[lru] = scan;
 	}
+
+	lru_gen_adjust_scan(lruvec, sc, nr);
 }
 
 /*
@@ -2574,6 +2644,7 @@ static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memc
 	unsigned long nr_reclaimed = 0;
 	unsigned long nr_to_reclaim = sc->nr_to_reclaim;
 	unsigned long reclaimed_before = sc->nr_reclaimed;
+	unsigned long scanned_before = sc->nr_scanned;
 	struct blk_plug plug;
 	bool scan_adjusted;
 
@@ -2669,6 +2740,8 @@ static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memc
 		scan_adjusted = true;
 	}
 	blk_finish_plug(&plug);
+	lru_gen_tune_memcg(lruvec, sc, sc->nr_reclaimed - reclaimed_before,
+			   sc->nr_scanned - scanned_before);
 	sc->nr_reclaimed += nr_reclaimed;
 	sqh_mem_reclaim(pgdat, sc->nr_reclaimed - reclaimed_before, current_is_kswapd());
 
@@ -2771,7 +2844,7 @@ static bool pgdat_memcg_congested(pg_data_t *pgdat, struct mem_cgroup *memcg)
 		(memcg && memcg_congested(pgdat, memcg));
 }
 
-static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
+static bool shrink_node_reclaim(pg_data_t *pgdat, struct scan_control *sc)
 {
 	struct reclaim_state *reclaim_state = current->reclaim_state;
 	unsigned long nr_reclaimed, nr_scanned;
@@ -2831,6 +2904,9 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 
 			reclaimed = sc->nr_reclaimed;
 			scanned = sc->nr_scanned;
+#ifdef CONFIG_LRU_GEN
+			lru_gen_enter_reclaim(mem_cgroup_lruvec(pgdat, memcg), sc);
+#endif
 			shrink_node_memcg(pgdat, memcg, sc, &lru_pages);
 			node_lru_pages += lru_pages;
 
@@ -2953,6 +3029,129 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 		pgdat->kswapd_failures = 0;
 
 	return reclaimable;
+}
+
+#ifdef CONFIG_LRU_GEN
+static bool mglru_has_reclaimable(struct lruvec *lruvec)
+{
+	struct lru_gen_struct *lrugen = &lruvec->lrugen;
+	unsigned long flags;
+	unsigned int type, zone;
+	bool reclaimable = false;
+
+	spin_lock_irqsave(&lruvec_pgdat(lruvec)->lru_lock, flags);
+	for (type = 0; type < ANON_AND_FILE && !reclaimable; type++) {
+		unsigned int gen = lrugen->min_seq[type] % MAX_NR_GENS;
+
+		for (zone = 0; zone < MAX_NR_ZONES; zone++) {
+			if (lrugen->nr_pages[gen][type][zone] > 0) {
+				reclaimable = true;
+				break;
+			}
+		}
+	}
+	spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
+
+	return reclaimable;
+}
+
+static bool shrink_node_reclaim_mglru(pg_data_t *pgdat, struct scan_control *sc)
+{
+	unsigned long reclaimed_before = sc->nr_reclaimed;
+	unsigned long scanned_before = sc->nr_scanned;
+	unsigned int original_priority = sc->priority;
+	bool reclaimable = false;
+	bool may_retry = true;
+	unsigned int pass;
+
+	/*
+	 * Run reclaim in multiple MGLRU-guided passes:
+	 *  - each pass refreshes generation aging signals;
+	 *  - stalled passes may retry once with soft memcg protection relaxed.
+	 */
+	for (pass = 0; pass < MIN_NR_GENS * 2 && may_retry; pass++) {
+		unsigned long reclaimed = sc->nr_reclaimed;
+		unsigned long scanned = sc->nr_scanned;
+		unsigned int boost = pass / MIN_NR_GENS;
+
+		lru_gen_enter_reclaim(node_lruvec(pgdat), sc);
+		reclaimable |= shrink_node_reclaim(pgdat, sc);
+
+		if (!global_reclaim(sc) && sc->nr_reclaimed >= sc->nr_to_reclaim)
+			break;
+
+		if (sc->nr_reclaimed == reclaimed && sc->nr_scanned > scanned &&
+		    !sc->memcg_low_reclaim) {
+			sc->memcg_low_reclaim = 1;
+			continue;
+		}
+
+		/*
+		 * If this pass scanned pages but reclaimed none, stop retrying
+		 * MGLRU in this round and let callers fall back to legacy
+		 * reclaim. This avoids CPU-heavy retry loops under unstable
+		 * feedback or stale generation metadata.
+		 */
+		if (sc->nr_reclaimed == reclaimed && sc->nr_scanned > scanned)
+			break;
+
+		if (pass + 1 >= MIN_NR_GENS && !sc->memcg_low_reclaim)
+			sc->memcg_low_reclaim = 1;
+
+		/*
+		 * If reclaim keeps scanning but makes no progress, gradually
+		 * increase reclaim aggressiveness by lowering priority.
+		 */
+		if (sc->nr_reclaimed == reclaimed && sc->nr_scanned > scanned &&
+		    sc->priority && boost)
+			sc->priority--;
+
+		/*
+		 * If the current oldest generations are empty, there is no
+		 * immediate MGLRU work to do. Fall back to legacy reclaim so
+		 * balancing logic can proceed without spinning on empty gens.
+		 */
+		if (!mglru_has_reclaimable(node_lruvec(pgdat)))
+			break;
+
+		may_retry = should_continue_reclaim(pgdat,
+						    sc->nr_reclaimed - reclaimed_before,
+						    sc->nr_scanned - scanned_before, sc);
+		reclaimed_before = sc->nr_reclaimed;
+		scanned_before = sc->nr_scanned;
+	}
+
+	sc->priority = original_priority;
+	return reclaimable;
+}
+
+bool lru_gen_shrink_node(pg_data_t *pgdat, struct scan_control *sc)
+{
+	if (!lru_gen_enabled())
+		return false;
+
+	if (!lru_gen_get_state())
+		return false;
+
+	return shrink_node_reclaim_mglru(pgdat, sc);
+}
+#endif
+
+static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
+{
+	unsigned long reclaimed_before = sc->nr_reclaimed;
+	bool mglru_reclaimable = false;
+
+	/*
+	 * Always try MGLRU first when enabled. If MGLRU reports reclaimable
+	 * generations but does not reclaim in this round, keep reclaim on the
+	 * MGLRU path instead of immediately doubling work with legacy reclaim.
+	 * Fall back only when MGLRU has no reclaimable generations.
+	 */
+	mglru_reclaimable = lru_gen_shrink_node(pgdat, sc);
+	if (sc->nr_reclaimed > reclaimed_before)
+		return true;
+	return shrink_node_reclaim(pgdat, sc) || mglru_reclaimable;
 }
 
 /*

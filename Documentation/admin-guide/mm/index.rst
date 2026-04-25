@@ -29,6 +29,7 @@ the Linux memory management.
    hugetlbpage
    idle_page_tracking
    ksm
+   mglru
    numa_memory_policy
    pagemap
    soft-dirty

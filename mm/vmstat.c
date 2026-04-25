@@ -1296,6 +1296,15 @@ const char * const vmstat_text[] = {
 	"swap_ra",
 	"swap_ra_hit",
 #endif
+#ifdef CONFIG_LRU_GEN
+	"mglru_aged",
+	"mglru_evicted",
+	"mglru_activated",
+	"mglru_deduped",
+	"mglru_mm_walk_success",
+	"mglru_mm_walk_fail",
+	"mglru_mm_walk_fallback",
+#endif
 #endif /* CONFIG_VM_EVENT_COUNTERS */
 };
 #endif /* CONFIG_PROC_FS || CONFIG_SYSFS || CONFIG_NUMA */
