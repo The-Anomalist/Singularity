@@ -3057,71 +3057,28 @@ static bool mglru_has_reclaimable(struct lruvec *lruvec)
 
 static bool shrink_node_reclaim_mglru(pg_data_t *pgdat, struct scan_control *sc)
 {
-	unsigned long reclaimed_before = sc->nr_reclaimed;
-	unsigned long scanned_before = sc->nr_scanned;
-	unsigned int original_priority = sc->priority;
-	bool reclaimable = false;
-	bool may_retry = true;
-	unsigned int pass;
+	unsigned long reclaimed = sc->nr_reclaimed;
+	unsigned long scanned = sc->nr_scanned;
+	bool reclaimable;
+
+	lru_gen_enter_reclaim(node_lruvec(pgdat), sc);
+	reclaimable = shrink_node_reclaim(pgdat, sc);
 
 	/*
-	 * Run reclaim in multiple MGLRU-guided passes:
-	 *  - each pass refreshes generation aging signals;
-	 *  - stalled passes may retry once with soft memcg protection relaxed.
+	 * Keep MGLRU retry behavior intentionally conservative on 4.19.
+	 * A single retry with memory.low relaxed preserves forward progress
+	 * without the CPU-heavy multi-pass loops that can stall the system.
 	 */
-	for (pass = 0; pass < MIN_NR_GENS * 2 && may_retry; pass++) {
-		unsigned long reclaimed = sc->nr_reclaimed;
-		unsigned long scanned = sc->nr_scanned;
-		unsigned int boost = pass / MIN_NR_GENS;
-
+	if (sc->nr_reclaimed == reclaimed && sc->nr_scanned > scanned &&
+	    !sc->memcg_low_reclaim) {
+		sc->memcg_low_reclaim = 1;
 		lru_gen_enter_reclaim(node_lruvec(pgdat), sc);
 		reclaimable |= shrink_node_reclaim(pgdat, sc);
-
-		if (!global_reclaim(sc) && sc->nr_reclaimed >= sc->nr_to_reclaim)
-			break;
-
-		if (sc->nr_reclaimed == reclaimed && sc->nr_scanned > scanned &&
-		    !sc->memcg_low_reclaim) {
-			sc->memcg_low_reclaim = 1;
-			continue;
-		}
-
-		/*
-		 * If this pass scanned pages but reclaimed none, stop retrying
-		 * MGLRU in this round and let callers fall back to legacy
-		 * reclaim. This avoids CPU-heavy retry loops under unstable
-		 * feedback or stale generation metadata.
-		 */
-		if (sc->nr_reclaimed == reclaimed && sc->nr_scanned > scanned)
-			break;
-
-		if (pass + 1 >= MIN_NR_GENS && !sc->memcg_low_reclaim)
-			sc->memcg_low_reclaim = 1;
-
-		/*
-		 * If reclaim keeps scanning but makes no progress, gradually
-		 * increase reclaim aggressiveness by lowering priority.
-		 */
-		if (sc->nr_reclaimed == reclaimed && sc->nr_scanned > scanned &&
-		    sc->priority && boost)
-			sc->priority--;
-
-		/*
-		 * If the current oldest generations are empty, there is no
-		 * immediate MGLRU work to do. Fall back to legacy reclaim so
-		 * balancing logic can proceed without spinning on empty gens.
-		 */
-		if (!mglru_has_reclaimable(node_lruvec(pgdat)))
-			break;
-
-		may_retry = should_continue_reclaim(pgdat,
-						    sc->nr_reclaimed - reclaimed_before,
-						    sc->nr_scanned - scanned_before, sc);
-		reclaimed_before = sc->nr_reclaimed;
-		scanned_before = sc->nr_scanned;
 	}
 
-	sc->priority = original_priority;
+	if (!reclaimable)
+		reclaimable = mglru_has_reclaimable(node_lruvec(pgdat));
+
 	return reclaimable;
 }
 
@@ -3140,6 +3097,7 @@ bool lru_gen_shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 {
 	unsigned long reclaimed_before = sc->nr_reclaimed;
+	unsigned long scanned_before = sc->nr_scanned;
 	bool mglru_reclaimable = false;
 
 	/*
@@ -3151,6 +3109,15 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 	mglru_reclaimable = lru_gen_shrink_node(pgdat, sc);
 	if (sc->nr_reclaimed > reclaimed_before)
 		return true;
+
+	/*
+	 * Do not immediately run a second reclaim pass when MGLRU already
+	 * scanned pages in this round; that duplicate work is prone to long
+	 * reclaim stalls on 4.19 backports.
+	 */
+	if (sc->nr_scanned > scanned_before)
+		return mglru_reclaimable;
+
 	return shrink_node_reclaim(pgdat, sc) || mglru_reclaimable;
 }
 
