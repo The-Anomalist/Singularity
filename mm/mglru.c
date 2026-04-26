@@ -44,12 +44,6 @@ static bool __read_mostly lru_gen_reclaim_ptwalk;
 static bool __read_mostly lru_gen_reclaim_feedback;
 static bool __read_mostly lru_gen_reclaim_advance;
 static bool __read_mostly lru_gen_ptwalk_fallback;
-/*
- * Reclaim-time MM walk throttling must be shared by all memcg lruvecs on a
- * node; otherwise each memcg can trigger its own walk and create reclaim
- * stalls under memory pressure.
- */
-static unsigned long lru_gen_mm_walk_seq[MAX_NUMNODES];
 #ifdef CONFIG_DEBUG_FS
 static struct dentry *mglru_debugfs_root;
 #endif
@@ -96,10 +90,11 @@ static void lru_gen_bump_pressure(struct lru_gen_struct *lrugen,
 static void lru_gen_reset_all_lruvecs(void)
 {
 	struct mem_cgroup *memcg = NULL;
-	int nid;
 
 	memcg = mem_cgroup_iter(NULL, NULL, NULL);
 	do {
+		int nid;
+
 		for_each_node(nid) {
 			pg_data_t *pgdat = NODE_DATA(nid);
 			struct lruvec *lruvec = mem_cgroup_lruvec(pgdat, memcg);
@@ -110,9 +105,6 @@ static void lru_gen_reset_all_lruvecs(void)
 			spin_unlock_irqrestore(&pgdat->lru_lock, flags);
 		}
 	} while ((memcg = mem_cgroup_iter(NULL, memcg, NULL)));
-
-	for_each_node(nid)
-		WRITE_ONCE(lru_gen_mm_walk_seq[nid], jiffies);
 }
 
 static int __init setup_lru_gen(char *str)
@@ -477,13 +469,11 @@ static struct mm_struct *lru_gen_pick_fallback_mm(void)
 static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *sc)
 {
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
-	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
 	struct mm_struct *mm = current->mm;
 	unsigned long budget = READ_ONCE(lru_gen_ptwalk_pages);
 	unsigned long now = jiffies;
 	unsigned long interval = HZ;
 	unsigned long last_seq;
-	unsigned long global_seq;
 	unsigned long flags;
 	bool walked = false;
 
@@ -513,25 +503,14 @@ static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *
 	 * Throttle page-table sampling in reclaim contexts to avoid reclaim
 	 * stalls under sustained memory pressure.
 	 */
-	spin_lock_irqsave(&pgdat->lru_lock, flags);
+	spin_lock_irqsave(&lruvec_pgdat(lruvec)->lru_lock, flags);
 	last_seq = lrugen->mm_walk_seq;
-	global_seq = lru_gen_mm_walk_seq[pgdat->node_id];
-	if (time_before(now, last_seq + interval) ||
-	    time_before(now, global_seq + interval)) {
-		spin_unlock_irqrestore(&pgdat->lru_lock, flags);
+	if (time_before(now, last_seq + interval)) {
+		spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
 		return;
 	}
 	lrugen->mm_walk_seq = now;
-	lru_gen_mm_walk_seq[pgdat->node_id] = now;
-	spin_unlock_irqrestore(&pgdat->lru_lock, flags);
-
-	/*
-	 * Keep reclaim paths responsive: use a bounded sample size regardless
-	 * of user tuning. Debug/proactive sampling (sc == NULL) still uses the
-	 * configured budget.
-	 */
-	if (sc)
-		budget = min_t(unsigned long, budget, SWAP_CLUSTER_MAX * 8);
+	spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
 
 	if (mm) {
 		walked = lru_gen_scan_mm(lruvec, mm, budget);
@@ -542,14 +521,14 @@ static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *
 			walked = lru_gen_scan_mm(lruvec, mm,
 						 max_t(unsigned long, budget / 2, 32));
 			mmput(mm);
-			spin_lock_irqsave(&pgdat->lru_lock, flags);
+			spin_lock_irqsave(&lruvec_pgdat(lruvec)->lru_lock, flags);
 			lrugen->mm_walk_fallback++;
-			spin_unlock_irqrestore(&pgdat->lru_lock, flags);
+			spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
 			count_vm_event(MGLRU_MM_WALK_FALLBACK);
 		}
 	}
 
-	spin_lock_irqsave(&pgdat->lru_lock, flags);
+	spin_lock_irqsave(&lruvec_pgdat(lruvec)->lru_lock, flags);
 	if (walked) {
 		lrugen->mm_walk_success++;
 		count_vm_event(MGLRU_MM_WALK_SUCCESS);
@@ -557,7 +536,7 @@ static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *
 		lrugen->mm_walk_failures++;
 		count_vm_event(MGLRU_MM_WALK_FAIL);
 	}
-	spin_unlock_irqrestore(&pgdat->lru_lock, flags);
+	spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
 }
 void lru_gen_update_size(struct lruvec *lruvec, enum lru_list lru,
 			 enum zone_type zid, long delta)
@@ -1290,7 +1269,6 @@ static int mglru_stats_show(struct seq_file *m, void *v)
 		unsigned long flags;
 		unsigned long anon_age, file_age;
 		unsigned long anon_old, file_old;
-		unsigned long global_mm_walk_age;
 
 		spin_lock_irqsave(&pgdat->lru_lock, flags);
 		anon_age = jiffies -
@@ -1299,7 +1277,6 @@ static int mglru_stats_show(struct seq_file *m, void *v)
 			   lrugen->timestamps[lrugen->min_seq[LRU_GEN_FILE] % MAX_NR_GENS];
 		anon_old = lru_gen_count_old(lrugen, LRU_GEN_ANON);
 		file_old = lru_gen_count_old(lrugen, LRU_GEN_FILE);
-		global_mm_walk_age = jiffies - lru_gen_mm_walk_seq[pgdat->node_id];
 
 		seq_printf(m,
 			   "node=%d max_seq=%lu min_seq=(anon:%lu file:%lu) old=(anon:%lu file:%lu) age_jiffies=(anon:%lu file:%lu)\n",
@@ -1324,11 +1301,10 @@ static int mglru_stats_show(struct seq_file *m, void *v)
 			   lrugen->normalized[LRU_GEN_ANON],
 			   lrugen->normalized[LRU_GEN_FILE]);
 		seq_printf(m,
-			   "  mm_walk=(ok:%lu fail:%lu fallback:%lu sampled:%lu young_cleared:%lu global_age_jiffies:%lu) stall=%u last_cycle=(scanned:%lu reclaimed:%lu efficiency:%u%%)\n",
+			   "  mm_walk=(ok:%lu fail:%lu fallback:%lu sampled:%lu young_cleared:%lu) stall=%u last_cycle=(scanned:%lu reclaimed:%lu efficiency:%u%%)\n",
 			   lrugen->mm_walk_success, lrugen->mm_walk_failures,
 			   lrugen->mm_walk_fallback, lrugen->mm_walk_sampled_ptes,
-			   lrugen->mm_walk_young_cleared, global_mm_walk_age,
-			   lrugen->reclaim_stall,
+			   lrugen->mm_walk_young_cleared, lrugen->reclaim_stall,
 			   lrugen->last_scanned, lrugen->last_reclaimed,
 			   lrugen->last_efficiency);
 		seq_printf(m,
@@ -1525,14 +1501,12 @@ static int mglru_proc_show(struct seq_file *m, void *v)
 		struct lru_gen_struct *lrugen = &lruvec->lrugen;
 		unsigned long flags;
 		unsigned long anon_old, file_old;
-		unsigned long global_mm_walk_age;
 
 		spin_lock_irqsave(&pgdat->lru_lock, flags);
 		anon_old = lru_gen_count_old(lrugen, LRU_GEN_ANON);
 		file_old = lru_gen_count_old(lrugen, LRU_GEN_FILE);
-		global_mm_walk_age = jiffies - lru_gen_mm_walk_seq[pgdat->node_id];
 		seq_printf(m,
-			   "node=%d max_seq=%lu min_seq=(anon:%lu file:%lu) old=(anon:%lu file:%lu) pressure=(anon:%lu file:%lu) tier=(anon:%u file:%u) mm_walk=(ok:%lu fail:%lu fallback:%lu sampled:%lu young_cleared:%lu global_age_jiffies:%lu) stall=%u last_cycle=(scanned:%lu reclaimed:%lu efficiency:%u%%)\n",
+			   "node=%d max_seq=%lu min_seq=(anon:%lu file:%lu) old=(anon:%lu file:%lu) pressure=(anon:%lu file:%lu) tier=(anon:%u file:%u) mm_walk=(ok:%lu fail:%lu fallback:%lu sampled:%lu young_cleared:%lu) stall=%u last_cycle=(scanned:%lu reclaimed:%lu efficiency:%u%%)\n",
 			   pgdat->node_id, lrugen->max_seq,
 			   lrugen->min_seq[LRU_GEN_ANON],
 			   lrugen->min_seq[LRU_GEN_FILE], anon_old, file_old,
@@ -1542,8 +1516,7 @@ static int mglru_proc_show(struct seq_file *m, void *v)
 			   lrugen->tiers[LRU_GEN_FILE],
 			   lrugen->mm_walk_success, lrugen->mm_walk_failures,
 			   lrugen->mm_walk_fallback, lrugen->mm_walk_sampled_ptes,
-			   lrugen->mm_walk_young_cleared, global_mm_walk_age,
-			   lrugen->reclaim_stall,
+			   lrugen->mm_walk_young_cleared, lrugen->reclaim_stall,
 			   lrugen->last_scanned, lrugen->last_reclaimed,
 			   lrugen->last_efficiency);
 		spin_unlock_irqrestore(&pgdat->lru_lock, flags);
