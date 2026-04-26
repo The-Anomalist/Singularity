@@ -3084,13 +3084,41 @@ static bool shrink_node_reclaim_mglru(pg_data_t *pgdat, struct scan_control *sc)
 
 bool lru_gen_shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 {
+	if (!lru_gen_enabled())
+		return false;
+
+	if (!lru_gen_get_state())
+		return false;
+
 	return shrink_node_reclaim_mglru(pgdat, sc);
 }
 #endif
 
 static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 {
-	return lru_gen_shrink_node(pgdat, sc);
+	unsigned long reclaimed_before = sc->nr_reclaimed;
+	unsigned long scanned_before = sc->nr_scanned;
+	bool mglru_reclaimable = false;
+
+	/*
+	 * Always try MGLRU first when enabled. If MGLRU reports reclaimable
+	 * generations but does not reclaim in this round, keep reclaim on the
+	 * MGLRU path instead of immediately doubling work with legacy reclaim.
+	 * Fall back only when MGLRU has no reclaimable generations.
+	 */
+	mglru_reclaimable = lru_gen_shrink_node(pgdat, sc);
+	if (sc->nr_reclaimed > reclaimed_before)
+		return true;
+
+	/*
+	 * Do not immediately run a second reclaim pass when MGLRU already
+	 * scanned pages in this round; that duplicate work is prone to long
+	 * reclaim stalls on 4.19 backports.
+	 */
+	if (sc->nr_scanned > scanned_before)
+		return mglru_reclaimable;
+
+	return shrink_node_reclaim(pgdat, sc) || mglru_reclaimable;
 }
 
 /*
