@@ -41,9 +41,8 @@ static bool __read_mostly lru_gen_pressure_normalize = true;
 static unsigned int __read_mostly lru_gen_ptwalk_pages = 256;
 static bool __read_mostly lru_gen_ptwalk_clear_young;
 static bool __read_mostly lru_gen_reclaim_ptwalk;
-static bool __read_mostly lru_gen_reclaim_feedback = true;
-static bool __read_mostly lru_gen_reclaim_advance = true;
-static bool __read_mostly lru_gen_ptwalk_fallback;
+static bool __read_mostly lru_gen_reclaim_feedback;
+static bool __read_mostly lru_gen_reclaim_advance;
 /*
  * Reclaim-time MM walk throttling must be shared by all memcg lruvecs on a
  * node; otherwise each memcg can trigger its own walk and create reclaim
@@ -335,229 +334,17 @@ static int lru_gen_lru_type(enum lru_list lru)
 	return is_file_lru(lru) ? LRU_GEN_FILE : LRU_GEN_ANON;
 }
 
-static void lru_gen_note_access_batch(struct lruvec *lruvec, unsigned int type,
-				      unsigned long nr_pages)
-{
-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
-	unsigned long flags;
-
-	if (!nr_pages || !lru_gen_enabled() || !lru_gen_get_state())
-		return;
-
-	spin_lock_irqsave(&lruvec_pgdat(lruvec)->lru_lock, flags);
-
-	if (lru_gen_dedup_access(lrugen, type, nr_pages)) {
-		spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
-		return;
-	}
-
-	lrugen->accessed[type] += nr_pages;
-	count_vm_events(MGLRU_ACTIVATED, nr_pages);
-
-	if (lru_gen_should_age(lrugen))
-		lru_gen_advance_seq(lruvec);
-
-	spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
-}
-
-struct lru_gen_ptwalk {
-	unsigned long budget;
-	unsigned long sampled;
-	unsigned long cleared;
-	unsigned long anon;
-	unsigned long file;
-	bool clear_young;
-};
-
-static int lru_gen_ptwalk_test(unsigned long addr, unsigned long next,
-			       struct mm_walk *walk)
-{
-	struct vm_area_struct *vma = walk->vma;
-	(void)addr;
-	(void)next;
-
-	if (!vma)
-		return 1;
-
-	if (vma->vm_flags & (VM_IO | VM_PFNMAP | VM_HUGETLB))
-		return 1;
-
-	return 0;
-}
-
-static int lru_gen_ptwalk_pte_entry(pte_t *pte, unsigned long addr,
-				    unsigned long next, struct mm_walk *walk)
-{
-	struct lru_gen_ptwalk *ptw = walk->private;
-	bool young;
-	(void)addr;
-	(void)next;
-
-	if (!ptw->budget)
-		return -EAGAIN;
-
-	ptw->sampled++;
-	if (!(ptw->sampled & 63))
-		cond_resched();
-
-	young = pte_present(*pte) &&
-		(ptw->clear_young ?
-		 ptep_clear_young_notify(walk->vma, addr, pte) :
-		 pte_young(*pte));
-	if (young) {
-		if (ptw->clear_young)
-			ptw->cleared++;
-		if (walk->vma->vm_file)
-			ptw->file++;
-		else
-			ptw->anon++;
-	}
-
-	ptw->budget--;
-	return 0;
-}
-
-static bool lru_gen_scan_mm(struct lruvec *lruvec, struct mm_struct *mm,
-			    unsigned long budget)
-{
-	struct lru_gen_ptwalk ptw = {
-		.budget = budget,
-		.clear_young = READ_ONCE(lru_gen_ptwalk_clear_young),
-	};
-	struct mm_walk walk = {
-		.mm = mm,
-		.private = &ptw,
-		.test_walk = lru_gen_ptwalk_test,
-		.pte_entry = lru_gen_ptwalk_pte_entry,
-	};
-
-	if (!mm || !ptw.budget)
-		return false;
-
-	if (!down_read_trylock(&mm->mmap_sem))
-		return false;
-
-	walk_page_range(0, TASK_SIZE, &walk);
-	up_read(&mm->mmap_sem);
-
-	if (ptw.sampled) {
-		unsigned long flags;
-		struct lru_gen_struct *lrugen = &lruvec->lrugen;
-
-		spin_lock_irqsave(&lruvec_pgdat(lruvec)->lru_lock, flags);
-		lrugen->mm_walk_sampled_ptes += ptw.sampled;
-		lrugen->mm_walk_young_cleared += ptw.cleared;
-		spin_unlock_irqrestore(&lruvec_pgdat(lruvec)->lru_lock, flags);
-	}
-
-	lru_gen_note_access_batch(lruvec, LRU_GEN_ANON, ptw.anon);
-	lru_gen_note_access_batch(lruvec, LRU_GEN_FILE, ptw.file);
-	return ptw.anon + ptw.file > 0;
-}
-
-static struct mm_struct *lru_gen_pick_fallback_mm(void)
-{
-	struct task_struct *task;
-	struct mm_struct *mm = NULL;
-
-	rcu_read_lock();
-	for_each_process(task) {
-		if (task == current)
-			continue;
-
-		mm = get_task_mm(task);
-		if (mm)
-			break;
-	}
-	rcu_read_unlock();
-
-	return mm;
-}
-
 static void lru_gen_scan_current_mm(struct lruvec *lruvec, struct scan_control *sc)
 {
-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
-	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
-	struct mm_struct *mm = current->mm;
-	unsigned long budget = READ_ONCE(lru_gen_ptwalk_pages);
-	unsigned long now = jiffies;
-	unsigned long interval = HZ;
-	unsigned long last_seq;
-	unsigned long global_seq;
-	unsigned long flags;
-	bool walked = false;
-
-	if (!budget)
-		return;
-
-	/* Keep reclaim path predictable unless explicitly opted in. */
-	if (sc && !READ_ONCE(lru_gen_reclaim_ptwalk))
-		return;
+	(void)lruvec;
+	(void)sc;
 
 	/*
-	 * Reclaim-time page-table walks are meant to provide low-overhead hints
-	 * to direct reclaim. Running them from kswapd or memcg reclaim contexts
-	 * increases contention with mmap writers while providing weaker locality.
+	 * Emergency stability mode for 4.19 backports: disable MM page-table
+	 * sampling entirely. Keep the hook for future re-enable work, but avoid
+	 * mmap_sem/walk_page_range()/young-bit interactions in production.
 	 */
-	if (sc && (current_is_kswapd() || !scan_control_global_reclaim(sc)))
-		return;
-
-	/*
-	 * Debug/proactive paths can call this function without a scan_control.
-	 * Keep those paths responsive by using a shorter throttle interval.
-	 */
-	if (!sc)
-		interval = HZ / 4;
-
-	/*
-	 * Throttle page-table sampling in reclaim contexts to avoid reclaim
-	 * stalls under sustained memory pressure.
-	 */
-	spin_lock_irqsave(&pgdat->lru_lock, flags);
-	last_seq = lrugen->mm_walk_seq;
-	global_seq = lru_gen_mm_walk_seq[pgdat->node_id];
-	if (time_before(now, last_seq + interval) ||
-	    time_before(now, global_seq + interval)) {
-		spin_unlock_irqrestore(&pgdat->lru_lock, flags);
-		return;
-	}
-	lrugen->mm_walk_seq = now;
-	lru_gen_mm_walk_seq[pgdat->node_id] = now;
-	spin_unlock_irqrestore(&pgdat->lru_lock, flags);
-
-	/*
-	 * Keep reclaim paths responsive: use a bounded sample size regardless
-	 * of user tuning. Debug/proactive sampling (sc == NULL) still uses the
-	 * configured budget.
-	 */
-	if (sc)
-		budget = min_t(unsigned long, budget, SWAP_CLUSTER_MAX * 8);
-
-	if (mm) {
-		walked = lru_gen_scan_mm(lruvec, mm, budget);
-	} else if (!sc && READ_ONCE(lru_gen_ptwalk_fallback) &&
-		   time_after_eq(now, last_seq + 2 * interval)) {
-		mm = lru_gen_pick_fallback_mm();
-		if (mm) {
-			walked = lru_gen_scan_mm(lruvec, mm,
-						 max_t(unsigned long, budget / 2, 32));
-			mmput(mm);
-			spin_lock_irqsave(&pgdat->lru_lock, flags);
-			lrugen->mm_walk_fallback++;
-			spin_unlock_irqrestore(&pgdat->lru_lock, flags);
-			count_vm_event(MGLRU_MM_WALK_FALLBACK);
-		}
-	}
-
-	spin_lock_irqsave(&pgdat->lru_lock, flags);
-	if (walked) {
-		lrugen->mm_walk_success++;
-		count_vm_event(MGLRU_MM_WALK_SUCCESS);
-	} else {
-		lrugen->mm_walk_failures++;
-		count_vm_event(MGLRU_MM_WALK_FAIL);
-	}
-	spin_unlock_irqrestore(&pgdat->lru_lock, flags);
+	return;
 }
 void lru_gen_update_size(struct lruvec *lruvec, enum lru_list lru,
 			 enum zone_type zid, long delta)
