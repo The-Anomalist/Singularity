@@ -100,15 +100,25 @@
  * Keep these scoped to kebab so generic kona boards are not affected.
  */
 &cpu_cpu_llcc_bw {
-	qcom,icc-min-avg-kbps = <4587000>;
-	qcom,icc-min-peak-kbps = <9160000>;
-	qcom,icc-boost-percent = <130>;
+	qcom,icc-min-avg-kbps = <5200000>;
+	qcom,icc-min-peak-kbps = <10400000>;
+	qcom,icc-boost-percent = <135>;
+	qcom,icc-upscale-percent = <220>;
+	qcom,polling-ms = <2>;
 };
 
 &cpu_llcc_ddr_bw {
-	qcom,icc-min-avg-kbps = <4587000>;
-	qcom,icc-min-peak-kbps = <9160000>;
-	qcom,icc-boost-percent = <130>;
+	qcom,icc-min-avg-kbps = <5200000>;
+	qcom,icc-min-peak-kbps = <10400000>;
+	qcom,icc-boost-percent = <140>;
+	qcom,icc-upscale-percent = <230>;
+	qcom,polling-ms = <2>;
+};
+
+&cpu4_cpu_ddr_latfloor {
+	qcom,icc-min-avg-kbps = <5200000>;
+	qcom,icc-min-peak-kbps = <10400000>;
+	qcom,icc-boost-percent = <140>;
 };
 
 /*
@@ -119,6 +129,14 @@
 &{/soc/qcom,cam-cpas@ac40000} {
 	camnoc-axi-min-ib-bw = <3600000000>;
 	camnoc-axi-clk-bw-margin-perc = <28>;
+};
+
+/*
+ * Keep USB wake/interrupt response tighter for foreground interaction
+ * and mixed I/O benchmark runs.
+ */
+&usb0 {
+	qcom,pm-qos-latency = <41>;
 };
 
 &soc {
