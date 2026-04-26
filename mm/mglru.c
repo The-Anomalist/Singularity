@@ -41,8 +41,8 @@ static bool __read_mostly lru_gen_pressure_normalize = true;
 static unsigned int __read_mostly lru_gen_ptwalk_pages = 256;
 static bool __read_mostly lru_gen_ptwalk_clear_young;
 static bool __read_mostly lru_gen_reclaim_ptwalk;
-static bool __read_mostly lru_gen_reclaim_feedback = true;
-static bool __read_mostly lru_gen_reclaim_advance = true;
+static bool __read_mostly lru_gen_reclaim_feedback;
+static bool __read_mostly lru_gen_reclaim_advance;
 static bool __read_mostly lru_gen_ptwalk_fallback;
 /*
  * Reclaim-time MM walk throttling must be shared by all memcg lruvecs on a
@@ -809,28 +809,6 @@ int lru_gen_get_reclaim_ptwalk(void)
 	return READ_ONCE(lru_gen_reclaim_ptwalk);
 }
 
-int lru_gen_set_reclaim_feedback(bool enable)
-{
-	WRITE_ONCE(lru_gen_reclaim_feedback, enable);
-	return 0;
-}
-
-int lru_gen_get_reclaim_feedback(void)
-{
-	return READ_ONCE(lru_gen_reclaim_feedback);
-}
-
-int lru_gen_set_reclaim_advance(bool enable)
-{
-	WRITE_ONCE(lru_gen_reclaim_advance, enable);
-	return 0;
-}
-
-int lru_gen_get_reclaim_advance(void)
-{
-	return READ_ONCE(lru_gen_reclaim_advance);
-}
-
 int lru_gen_set_ptwalk_clear_young(bool enable)
 {
 	WRITE_ONCE(lru_gen_ptwalk_clear_young, enable);
@@ -1079,8 +1057,6 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 	unsigned long anon_old = 0;
 	unsigned long file_old = 0;
 	unsigned int preferred;
-	bool feedback_enabled;
-	bool emergency_fallback = false;
 
 	if (!lru_gen_enabled() || !lru_gen_get_state())
 		return;
@@ -1092,7 +1068,6 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 		return;
 
 	spin_lock_irqsave(&pgdat->lru_lock, flags);
-	feedback_enabled = READ_ONCE(lru_gen_reclaim_feedback);
 
 	/*
 	 * Eviction decision stage:
@@ -1104,17 +1079,6 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 
 	anon_old = lru_gen_count_old(lrugen, LRU_GEN_ANON);
 	file_old = lru_gen_count_old(lrugen, LRU_GEN_FILE);
-
-	/*
-	 * Safety valve for legacy backports: if reclaim cycles repeatedly make
-	 * no progress, stop MGLRU scan skewing and let classic vmscan reclaim
-	 * balancing take over until pressure feedback recovers.
-	 */
-	if (feedback_enabled && lrugen->reclaim_stall >= 8) {
-		emergency_fallback = true;
-		goto unlock;
-	}
-
 	anon_weight += anon_old / SWAP_CLUSTER_MAX;
 	file_weight += file_old / SWAP_CLUSTER_MAX;
 	anon_weight = anon_weight * READ_ONCE(lru_gen_weight_anon_pct);
@@ -1142,11 +1106,7 @@ void lru_gen_adjust_scan(struct lruvec *lruvec, struct scan_control *sc,
 		anon_weight += SWAP_CLUSTER_MAX;
 	else
 		file_weight += SWAP_CLUSTER_MAX;
-unlock:
 	spin_unlock_irqrestore(&pgdat->lru_lock, flags);
-
-	if (emergency_fallback)
-		return;
 
 	denom = anon_weight + file_weight;
 	if (!denom)
@@ -1337,8 +1297,8 @@ static int mglru_stats_show(struct seq_file *m, void *v)
 		   lru_gen_get_age_period(), lru_gen_get_weight_anon(),
 		   lru_gen_get_dedup_window(), lru_gen_get_normalize(),
 		   lru_gen_get_ptwalk_pages(), lru_gen_get_reclaim_ptwalk(),
-		   lru_gen_get_reclaim_feedback(),
-		   lru_gen_get_reclaim_advance(),
+		   READ_ONCE(lru_gen_reclaim_feedback),
+		   READ_ONCE(lru_gen_reclaim_advance),
 		   lru_gen_get_ptwalk_clear_young());
 
 	for_each_online_pgdat(pgdat) {
@@ -1493,12 +1453,6 @@ static ssize_t mglru_stats_write(struct file *file, const char __user *buf,
 	if (sscanf(cmd, "reclaim_ptwalk=%u", &val) == 1)
 		return lru_gen_set_reclaim_ptwalk(!!val) ? : count;
 
-	if (sscanf(cmd, "reclaim_feedback=%u", &val) == 1)
-		return lru_gen_set_reclaim_feedback(!!val) ? : count;
-
-	if (sscanf(cmd, "reclaim_advance=%u", &val) == 1)
-		return lru_gen_set_reclaim_advance(!!val) ? : count;
-
 	if (sscanf(cmd, "ptwalk_clear_young=%u", &val) == 1)
 		return lru_gen_set_ptwalk_clear_young(!!val) ? : count;
 
@@ -1576,13 +1530,11 @@ static int mglru_proc_show(struct seq_file *m, void *v)
 	struct pglist_data *pgdat;
 
 	seq_printf(m,
-		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d ptwalk_pages=%u reclaim_ptwalk=%d reclaim_feedback=%d reclaim_advance=%d ptwalk_clear_young=%d\n",
+		   "enabled=%d min_ttl_ms=%u age_period_ms=%u weight_anon_pct=%u dedup_window_ms=%u normalize=%d ptwalk_pages=%u reclaim_ptwalk=%d ptwalk_clear_young=%d\n",
 		   lru_gen_get_state(), lru_gen_get_min_ttl(),
 		   lru_gen_get_age_period(), lru_gen_get_weight_anon(),
 		   lru_gen_get_dedup_window(), lru_gen_get_normalize(),
 		   lru_gen_get_ptwalk_pages(), lru_gen_get_reclaim_ptwalk(),
-		   lru_gen_get_reclaim_feedback(),
-		   lru_gen_get_reclaim_advance(),
 		   lru_gen_get_ptwalk_clear_young());
 
 	for_each_online_pgdat(pgdat) {
@@ -1667,12 +1619,6 @@ static int mglru_apply_command(const char *cmd)
 
 	if (sscanf(cmd, "reclaim_ptwalk=%u", &val) == 1)
 		return lru_gen_set_reclaim_ptwalk(!!val);
-
-	if (sscanf(cmd, "reclaim_feedback=%u", &val) == 1)
-		return lru_gen_set_reclaim_feedback(!!val);
-
-	if (sscanf(cmd, "reclaim_advance=%u", &val) == 1)
-		return lru_gen_set_reclaim_advance(!!val);
 
 	if (sscanf(cmd, "ptwalk_clear_young=%u", &val) == 1)
 		return lru_gen_set_ptwalk_clear_young(!!val);
@@ -1967,60 +1913,6 @@ static ssize_t reclaim_ptwalk_store(struct kobject *kobj,
 	return ret ? ret : count;
 }
 
-static ssize_t reclaim_feedback_show(struct kobject *kobj,
-				     struct kobj_attribute *attr, char *buf)
-{
-	(void)kobj;
-	(void)attr;
-
-	return scnprintf(buf, PAGE_SIZE, "%d\n", lru_gen_get_reclaim_feedback());
-}
-
-static ssize_t reclaim_feedback_store(struct kobject *kobj,
-				      struct kobj_attribute *attr,
-				      const char *buf, size_t count)
-{
-	bool val;
-	int ret;
-
-	(void)kobj;
-	(void)attr;
-
-	ret = kstrtobool(buf, &val);
-	if (ret)
-		return ret;
-
-	ret = lru_gen_set_reclaim_feedback(val);
-	return ret ? ret : count;
-}
-
-static ssize_t reclaim_advance_show(struct kobject *kobj,
-				    struct kobj_attribute *attr, char *buf)
-{
-	(void)kobj;
-	(void)attr;
-
-	return scnprintf(buf, PAGE_SIZE, "%d\n", lru_gen_get_reclaim_advance());
-}
-
-static ssize_t reclaim_advance_store(struct kobject *kobj,
-				     struct kobj_attribute *attr,
-				     const char *buf, size_t count)
-{
-	bool val;
-	int ret;
-
-	(void)kobj;
-	(void)attr;
-
-	ret = kstrtobool(buf, &val);
-	if (ret)
-		return ret;
-
-	ret = lru_gen_set_reclaim_advance(val);
-	return ret ? ret : count;
-}
-
 static struct kobj_attribute enabled_attr = __ATTR_RW(enabled);
 static struct kobj_attribute min_ttl_ms_attr = __ATTR_RW(min_ttl_ms);
 static struct kobj_attribute age_period_ms_attr = __ATTR_RW(age_period_ms);
@@ -2030,8 +1922,6 @@ static struct kobj_attribute pressure_normalize_attr =
 	__ATTR_RW(pressure_normalize);
 static struct kobj_attribute ptwalk_pages_attr = __ATTR_RW(ptwalk_pages);
 static struct kobj_attribute reclaim_ptwalk_attr = __ATTR_RW(reclaim_ptwalk);
-static struct kobj_attribute reclaim_feedback_attr = __ATTR_RW(reclaim_feedback);
-static struct kobj_attribute reclaim_advance_attr = __ATTR_RW(reclaim_advance);
 static struct kobj_attribute ptwalk_clear_young_attr =
 	__ATTR_RW(ptwalk_clear_young);
 
@@ -2044,8 +1934,6 @@ static struct attribute *mglru_sysfs_attrs[] = {
 	&pressure_normalize_attr.attr,
 	&ptwalk_pages_attr.attr,
 	&reclaim_ptwalk_attr.attr,
-	&reclaim_feedback_attr.attr,
-	&reclaim_advance_attr.attr,
 	&ptwalk_clear_young_attr.attr,
 	NULL,
 };

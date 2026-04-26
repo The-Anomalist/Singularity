@@ -843,11 +843,9 @@ config LRU_GEN
 config LRU_GEN_ENABLED
 	bool "Enable Multi-Gen LRU by default"
 	depends on LRU_GEN
-	default n
+	default y
 	help
 	  Turn the multi-generational LRU framework on at boot.
-	  For legacy backport trees, keeping this disabled by default
-	  provides a safer rollback path if reclaim regressions appear.
 
 config ARCH_HAS_PTE_SPECIAL
 	bool

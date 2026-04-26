@@ -20,8 +20,6 @@ The following sysctls are available under ``/proc/sys/vm``:
 * ``lru_gen_ptwalk_pages``: cap PTE samples per reclaim-triggered page table walk.
 * ``lru_gen_ptwalk_clear_young``: clear sampled PTE young bits while walking.
 * ``lru_gen_reclaim_ptwalk``: allow fallback MM sampling in reclaim contexts.
-* ``lru_gen_reclaim_feedback``: enable reclaim-efficiency feedback retuning.
-* ``lru_gen_reclaim_advance``: allow reclaim feedback to force aging advances.
 * reclaim-context MM walks first sample ``current->mm`` and can
   opportunistically sample a fallback userspace mm during global reclaim
   when reclaim runs in kernel threads.
@@ -38,8 +36,6 @@ When ``CONFIG_SYSFS=y``, the same tunables are also available under
 * ``ptwalk_pages``
 * ``ptwalk_clear_young``
 * ``reclaim_ptwalk``
-* ``reclaim_feedback``
-* ``reclaim_advance``
 
 Debugfs interface
 =================
@@ -66,8 +62,6 @@ Writing supported commands:
 * ``ptwalk_pages=<n>``: set ``lru_gen_ptwalk_pages``.
 * ``ptwalk_clear_young=<0|1>``: set ``lru_gen_ptwalk_clear_young``.
 * ``reclaim_ptwalk=<0|1>``: set ``lru_gen_reclaim_ptwalk``.
-* ``reclaim_feedback=<0|1>``: set ``lru_gen_reclaim_feedback``.
-* ``reclaim_advance=<0|1>``: set ``lru_gen_reclaim_advance``.
 
 Procfs interface
 ================
@@ -90,8 +84,6 @@ Writing accepts the following commands:
 * ``ptwalk_pages=<n>``: set ``lru_gen_ptwalk_pages``.
 * ``ptwalk_clear_young=<0|1>``: set ``lru_gen_ptwalk_clear_young``.
 * ``reclaim_ptwalk=<0|1>``: set ``lru_gen_reclaim_ptwalk``.
-* ``reclaim_feedback=<0|1>``: set ``lru_gen_reclaim_feedback``.
-* ``reclaim_advance=<0|1>``: set ``lru_gen_reclaim_advance``.
 
 VM statistics
 =============
@@ -133,8 +125,6 @@ loop per node:
   produces no reclaimed pages;
 * exits early when oldest generations are empty so classic reclaim logic can
   continue balancing without spinning in empty MGLRU generations.
-* falls back to classic scan balancing when reclaim feedback reports sustained
-  no-progress stalls, then resumes MGLRU scan steering once efficiency recovers.
 * samples young PTEs from direct-reclaim callers (bounded by
   ``lru_gen_ptwalk_pages``) to provide page-table-walk aging feedback.
 * in kernel-thread reclaim contexts, periodically samples a fallback userspace

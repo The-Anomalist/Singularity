@@ -41,8 +41,6 @@ Currently, these files are in /proc/sys/vm:
 - lru_gen_ptwalk_pages
 - lru_gen_ptwalk_clear_young
 - lru_gen_reclaim_ptwalk
-- lru_gen_reclaim_feedback
-- lru_gen_reclaim_advance
 - max_map_count
 - memory_failure_early_kill
 - memory_failure_recovery
@@ -1026,38 +1024,6 @@ Enabling this can improve aging coverage in kernel-thread reclaim
 contexts, at the cost of additional page-table walk overhead.
 
 The default value is 0.
-
-==============================================================
-
-lru_gen_reclaim_feedback
-
-This control toggles reclaim-efficiency feedback loops used by MGLRU
-to retune pressure/tier accounting and detect sustained no-progress
-reclaim windows.
-
-Valid values are:
-	0 - disable reclaim feedback tuning
-	1 - enable reclaim feedback tuning
-
-Disabling this keeps basic generation accounting active but removes
-stall-driven feedback and reclaim-driven pressure/tier retuning.
-
-The default value is 1.
-
-==============================================================
-
-lru_gen_reclaim_advance
-
-This control toggles reclaim-driven generation advancement in MGLRU.
-
-Valid values are:
-	0 - do not force generation advance from reclaim feedback
-	1 - allow reclaim feedback to force generation advance
-
-Disabling this can reduce reclaim churn at the cost of slower adaptation
-when reclaim efficiency remains low.
-
-The default value is 1.
 
 ==============================================================
 

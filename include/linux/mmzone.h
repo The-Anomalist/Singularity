@@ -341,10 +341,6 @@ int lru_gen_set_ptwalk_pages(unsigned int pages);
 unsigned int lru_gen_get_ptwalk_pages(void);
 int lru_gen_set_reclaim_ptwalk(bool enable);
 int lru_gen_get_reclaim_ptwalk(void);
-int lru_gen_set_reclaim_feedback(bool enable);
-int lru_gen_get_reclaim_feedback(void);
-int lru_gen_set_reclaim_advance(bool enable);
-int lru_gen_get_reclaim_advance(void);
 int lru_gen_set_ptwalk_clear_young(bool enable);
 int lru_gen_get_ptwalk_clear_young(void);
 #else
@@ -462,22 +458,6 @@ static inline int lru_gen_set_reclaim_ptwalk(bool enable)
 	return -EINVAL;
 }
 static inline int lru_gen_get_reclaim_ptwalk(void)
-{
-	return 0;
-}
-static inline int lru_gen_set_reclaim_feedback(bool enable)
-{
-	return -EINVAL;
-}
-static inline int lru_gen_get_reclaim_feedback(void)
-{
-	return 0;
-}
-static inline int lru_gen_set_reclaim_advance(bool enable)
-{
-	return -EINVAL;
-}
-static inline int lru_gen_get_reclaim_advance(void)
 {
 	return 0;
 }
