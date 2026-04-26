@@ -1270,7 +1270,11 @@ static const struct adreno_a6xx_core adreno_gpu_core_a650v2 = {
 	.vbif_count = ARRAY_SIZE(a650_gbif_regs),
 	.veto_fal10 = true,
 	.pdc_in_aop = true,
-	.hang_detect_cycles = 0xcfffff,
+	/*
+	 * Slightly lower threshold for v2 to shorten recovery latency on
+	 * pathological workloads while keeping enough headroom for bursts.
+	 */
+	.hang_detect_cycles = 0xc7ffff,
 	.protected_regs = a620_protected_regs,
 	.disable_tseskip = true,
 };

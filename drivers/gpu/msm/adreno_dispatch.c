@@ -44,6 +44,10 @@ static unsigned int _dispatcher_q_inflight_lo = 6;
 #define A650_DISPATCH_Q_INFLIGHT_HI	24
 #define A650_DISPATCH_Q_INFLIGHT_LO	6
 #define A650_CONTEXT_DRAWOBJ_BURST	8
+#define A650V2_DISPATCH_Q_INFLIGHT_HI	28
+#define A650V2_DISPATCH_Q_INFLIGHT_LO	8
+#define A650V2_CONTEXT_DRAWOBJ_BURST	10
+#define A650V2_FAULT_TIMER_INTERVAL	150
 
 /* Command batch timeout (in milliseconds) */
 unsigned int adreno_drawobj_timeout = 2000;
@@ -98,6 +102,23 @@ static void adreno_dispatcher_tune(struct adreno_device *adreno_dev)
 		_dispatcher_q_inflight_lo, A650_DISPATCH_Q_INFLIGHT_LO);
 	_context_drawobj_burst = max_t(unsigned int,
 		_context_drawobj_burst, A650_CONTEXT_DRAWOBJ_BURST);
+
+	/*
+	 * A650v2 retains healthy preemption support while sustaining
+	 * deeper command pipelines. Keep this path tightly fed while
+	 * reducing fault polling latency for faster recovery.
+	 */
+	if (!adreno_is_a650v2(adreno_dev))
+		return;
+
+	_dispatcher_q_inflight_hi = max_t(unsigned int,
+		_dispatcher_q_inflight_hi, A650V2_DISPATCH_Q_INFLIGHT_HI);
+	_dispatcher_q_inflight_lo = max_t(unsigned int,
+		_dispatcher_q_inflight_lo, A650V2_DISPATCH_Q_INFLIGHT_LO);
+	_context_drawobj_burst = max_t(unsigned int,
+		_context_drawobj_burst, A650V2_CONTEXT_DRAWOBJ_BURST);
+	_fault_timer_interval = min_t(unsigned int,
+		_fault_timer_interval, A650V2_FAULT_TIMER_INTERVAL);
 }
 
 static void _adreno_count_active_contexts(struct adreno_device *adreno_dev,

@@ -186,8 +186,16 @@ static inline int timed_poll_check(struct kgsl_device *device,
 		unsigned int offset, unsigned int expected_ret,
 		unsigned int timeout, unsigned int mask)
 {
+	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
 	unsigned long t;
 	unsigned int value;
+	unsigned int sleep_min = 10;
+	unsigned int sleep_max = 100;
+
+	if (adreno_is_a650v2(adreno_dev)) {
+		sleep_min = 5;
+		sleep_max = 50;
+	}
 
 	t = jiffies + msecs_to_jiffies(timeout);
 
@@ -195,8 +203,8 @@ static inline int timed_poll_check(struct kgsl_device *device,
 		gmu_core_regread(device, offset, &value);
 		if ((value & mask) == expected_ret)
 			return 0;
-		/* Wait 100us to reduce unnecessary AHB bus traffic */
-		usleep_range(10, 100);
+		/* Keep AHB pressure controlled while reducing tail latency. */
+		usleep_range(sleep_min, sleep_max);
 	} while (!time_after(jiffies, t));
 
 	/* Double check one last time */
@@ -214,6 +222,13 @@ static inline int timed_poll_check_rscc(struct kgsl_device *device,
 	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
 	unsigned long t;
 	unsigned int value;
+	unsigned int sleep_min = 10;
+	unsigned int sleep_max = 100;
+
+	if (adreno_is_a650v2(adreno_dev)) {
+		sleep_min = 5;
+		sleep_max = 50;
+	}
 
 	t = jiffies + msecs_to_jiffies(timeout);
 
@@ -225,8 +240,8 @@ static inline int timed_poll_check_rscc(struct kgsl_device *device,
 						&value);
 		if ((value & mask) == expected_ret)
 			return 0;
-		/* Wait 100us to reduce unnecessary AHB bus traffic */
-		usleep_range(10, 100);
+		/* Keep AHB pressure controlled while reducing tail latency. */
+		usleep_range(sleep_min, sleep_max);
 	} while (!time_after(jiffies, t));
 
 	/* Double check one last time */
