@@ -2178,45 +2178,6 @@
 	lapic_timer_c2_ok	[X86,APIC] trust the local apic timer
 			in C2 power state.
 
-	lru_gen=	[MM] Multi-Gen LRU boot default.
-			Format: { on | off | 1 | 0 | y | n }
-			Controls initial state for CONFIG_LRU_GEN.
-
-	lru_gen_min_ttl_ms=
-			[MM] Minimum age (in ms) to protect oldest generations.
-			Range: 0..2147483647.
-
-	lru_gen_age_period_ms=
-			[MM] Target aging cadence (in ms) for generation advance.
-			Range: 100..60000.
-
-	lru_gen_weight_anon_pct=
-			[MM] Anonymous reclaim weighting (percent).
-			Range: 0..100.
-
-	lru_gen_dedup_window_ms=
-			[MM] Access deduplication window (in ms).
-			Range: 0..1000.
-
-	lru_gen_pressure_normalize=
-			[MM] Normalize anon/file pressure counters over time.
-			Format: { on | off | 1 | 0 | y | n }
-
-	lru_gen_ptwalk_pages=
-			[MM] Per-reclaim upper bound of PTEs sampled from
-			current->mm for MGLRU aging signals.
-			Range: 32..16384.
-
-	lru_gen_ptwalk_clear_young=
-			[MM] Clear accessed/young PTE bits while sampling
-			page tables for MGLRU aging signals.
-			Format: { on | off | 1 | 0 | y | n }
-
-	lru_gen_reclaim_ptwalk=
-			[MM] Enable fallback MM page-table sampling during
-			reclaim contexts without current->mm (e.g. kswapd).
-			Format: { on | off | 1 | 0 | y | n }
-
 	libata.dma=	[LIBATA] DMA control
 			libata.dma=0	  Disable all PATA and SATA DMA
 			libata.dma=1	  PATA and SATA Disk DMA only

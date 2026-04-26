@@ -35,8 +35,8 @@ static __always_inline void __update_lru_size(struct lruvec *lruvec,
 }
 
 static __always_inline void update_lru_size(struct lruvec *lruvec,
-			enum lru_list lru, enum zone_type zid,
-			int nr_pages)
+				enum lru_list lru, enum zone_type zid,
+				int nr_pages)
 {
 	__update_lru_size(lruvec, lru, zid, nr_pages);
 #ifdef CONFIG_MEMCG
@@ -44,41 +44,18 @@ static __always_inline void update_lru_size(struct lruvec *lruvec,
 #endif
 }
 
-static __always_inline struct list_head *lruvec_lru_list(struct lruvec *lruvec,
-			enum lru_list lru, enum zone_type zid)
-{
-#ifdef CONFIG_LRU_GEN
-	if (lru_gen_enabled() && lru_gen_get_state() && lru != LRU_UNEVICTABLE) {
-		struct lru_gen_struct *lrugen = &lruvec->lrugen;
-		unsigned int type = is_file_lru(lru) ? LRU_GEN_FILE : LRU_GEN_ANON;
-		unsigned long seq = is_active_lru(lru) ? lrugen->max_seq :
-					   lrugen->min_seq[type];
-
-		return &lrugen->lists[seq % MAX_NR_GENS][type][zid];
-	}
-#endif
-
-	return &lruvec->lists[lru];
-}
-
 static __always_inline void add_page_to_lru_list(struct page *page,
 				struct lruvec *lruvec, enum lru_list lru)
 {
-	enum zone_type zid = page_zonenum(page);
-
 	update_lru_size(lruvec, lru, page_zonenum(page), hpage_nr_pages(page));
-	lru_gen_update_size(lruvec, lru, page_zonenum(page), hpage_nr_pages(page));
-	list_add(&page->lru, lruvec_lru_list(lruvec, lru, zid));
+	list_add(&page->lru, &lruvec->lists[lru]);
 }
 
 static __always_inline void add_page_to_lru_list_tail(struct page *page,
 				struct lruvec *lruvec, enum lru_list lru)
 {
-	enum zone_type zid = page_zonenum(page);
-
 	update_lru_size(lruvec, lru, page_zonenum(page), hpage_nr_pages(page));
-	lru_gen_update_size(lruvec, lru, page_zonenum(page), hpage_nr_pages(page));
-	list_add_tail(&page->lru, lruvec_lru_list(lruvec, lru, zid));
+	list_add_tail(&page->lru, &lruvec->lists[lru]);
 }
 
 static __always_inline void del_page_from_lru_list(struct page *page,
@@ -86,7 +63,6 @@ static __always_inline void del_page_from_lru_list(struct page *page,
 {
 	list_del(&page->lru);
 	update_lru_size(lruvec, lru, page_zonenum(page), -hpage_nr_pages(page));
-	lru_gen_update_size(lruvec, lru, page_zonenum(page), -hpage_nr_pages(page));
 }
 
 /**
