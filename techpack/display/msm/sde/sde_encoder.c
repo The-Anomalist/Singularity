@@ -2069,7 +2069,7 @@ static int _sde_encoder_update_rsc_client(
 	int wait_vblank_crtc_id = SDE_RSC_INVALID_CRTC_ID;
 	u32 qsync_mode = 0, v_front_porch;
 	struct drm_display_mode *mode;
-	bool is_vid_mode;
+	bool is_vid_mode = false, is_cmd_mode = false;
 	struct msm_drm_private *priv;
 	struct sde_kms *sde_kms;
 	struct drm_encoder *enc;
@@ -2123,15 +2123,19 @@ static int _sde_encoder_update_rsc_client(
 	if ((disp_info->display_type != SDE_CONNECTOR_PRIMARY) ||
 			(disp_info->display_type && qsync_mode))
 		rsc_state = enable ? SDE_RSC_CLK_STATE : SDE_RSC_IDLE_STATE;
-	else if (sde_encoder_check_curr_mode(drm_enc, MSM_DISPLAY_CMD_MODE))
+	else if ((is_cmd_mode = sde_encoder_check_curr_mode(drm_enc,
+				MSM_DISPLAY_CMD_MODE)))
 		rsc_state = enable ? SDE_RSC_CMD_STATE : SDE_RSC_IDLE_STATE;
-	else if (sde_encoder_check_curr_mode(drm_enc, MSM_DISPLAY_VIDEO_MODE))
+	else if ((is_vid_mode = sde_encoder_check_curr_mode(drm_enc,
+				MSM_DISPLAY_VIDEO_MODE)))
 		rsc_state = enable ? SDE_RSC_VID_STATE : SDE_RSC_IDLE_STATE;
 
 	drm_for_each_encoder(enc, drm_enc->dev) {
 		if (enc->base.id != drm_enc->base.id &&
-			 sde_encoder_in_cont_splash(enc))
+			 sde_encoder_in_cont_splash(enc)) {
 			rsc_state = SDE_RSC_CLK_STATE;
+			break;
+		}
 	}
 
 	if (IS_SDE_MAJOR_SAME(sde_kms->core_rev, SDE_HW_VER_600) &&
@@ -2140,7 +2144,7 @@ static int _sde_encoder_update_rsc_client(
 
 	SDE_EVT32(rsc_state, qsync_mode);
 
-	is_vid_mode = sde_encoder_check_curr_mode(&sde_enc->base,
+	is_vid_mode = is_vid_mode || sde_encoder_check_curr_mode(&sde_enc->base,
 				MSM_DISPLAY_VIDEO_MODE);
 	mode = &sde_enc->crtc->state->mode;
 	v_front_porch = mode->vsync_start - mode->vdisplay;
@@ -2151,9 +2155,9 @@ static int _sde_encoder_update_rsc_client(
 	    (rsc_config->prefill_lines != mode_info->prefill_lines) ||
 	    (rsc_config->jitter_numer != mode_info->jitter_numer) ||
 	    (rsc_config->jitter_denom != mode_info->jitter_denom)) {
-		if ((rsc_config->fps != mode_info->frame_rate) &&
-		    sde_encoder_check_curr_mode(&sde_enc->base,
-						MSM_DISPLAY_CMD_MODE)) {
+		is_cmd_mode = is_cmd_mode || sde_encoder_check_curr_mode(
+					&sde_enc->base, MSM_DISPLAY_CMD_MODE);
+		if ((rsc_config->fps != mode_info->frame_rate) && is_cmd_mode) {
 			sde_encoder_wait_for_event_wakeup(drm_enc,
 							  rsc_config->fps);
 		}
