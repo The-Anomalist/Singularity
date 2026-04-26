@@ -1137,7 +1137,6 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 	struct lru_gen_struct *lrugen = &lruvec->lrugen;
 	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
 	bool ptwalk_reclaim_enabled = READ_ONCE(lru_gen_reclaim_ptwalk);
-	bool feedback_enabled = READ_ONCE(lru_gen_reclaim_feedback);
 	unsigned long flags;
 	unsigned int anon_tier, file_tier;
 	unsigned long efficiency, split;
@@ -1147,83 +1146,67 @@ void lru_gen_tune_memcg(struct lruvec *lruvec, struct scan_control *sc,
 	if (!lru_gen_enabled() || !lru_gen_get_state() || !scanned)
 		return;
 
+	/*
+	 * Keep reclaim feedback optional on 4.19 backports. Disabling this
+	 * path removes tier/pressure/reclaim_stall feedback and reclaim-driven
+	 * aging from direct reclaim, which is useful for isolating reclaim
+	 * livelocks on vendor kernels.
+	 */
+	if (!READ_ONCE(lru_gen_reclaim_feedback))
+		return;
+
+	/* memcg/tier tuning stage */
 	efficiency = reclaimed * 100 / scanned;
 	spin_lock_irqsave(&pgdat->lru_lock, flags);
+	anon_tier = min_t(unsigned int, MAX_NR_GENS - 1,
+			  lrugen->pressure[LRU_GEN_ANON] / (8 * SWAP_CLUSTER_MAX));
+	file_tier = min_t(unsigned int, MAX_NR_GENS - 1,
+			  lrugen->pressure[LRU_GEN_FILE] / (8 * SWAP_CLUSTER_MAX));
+
+	if (efficiency < 10) {
+		anon_tier = min_t(unsigned int, anon_tier + 1, MAX_NR_GENS - 1);
+		file_tier = min_t(unsigned int, file_tier + 1, MAX_NR_GENS - 1);
+	} else if (efficiency > 50) {
+		anon_tier = anon_tier ? anon_tier - 1 : 0;
+		file_tier = file_tier ? file_tier - 1 : 0;
+	}
+
+	/*
+	 * When reclaim-time ptwalk is enabled, avoid feeding no-progress stalls
+	 * back into pressure escalation. This prevents positive feedback loops
+	 * between MM walk hints and reclaim aggressiveness.
+	 */
+	if (!ptwalk_reclaim_enabled && !reclaimed && scanned >= SWAP_CLUSTER_MAX)
+		lrugen->reclaim_stall = min_t(unsigned int,
+					      lrugen->reclaim_stall + 1, 16);
+	else if (lrugen->reclaim_stall)
+		lrugen->reclaim_stall >>= 1;
+
+	if (!ptwalk_reclaim_enabled && lrugen->reclaim_stall >= 4) {
+		lru_gen_bump_pressure(lrugen, LRU_GEN_ANON, SWAP_CLUSTER_MAX / 2);
+		lru_gen_bump_pressure(lrugen, LRU_GEN_FILE, SWAP_CLUSTER_MAX / 2);
+	}
+
+	lrugen->tiers[LRU_GEN_ANON] = anon_tier;
+	lrugen->tiers[LRU_GEN_FILE] = file_tier;
 	lrugen->last_scanned = scanned;
 	lrugen->last_reclaimed = reclaimed;
 	lrugen->last_efficiency = min_t(unsigned int, efficiency, 100U);
 
-	/*
-	 * Keep reclaim feedback optional on 4.19 backports. Disabling this
-	 * path removes tier/reclaim_stall feedback and reclaim-driven aging
-	 * from direct reclaim, while still recording reclaim efficiency and
-	 * applying pressure decay/normalization.
-	 */
-	if (feedback_enabled) {
-		/* memcg/tier tuning stage */
-		anon_tier = min_t(unsigned int, MAX_NR_GENS - 1,
-				  lrugen->pressure[LRU_GEN_ANON] /
-					  (8 * SWAP_CLUSTER_MAX));
-		file_tier = min_t(unsigned int, MAX_NR_GENS - 1,
-				  lrugen->pressure[LRU_GEN_FILE] /
-					  (8 * SWAP_CLUSTER_MAX));
+	split = max_t(unsigned long, 1, scanned / 2);
+	if (reclaimed)
+		anon_eff = min_t(unsigned long, reclaimed, split) * 100 / split;
+	if (scanned > split)
+		file_eff = (reclaimed > split ? reclaimed - split : 0) * 100 /
+			   (scanned - split);
 
-		if (efficiency < 10) {
-			anon_tier = min_t(unsigned int, anon_tier + 1,
-					  MAX_NR_GENS - 1);
-			file_tier = min_t(unsigned int, file_tier + 1,
-					  MAX_NR_GENS - 1);
-		} else if (efficiency > 50) {
-			anon_tier = anon_tier ? anon_tier - 1 : 0;
-			file_tier = file_tier ? file_tier - 1 : 0;
-		}
-
-		/*
-		 * When reclaim-time ptwalk is enabled, avoid feeding no-progress
-		 * stalls back into pressure escalation. This prevents positive
-		 * feedback loops between MM walk hints and reclaim aggressiveness.
-		 */
-		if (!ptwalk_reclaim_enabled && !reclaimed &&
-		    scanned >= SWAP_CLUSTER_MAX)
-			lrugen->reclaim_stall = min_t(unsigned int,
-						      lrugen->reclaim_stall + 1,
-						      16);
-		else if (lrugen->reclaim_stall)
-			lrugen->reclaim_stall >>= 1;
-
-		if (!ptwalk_reclaim_enabled && lrugen->reclaim_stall >= 4) {
-			lru_gen_bump_pressure(lrugen, LRU_GEN_ANON,
-					      SWAP_CLUSTER_MAX / 2);
-			lru_gen_bump_pressure(lrugen, LRU_GEN_FILE,
-					      SWAP_CLUSTER_MAX / 2);
-		}
-
-		lrugen->tiers[LRU_GEN_ANON] = anon_tier;
-		lrugen->tiers[LRU_GEN_FILE] = file_tier;
-
-		split = max_t(unsigned long, 1, scanned / 2);
-		if (reclaimed)
-			anon_eff = min_t(unsigned long, reclaimed, split) * 100 /
-				   split;
-		if (scanned > split)
-			file_eff = (reclaimed > split ? reclaimed - split : 0) *
-				   100 / (scanned - split);
-
-		if (anon_eff + 5 < file_eff)
-			lru_gen_bump_pressure(lrugen, LRU_GEN_ANON,
-					      SWAP_CLUSTER_MAX / 2);
-		else if (file_eff + 5 < anon_eff)
-			lru_gen_bump_pressure(lrugen, LRU_GEN_FILE,
-					      SWAP_CLUSTER_MAX / 2);
-	}
+	if (anon_eff + 5 < file_eff)
+		lru_gen_bump_pressure(lrugen, LRU_GEN_ANON, SWAP_CLUSTER_MAX / 2);
+	else if (file_eff + 5 < anon_eff)
+		lru_gen_bump_pressure(lrugen, LRU_GEN_FILE, SWAP_CLUSTER_MAX / 2);
 
 	lru_gen_decay_pressure(lrugen);
 	lru_gen_normalize_pressure(lrugen);
-	if (!feedback_enabled) {
-		spin_unlock_irqrestore(&pgdat->lru_lock, flags);
-		return;
-	}
-
 	trace_mm_vmscan_lru_gen_feedback(pgdat->node_id,
 					 lrugen->pressure[LRU_GEN_ANON],
 					 lrugen->pressure[LRU_GEN_FILE],
