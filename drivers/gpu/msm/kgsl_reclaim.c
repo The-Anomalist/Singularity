@@ -27,6 +27,14 @@ static bool kgsl_reclaim;
 
 static u32 kgsl_reclaim_max_page_limit = KGSL_RECLAIM_DEFAULT_LIMIT_PAGES;
 
+static u32 kgsl_reclaim_limit_percent_x100(u32 limit_pages)
+{
+	if (!KGSL_RECLAIM_MAX_LIMIT_PAGES)
+		return 0;
+
+	return (limit_pages * 10000U) / KGSL_RECLAIM_MAX_LIMIT_PAGES;
+}
+
 static int kgsl_memdesc_get_reclaimed_pages(struct kgsl_mem_entry *entry)
 {
 	struct kgsl_memdesc *memdesc = &entry->memdesc;
@@ -355,12 +363,22 @@ void kgsl_reclaim_proc_private_init(struct kgsl_process_private *process)
 
 int kgsl_reclaim_init(struct kgsl_device *device)
 {
+	u32 default_percent_x100;
+
 	if (!(device->flags & KGSL_FLAG_PROCESS_RECLAIM))
 		return 0;
 
+	default_percent_x100 =
+		kgsl_reclaim_limit_percent_x100(KGSL_RECLAIM_DEFAULT_LIMIT_PAGES);
+
 	kgsl_reclaim = true;
 	dev_info(device->dev,
-		"process reclaim enabled (default process state: background)\n");
+		"process reclaim enabled: default=%u pages (%u MB, %u.%02u%% of max), max=%u pages (%u MB), state=background\n",
+		KGSL_RECLAIM_DEFAULT_LIMIT_PAGES,
+		(KGSL_RECLAIM_DEFAULT_LIMIT_PAGES << PAGE_SHIFT) >> 20,
+		default_percent_x100 / 100, default_percent_x100 % 100,
+		KGSL_RECLAIM_MAX_LIMIT_PAGES,
+		(KGSL_RECLAIM_MAX_LIMIT_PAGES << PAGE_SHIFT) >> 20);
 
 	kgsl_reclaim_nb.notifier_call = kgsl_reclaim_callback;
 	return proc_reclaim_notifier_register(&kgsl_reclaim_nb);
