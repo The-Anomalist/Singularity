@@ -895,6 +895,8 @@ static int adreno_identify_gpu(struct adreno_device *adreno_dev)
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 	const struct adreno_reg_offsets *reg_offsets;
 	struct adreno_gpudev *gpudev;
+	u64 gmem_window;
+	u64 gmem_padding = 0;
 	int i;
 
 	adreno_dev->gpucore = _get_gpu_core(adreno_dev->chipid);
@@ -919,6 +921,16 @@ static int adreno_identify_gpu(struct adreno_device *adreno_dev)
 		return -ENODEV;
 	}
 
+	gmem_window = adreno_dev->gpucore->gmem_size;
+
+	/*
+	 * Automatic GMEM policy:
+	 * Keep an extra 1 MB separation between RB and UCHE GMEM windows when
+	 * GMEM itself is already larger than 1 MB to reduce overlap pressure.
+	 */
+	if (gmem_window > SZ_1M)
+		gmem_padding = SZ_1M;
+
 	/*
 	 * Some GPUs needs UCHE GMEM base address to be minimum 0x100000
 	 * and 1MB aligned. Configure UCHE GMEM base based on GMEM size
@@ -926,9 +938,20 @@ static int adreno_identify_gpu(struct adreno_device *adreno_dev)
 	 * because setting it to minimum value 0x100000 will result in RB
 	 * and UCHE GMEM range overlap for GPUs with GMEM size >1MB.
 	 */
-	if (!adreno_is_a650_family(adreno_dev))
-		adreno_dev->uche_gmem_base =
-			ALIGN(adreno_dev->gpucore->gmem_size, SZ_1M);
+	if (!adreno_is_a650_family(adreno_dev)) {
+		gmem_window += gmem_padding;
+		adreno_dev->uche_gmem_base = ALIGN(gmem_window, SZ_1M);
+	}
+
+	/*
+	 * Automatic preemption policy:
+	 * - Skip save/restore for lower switching overhead in performance mode.
+	 * - Keep GMEM save/restore enabled for <=1 MB GMEM targets where the
+	 *   overhead is lower, disable it on larger GMEM targets to reduce
+	 *   context-switch latency.
+	 */
+	adreno_dev->preempt.skipsaverestore = adreno_performance_mode;
+	adreno_dev->preempt.usesgmem = (adreno_dev->gpucore->gmem_size <= SZ_1M);
 
 	/*
 	 * Initialize uninitialzed gpu registers, only needs to be done once
