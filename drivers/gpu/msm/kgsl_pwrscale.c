@@ -1062,6 +1062,12 @@ int kgsl_pwrscale_init(struct device *dev, const char *governor)
 
 	data->disable_busy_time_burst = of_property_read_bool(
 		device->pdev->dev.of_node, "qcom,disable-busy-time-burst");
+	of_property_read_u32(device->pdev->dev.of_node,
+		"qcom,tz-sample-floor", &data->tz_sample_floor);
+	of_property_read_u32(device->pdev->dev.of_node,
+		"qcom,tz-min-busy", &data->tz_min_busy);
+	of_property_read_u32(device->pdev->dev.of_node,
+		"qcom,tz-busy-ceiling", &data->tz_busy_ceiling);
 
 	if (pwrscale->ctxt_aware_enable) {
 		data->ctxt_aware_enable = pwrscale->ctxt_aware_enable;

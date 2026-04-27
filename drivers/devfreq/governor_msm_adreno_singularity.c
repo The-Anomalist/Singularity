@@ -55,6 +55,24 @@ static DEFINE_SPINLOCK(boost_lock);
 
 #define TAG "singularity: "
 
+static inline u32 singularity_sample_floor(
+	const struct devfreq_msm_adreno_tz_data *priv)
+{
+	return priv->tz_sample_floor ? priv->tz_sample_floor : FLOOR;
+}
+
+static inline u32 singularity_min_busy(
+	const struct devfreq_msm_adreno_tz_data *priv)
+{
+	return priv->tz_min_busy ? priv->tz_min_busy : MIN_BUSY;
+}
+
+static inline u32 singularity_busy_ceiling(
+	const struct devfreq_msm_adreno_tz_data *priv)
+{
+	return priv->tz_busy_ceiling ? priv->tz_busy_ceiling : CEILING;
+}
+
 static u64 suspend_time;
 static u64 suspend_start;
 static unsigned long acc_total, acc_relative_busy;
@@ -902,8 +920,8 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	 * busier than MIN_BUSY.
 	 */
 	if ((stats->total_time == 0) ||
-		(priv->bin.total_time < FLOOR) ||
-		(unsigned int) priv->bin.busy_time < MIN_BUSY) {
+		(priv->bin.total_time < singularity_sample_floor(priv)) ||
+		(unsigned int) priv->bin.busy_time < singularity_min_busy(priv)) {
 		return 0;
 	}
 
@@ -918,7 +936,7 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	 * increase frequency.  Otherwise run the normal algorithm.
 	 */
 	if (!priv->disable_busy_time_burst &&
-			priv->bin.busy_time > CEILING) {
+			priv->bin.busy_time > singularity_busy_ceiling(priv)) {
 		val = -1 * level;
 	} else {
 		unsigned int refresh_rate = dsi_panel_get_refresh_rate();
