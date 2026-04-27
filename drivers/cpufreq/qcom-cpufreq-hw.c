@@ -389,9 +389,6 @@ qcom_cpufreq_hw_target_index(struct cpufreq_policy *policy,
 	u64 now;
 	bool rate_limited = false;
 
-	if (index >= c->lut_max_entries)
-		return -EINVAL;
-
 	curr_index = readl_relaxed(c->reg_bases[REG_PERF_STATE]);
 	curr_index = min(curr_index, c->lut_max_entries - 1);
 	curr_freq = qcom_cpufreq_hw_resolve_rate(policy, curr_index);
@@ -471,27 +468,16 @@ static unsigned int
 qcom_cpufreq_hw_fast_switch(struct cpufreq_policy *policy,
 			    unsigned int target_freq)
 {
-	struct cpufreq_qcom *c = policy->driver_data;
 	int index;
-	unsigned int selected_index;
 
-	target_freq = clamp_val(target_freq, policy->min, policy->max);
-	index = cpufreq_table_find_index_dl(policy, target_freq);
+	index = policy->cached_resolved_idx;
 	if (index < 0)
 		return 0;
 
 	if (qcom_cpufreq_hw_target_index(policy, index))
 		return 0;
 
-	/*
-	 * Fast-switch users expect a frequency corresponding to the selected
-	 * LUT row. Fall back to the table rate if HW status isn't available.
-	 */
-	selected_index = readl_relaxed(c->reg_bases[REG_PERF_STATE]);
-	selected_index = min(selected_index, c->lut_max_entries - 1);
-
-	return qcom_cpufreq_hw_get_actual_rate(c) ? :
-		policy->freq_table[selected_index].frequency;
+	return qcom_cpufreq_hw_get(policy->cpu);
 }
 
 static int qcom_cpufreq_hw_cpu_init(struct cpufreq_policy *policy)
@@ -524,9 +510,6 @@ static int qcom_cpufreq_hw_cpu_init(struct cpufreq_policy *policy)
 	policy->freq_table = c->table;
 	policy->driver_data = c;
 	policy->dvfs_possible_from_any_cpu = true;
-	policy->cur = qcom_cpufreq_hw_get(policy->cpu);
-	if (!policy->cur)
-		policy->cur = policy->freq_table[0].frequency;
 
 	em_register_perf_domain(policy->cpus, ret, &em_cb);
 
@@ -550,19 +533,6 @@ static int qcom_cpufreq_hw_cpu_init(struct cpufreq_policy *policy)
 		device_create_file(cpu_dev, &c->freq_limit_attr);
 	}
 
-	return 0;
-}
-
-static int qcom_cpufreq_hw_resume(struct cpufreq_policy *policy)
-{
-	unsigned int cur = qcom_cpufreq_hw_get(policy->cpu);
-
-	if (!cur)
-		return 0;
-
-	policy->cur = clamp_val(cur, policy->min, policy->max);
-	arch_set_freq_scale(policy->related_cpus, policy->cur,
-			    policy->cpuinfo.max_freq);
 	return 0;
 }
 
@@ -608,7 +578,6 @@ static struct cpufreq_driver cpufreq_qcom_hw_driver = {
 	.target_index	= qcom_cpufreq_hw_target_index,
 	.get		= qcom_cpufreq_hw_get,
 	.init		= qcom_cpufreq_hw_cpu_init,
-	.resume		= qcom_cpufreq_hw_resume,
 	.fast_switch    = qcom_cpufreq_hw_fast_switch,
 	.name		= "qcom-cpufreq-hw",
 	.attr		= qcom_cpufreq_hw_attr,
@@ -624,7 +593,6 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 	u32 data, src, lval, i, core_count, prev_cc, prev_freq, cur_freq, volt;
 	u32 vc;
 	unsigned long cpu;
-	bool invalid_row;
 
 	c->table = devm_kcalloc(dev, lut_max_entries + 2,
 				sizeof(*c->table), GFP_KERNEL);
@@ -666,7 +634,6 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 
 		c->freqs[i] = c->table[i].frequency;
 		cur_freq = c->table[i].frequency;
-		invalid_row = false;
 
 		dev_dbg(dev, "index=%d freq=%d, core_count %d\n",
 			i, c->table[i].frequency, core_count);
@@ -677,12 +644,8 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 				c->skip_data.high_temp_index = i;
 				c->skip_data.freq = cur_freq;
 				c->skip_data.cc = core_count;
-				c->skip_data.final_index = i;
-				c->skip_data.low_temp_index = i;
-				if (i + 1 < lut_max_entries) {
-					c->skip_data.final_index = i + 1;
-					c->skip_data.low_temp_index = i + 1;
-				}
+				c->skip_data.final_index = i + 1;
+				c->skip_data.low_temp_index = i + 1;
 				if (i > 0) {
 					c->skip_data.prev_freq =
 						c->table[i - 1].frequency;
@@ -694,18 +657,9 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 					c->skip_data.prev_cc = core_count;
 				}
 			} else {
-				invalid_row = true;
+				cur_freq = CPUFREQ_ENTRY_INVALID;
+				c->table[i].flags = CPUFREQ_BOOST_FREQ;
 			}
-		}
-
-		if (!cur_freq)
-			invalid_row = true;
-
-		if (invalid_row) {
-			cur_freq = CPUFREQ_ENTRY_INVALID;
-			c->table[i].frequency = CPUFREQ_ENTRY_INVALID;
-			c->table[i].flags = CPUFREQ_BOOST_FREQ;
-			c->freqs[i] = CPUFREQ_ENTRY_INVALID;
 		}
 
 		/*
@@ -868,9 +822,6 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 	c->table[c->lut_max_entries].frequency = CPUFREQ_TABLE_END;
 
 	for (i = 0; i < c->lut_max_entries; i++) {
-		if (c->table[i].frequency == CPUFREQ_ENTRY_INVALID)
-			continue;
-
 		for_each_cpu(cpu, &c->related_cpus) {
 			cpu_dev = get_cpu_device(cpu);
 			if (!cpu_dev)
@@ -911,15 +862,9 @@ static int qcom_get_related_cpus(int index, struct cpumask *m)
 		if (ret < 0)
 			continue;
 
-		if (!args.args_count)
-			continue;
-
 		if (index == args.args[0])
 			cpumask_set_cpu(cpu, m);
 	}
-
-	if (cpumask_empty(m))
-		return -ENOENT;
 
 	return 0;
 }
@@ -1058,12 +1003,6 @@ static int qcom_resources_init(struct platform_device *pdev)
 
 	of_property_read_u32(pdev->dev.of_node, "qcom,lut-max-entries",
 			      &lut_max_entries);
-
-	if (!lut_row_size)
-		lut_row_size = LUT_ROW_SIZE;
-	if (lut_max_entries < 2)
-		lut_max_entries = 2;
-	lut_max_entries = min_t(unsigned int, lut_max_entries, LUT_MAX_ENTRIES);
 
 	for_each_possible_cpu(cpu) {
 		cpu_np = of_cpu_device_node_get(cpu);
