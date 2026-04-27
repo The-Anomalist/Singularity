@@ -56,6 +56,62 @@ static DEFINE_SPINLOCK(boost_lock);
 
 #define TAG "orion: "
 
+static void orion_build_auto_policy(struct devfreq_msm_adreno_tz_data *priv,
+				    unsigned int busy_pct,
+				    unsigned int context_count,
+				    unsigned int mem_pressure_pct,
+				    unsigned int mem_contention_pct,
+				    unsigned int *upthreshold_pct,
+				    unsigned int *downthreshold_pct,
+				    unsigned int *transition_boost_pct,
+				    unsigned int *hispeed_load,
+				    unsigned int *boost_ms,
+				    bool *force_max_perf)
+{
+	unsigned int base_up, base_down, base_transition;
+	unsigned int base_hispeed, base_boost_ms, base_scene_boost_ms;
+	unsigned int pressure, contention, activity;
+	unsigned int ctx_target;
+	int up, down, transition, hispeed;
+
+	base_up = clamp_t(unsigned int, priv->orion_upthreshold_pct, 50, 100);
+	base_down = min_t(unsigned int, priv->orion_downthreshold_pct, 50);
+	base_transition = min_t(unsigned int, priv->orion_transition_boost_pct, 100);
+	base_hispeed = min_t(unsigned int,
+			     max_t(unsigned int, 1, priv->orion_hispeed_load),
+			     100);
+	base_boost_ms = max_t(unsigned int, 1, priv->orion_boost_ms);
+	base_scene_boost_ms = max_t(unsigned int, base_boost_ms,
+				    priv->orion_scene_boost_ms);
+	ctx_target = max_t(unsigned int, 1, priv->orion_transition_contexts);
+
+	pressure = min_t(unsigned int, 100, busy_pct + (context_count * 100) /
+				(context_count + ctx_target));
+	contention = min_t(unsigned int, 100,
+			   (mem_pressure_pct + mem_contention_pct) >> 1);
+	activity = min_t(unsigned int, 100,
+			 pressure + ((contention * 3) / 10));
+
+	up = base_up - div_u64((u64)activity * (base_up - 50), 100);
+	down = base_down - (int)(activity / 20);
+	transition = base_transition + div_u64((u64)activity * (100 - base_transition), 100);
+	hispeed = base_hispeed - (int)(activity / 4);
+
+	*upthreshold_pct = clamp_t(unsigned int, up, 50, 100);
+	*downthreshold_pct = clamp_t(unsigned int, down, 0, 50);
+	*transition_boost_pct = clamp_t(unsigned int, transition, 0, 100);
+	*hispeed_load = clamp_t(unsigned int, hispeed, 1, 100);
+	*boost_ms = base_boost_ms + div_u64((u64)activity *
+					    (base_scene_boost_ms - base_boost_ms),
+					    100);
+	if (context_count >= ctx_target)
+		*boost_ms = max(*boost_ms, base_scene_boost_ms);
+
+	*force_max_perf = busy_pct >= *upthreshold_pct &&
+			  context_count >= ctx_target &&
+			  mem_contention_pct >= 60;
+}
+
 static inline u32 orion_sample_floor(
 	const struct devfreq_msm_adreno_tz_data *priv)
 {
@@ -686,10 +742,13 @@ void compute_work_load(struct devfreq_dev_status *stats,
 
 static void orion_update_atlas_telemetry(struct devfreq *devfreq,
 					 unsigned int busy_pct,
-					 unsigned long current_freq)
+					 unsigned long current_freq,
+					 unsigned int context_count)
 {
 	unsigned long max_freq;
 	unsigned int thermal_pct = 0;
+	long mem_total, mem_avail;
+	unsigned int mem_pressure_pct, mem_contention_pct;
 
 	if (!devfreq || !devfreq->profile || !devfreq->profile->freq_table)
 		return;
@@ -708,6 +767,21 @@ static void orion_update_atlas_telemetry(struct devfreq *devfreq,
 	atlas_update_gpu_telemetry(min_t(unsigned int, busy_pct, 100),
 				   (unsigned int)(current_freq / 1000),
 				   thermal_pct);
+
+	mem_total = totalram_pages;
+	mem_avail = si_mem_available();
+	mem_pressure_pct = (!mem_total || mem_avail >= mem_total) ? 0 :
+		100 - mult_frac(mem_avail, 100, mem_total);
+
+	mem_contention_pct = busy_pct;
+	if (context_count >= 2)
+		mem_contention_pct = min_t(unsigned int, 100,
+					   mem_contention_pct + 10);
+	if (busy_pct >= 75 && current_freq < mult_frac(max_freq, 80, 100))
+		mem_contention_pct = min_t(unsigned int, 100,
+					   mem_contention_pct + 12);
+
+	atlas_update_mem_telemetry(mem_pressure_pct, mem_contention_pct);
 }
 
 static void orion_apply_atlas_cpu_sync(
@@ -719,8 +793,10 @@ static void orion_apply_atlas_cpu_sync(
 	unsigned int effective_busy_pct)
 {
 	unsigned int cpu_util_pct = 0, cpu_freq_khz = 0, cpu_thermal_pct = 0;
+	unsigned int mem_pressure_pct = 0, mem_contention_pct = 0;
 
 	atlas_get_cpu_telemetry(&cpu_util_pct, &cpu_freq_khz, &cpu_thermal_pct);
+	atlas_get_mem_telemetry(&mem_pressure_pct, &mem_contention_pct);
 
 	/*
 	 * Atlas can ask Orion to be more eager during CPU-heavy bursts while
@@ -764,12 +840,30 @@ static void orion_apply_atlas_cpu_sync(
 	    cpu_freq_khz < 1400000)
 		*upthreshold_pct = max_t(unsigned int, 50, *upthreshold_pct - 4);
 
+	if (upthreshold_pct && downthreshold_pct &&
+	    mem_pressure_pct >= 75 && cpu_thermal_pct < 75) {
+		*upthreshold_pct = max_t(unsigned int, 50, *upthreshold_pct - 3);
+		*downthreshold_pct = max_t(unsigned int, 0, *downthreshold_pct - 2);
+	}
+
+	if (upthreshold_pct && downthreshold_pct &&
+	    mem_contention_pct >= 70 && cpu_util_pct < 60) {
+		*upthreshold_pct = min_t(unsigned int, 100, *upthreshold_pct + 4);
+		*downthreshold_pct = min_t(unsigned int, 50, *downthreshold_pct + 2);
+	}
+
 	/*
 	 * If the CPU is hot and already near saturation, don't stretch GPU boost
 	 * windows; this keeps power budget focused on the active bottleneck.
 	 */
 	if (boost_end && cpu_thermal_pct >= 70 && cpu_util_pct >= 80)
 		*boost_end = 0;
+	else if (boost_end && priv->orion_boost_enable && priv->orion_boost_ms &&
+		 mem_pressure_pct >= 85 && cpu_thermal_pct < 70 &&
+		 effective_busy_pct >= 55)
+		*boost_end = max_t(unsigned long, *boost_end,
+				   jiffies + msecs_to_jiffies(max_t(u32, 1,
+								    priv->orion_boost_ms / 3)));
 }
 
 /* Trap into the TrustZone, and call funcs there. */
@@ -987,6 +1081,9 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	u64 adjusted_busy;
 	u32 busy_pct = 0, effective_busy_pct = 0;
 	u32 upthreshold_pct, downthreshold_pct, transition_boost_pct;
+	u32 hispeed_load, boost_ms;
+	u32 mem_pressure_pct = 0, mem_contention_pct = 0;
+	bool force_max_perf = false;
 
 	/* keeps stats.private_data == NULL   */
 	result = devfreq_update_stats(devfreq);
@@ -1068,10 +1165,13 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	}
 	priv->orion_smoothed_busy_pct = effective_busy_pct;
 	orion_update_atlas_telemetry(devfreq, effective_busy_pct,
-				     stats->current_frequency);
-	upthreshold_pct = priv->orion_upthreshold_pct;
-	downthreshold_pct = priv->orion_downthreshold_pct;
-	transition_boost_pct = priv->orion_transition_boost_pct;
+				     stats->current_frequency, context_count);
+	atlas_get_mem_telemetry(&mem_pressure_pct, &mem_contention_pct);
+	orion_build_auto_policy(priv, effective_busy_pct, context_count,
+				mem_pressure_pct, mem_contention_pct,
+				&upthreshold_pct, &downthreshold_pct,
+				&transition_boost_pct, &hispeed_load,
+				&boost_ms, &force_max_perf);
 	orion_apply_atlas_cpu_sync(priv, &upthreshold_pct, &downthreshold_pct,
 				   &transition_boost_pct, NULL,
 				   effective_busy_pct);
@@ -1096,8 +1196,10 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 		level = min_t(int, level, devfreq->profile->max_state - 1);
 	}
 
-	if (priv->orion_hispeed_load &&
-		effective_busy_pct >= priv->orion_hispeed_load) {
+	if (force_max_perf)
+		level = 0;
+
+	if (hispeed_load && effective_busy_pct >= hispeed_load) {
 		int hispeed_level = clamp_t(int, priv->orion_hispeed_level,
 			0, devfreq->profile->max_state - 1);
 
@@ -1133,6 +1235,9 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 				effective_busy_pct >= (100 -
 					transition_boost_pct))
 				level = max(level - 1, 0);
+			if (boost_ms > priv->orion_boost_ms &&
+			    effective_busy_pct >= upthreshold_pct)
+				level = max(level - 1, 0);
 		}
 	}
 
@@ -1160,16 +1265,28 @@ static int tz_notify(struct notifier_block *nb, unsigned long type, void *devp)
 		}
 		break;
 	case ADRENO_DEVFREQ_NOTIFY_SUBMIT:
-		if (priv->orion_boost_enable &&
-				priv->orion_boost_ms) {
-			unsigned long boost_ms = priv->orion_boost_ms;
+		if (priv->orion_boost_enable) {
+			unsigned int context_count = 0;
+			unsigned int upthreshold_pct, downthreshold_pct;
+			unsigned int transition_boost_pct, hispeed_load;
+			unsigned int boost_ms, mem_pressure_pct = 0;
+			unsigned int mem_contention_pct = 0;
+			bool force_max_perf = false;
 
-			if (priv->orion_transition_contexts &&
-				devfreq->last_status.private_data &&
-				(*((int *)devfreq->last_status.private_data) >=
-					priv->orion_transition_contexts) &&
-				priv->orion_scene_boost_ms > boost_ms)
-				boost_ms = priv->orion_scene_boost_ms;
+			if (devfreq->last_status.private_data)
+				context_count = *((int *)devfreq->last_status.private_data);
+			atlas_get_mem_telemetry(&mem_pressure_pct,
+						&mem_contention_pct);
+			orion_build_auto_policy(priv,
+						priv->orion_smoothed_busy_pct,
+						context_count,
+						mem_pressure_pct,
+						mem_contention_pct,
+						&upthreshold_pct,
+						&downthreshold_pct,
+						&transition_boost_pct,
+						&hispeed_load, &boost_ms,
+						&force_max_perf);
 
 			spin_lock(&boost_lock);
 			priv->orion_boost_end =

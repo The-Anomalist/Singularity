@@ -13,6 +13,10 @@ void atlas_update_cpu_telemetry(unsigned int util_pct, unsigned int freq_khz,
 				unsigned int thermal_pct);
 void atlas_get_cpu_telemetry(unsigned int *util_pct, unsigned int *freq_khz,
 			     unsigned int *thermal_pct);
+void atlas_update_mem_telemetry(unsigned int pressure_pct,
+				unsigned int contention_pct);
+void atlas_get_mem_telemetry(unsigned int *pressure_pct,
+			     unsigned int *contention_pct);
 #else
 static inline void atlas_update_gpu_telemetry(unsigned int util_pct,
 				      unsigned int freq_khz,
@@ -48,6 +52,20 @@ static inline void atlas_get_cpu_telemetry(unsigned int *util_pct,
 		*freq_khz = 0;
 	if (thermal_pct)
 		*thermal_pct = 0;
+}
+
+static inline void atlas_update_mem_telemetry(unsigned int pressure_pct,
+					      unsigned int contention_pct)
+{
+}
+
+static inline void atlas_get_mem_telemetry(unsigned int *pressure_pct,
+					   unsigned int *contention_pct)
+{
+	if (pressure_pct)
+		*pressure_pct = 0;
+	if (contention_pct)
+		*contention_pct = 0;
 }
 #endif
 
