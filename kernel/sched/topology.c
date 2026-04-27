@@ -258,10 +258,18 @@ static struct perf_domain *pd_init(int cpu)
 {
 	struct em_perf_domain *obj = em_cpu_get(cpu);
 	struct perf_domain *pd;
+	int nr_states;
 
 	if (!obj) {
 		if (sched_debug())
 			pr_info("%s: no EM found for CPU%d\n", __func__, cpu);
+		return NULL;
+	}
+
+	nr_states = em_pd_nr_cap_states(obj);
+	if (!nr_states) {
+		pr_warn("%s: invalid EM for CPU%d (no performance states)\n",
+			__func__, cpu);
 		return NULL;
 	}
 

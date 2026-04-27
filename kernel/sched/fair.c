@@ -3977,7 +3977,7 @@ static inline bool task_fits_capacity(struct task_struct *p,
 
 static inline bool task_fits_max(struct task_struct *p, int cpu)
 {
-	unsigned long capacity = capacity_orig_of(cpu);
+	unsigned long capacity = capacity_of(cpu);
 	unsigned long max_capacity = cpu_rq(cpu)->rd->max_cpu_capacity.val;
 	unsigned long task_boost = per_task_boost(p);
 
@@ -4000,7 +4000,7 @@ static inline bool task_fits_max(struct task_struct *p, int cpu)
 
 static inline bool task_demand_fits(struct task_struct *p, int cpu)
 {
-	unsigned long capacity = capacity_orig_of(cpu);
+	unsigned long capacity = capacity_of(cpu);
 	unsigned long max_capacity = cpu_rq(cpu)->rd->max_cpu_capacity.val;
 
 	if (capacity == max_capacity)
@@ -5493,7 +5493,7 @@ static unsigned long capacity_of(int cpu);
 
 bool __cpu_overutilized(int cpu, int delta)
 {
-	return (capacity_orig_of(cpu) * 1024) <
+	return (capacity_of(cpu) * 1024) <
 		((cpu_util(cpu) + delta) * sched_capacity_margin_up[cpu]);
 }
 
@@ -7913,7 +7913,13 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 	if (task_placement_boost_enabled(p) || fbt_env.need_idle || boosted ||
 	    is_rtg || __cpu_overutilized(prev_cpu, delta) ||
 	    !task_fits_max(p, prev_cpu) || cpu_isolated(prev_cpu)) {
-		best_energy_cpu = cpu;
+		if (cpumask_test_cpu(prev_cpu, candidates) &&
+		    !cpu_isolated(prev_cpu) &&
+		    !__cpu_overutilized(prev_cpu, delta) &&
+		    task_fits_max(p, prev_cpu))
+			best_energy_cpu = prev_cpu;
+		else
+			best_energy_cpu = cpu;
 		goto unlock;
 	}
 
