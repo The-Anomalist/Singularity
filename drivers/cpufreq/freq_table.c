@@ -236,9 +236,17 @@ static ssize_t show_available_freqs(struct cpufreq_policy *policy, char *buf,
 {
 	ssize_t count = 0;
 	struct cpufreq_frequency_table *pos, *table = policy->freq_table;
+	bool has_boost_freqs = false;
 
 	if (!table)
 		return -ENODEV;
+
+	cpufreq_for_each_valid_entry(pos, table) {
+		if (pos->flags & CPUFREQ_BOOST_FREQ) {
+			has_boost_freqs = true;
+			break;
+		}
+	}
 
 	cpufreq_for_each_valid_entry(pos, table) {
 		/*
@@ -257,6 +265,14 @@ static ssize_t show_available_freqs(struct cpufreq_policy *policy, char *buf,
 
 		count += sprintf(&buf[count], "%d ", pos->frequency);
 	}
+
+	/*
+	 * If a driver doesn't tag boost frequencies in the table, keep the
+	 * attribute useful by exposing all frequencies through both views.
+	 */
+	if (show_boost && !has_boost_freqs)
+		return show_available_freqs(policy, buf, false);
+
 	count += sprintf(&buf[count], "\n");
 
 	return count;
@@ -293,9 +309,7 @@ EXPORT_SYMBOL_GPL(cpufreq_freq_attr_scaling_boost_freqs);
 
 struct freq_attr *cpufreq_generic_attr[] = {
 	&cpufreq_freq_attr_scaling_available_freqs,
-#ifdef CONFIG_CPU_FREQ_BOOST_SW
 	&cpufreq_freq_attr_scaling_boost_freqs,
-#endif
 	NULL,
 };
 EXPORT_SYMBOL_GPL(cpufreq_generic_attr);
