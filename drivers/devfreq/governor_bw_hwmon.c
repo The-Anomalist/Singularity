@@ -669,7 +669,7 @@ static int gov_suspend(struct devfreq *df)
 {
 	struct hwmon_node *node = df->data;
 	unsigned long resume_freq = df->previous_freq;
-	unsigned long resume_ab = *node->dev_ab;
+	unsigned long resume_ab = node->dev_ab ? *node->dev_ab : 0;
 
 	if (!node->hw->suspend_hwmon)
 		return -EPERM;
@@ -719,11 +719,14 @@ static int devfreq_bw_hwmon_get_freq(struct devfreq *df,
 	/* Suspend/resume sequence */
 	if (!node->mon_started || df->dev_suspended) {
 		*freq = node->resume_freq;
-		*node->dev_ab = node->resume_ab;
+		if (node->dev_ab)
+			*node->dev_ab = node->resume_ab;
 		return 0;
 	}
-
-	get_bw_and_set_irq(node, freq, node->dev_ab);
+	if (node->dev_ab)
+		get_bw_and_set_irq(node, freq, node->dev_ab);
+	else
+		get_bw_and_set_irq(node, freq, NULL);
 
 	return 0;
 }

@@ -90,6 +90,7 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 	struct dev_data *d = dev_get_drvdata(dev);
 	u64 kbps;
 	int i, ret;
+	bool deferred = false;
 
 	if (d->cur_ib == new_ib && d->cur_ab == new_ab)
 		return 0;
@@ -194,7 +195,7 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 			if (ret == -EAGAIN) {
 				dev_dbg_ratelimited(dev,
 					"ICC bandwidth request deferred (-EAGAIN), continuing\n");
-				ret = 0;
+				deferred = true;
 				continue;
 			}
 			if (ret) {
@@ -204,8 +205,15 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 			}
 		}
 
-		d->cur_ib = new_ib;
-		d->cur_ab = new_ab;
+		/*
+		 * Keep cur_* unchanged when a vote was deferred so the next
+		 * governor tick retries the exact same request instead of
+		 * treating it as already applied.
+		 */
+		if (!deferred) {
+			d->cur_ib = new_ib;
+			d->cur_ab = new_ab;
+		}
 
 		return 0;
 	}

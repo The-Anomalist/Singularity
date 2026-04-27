@@ -1681,6 +1681,8 @@ static struct icc_path *kona_icc_xlate(struct icc_provider *provider,
 
 	if (!qp)
 		return ERR_PTR(-EINVAL);
+	if (!spec || spec->args_count < 1)
+		return ERR_PTR(-EINVAL);
 
 	desc = kona_find_desc(qp, spec->args[0], &index);
 	if (!desc)
@@ -1934,11 +1936,20 @@ static bool kona_icc_replay_req_votes(struct kona_icc_provider *qp)
 			continue;
 		}
 
-		kona_icc_send_node_votes(qp, i, ab, ib, &retry);
-		if (retry)
-			need_retry = true;
-		else
+		if (kona_icc_send_node_votes(qp, i, ab, ib, &retry) == 0) {
 			kona_icc_clear_dirty(qp, i);
+		} else if (retry) {
+			need_retry = true;
+		} else {
+			/*
+			 * Preserve dirty state on hard errors so votes are not
+			 * lost forever; retry_work will run again on the next
+			 * queued replay or icc_set_bw() update.
+			 */
+			dev_warn_ratelimited(qp->provider.dev,
+				"kona-icc: replay failed for %s (ab=%llu ib=%llu)\n",
+				qp->nodes[i].name, ab, ib);
+		}
 	}
 
 	return need_retry;
@@ -2052,8 +2063,12 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 		ret = kona_icc_send_node_votes(qp, i, ab, ib, &retry);
 		if (ret == -EAGAIN || retry)
 			need_retry = true;
-		else
+		else if (!ret)
 			kona_icc_clear_dirty(qp, i);
+		else
+			dev_warn_ratelimited(qp->provider.dev,
+				"kona-icc: replay failed for %s (ab=%llu ib=%llu ret=%d)\n",
+				qp->nodes[i].name, ab, ib, ret);
 	}
 
 	return need_retry;
