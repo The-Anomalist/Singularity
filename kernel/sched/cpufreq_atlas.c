@@ -17,6 +17,8 @@
 #include <trace/events/power.h>
 #include <linux/sched/sysctl.h>
 #include <linux/mm.h>
+#include <linux/atomic.h>
+#include <linux/orion_atlas_link.h>
 
 #ifdef OPLUS_FEATURE_POWER_CPUFREQ
 /* Target load.  Lower values result in higher CPU speeds. */
@@ -145,6 +147,67 @@ struct sugov_cpu {
 static DEFINE_PER_CPU(struct sugov_cpu, sugov_cpu);
 static unsigned int stale_ns;
 static DEFINE_PER_CPU(struct sugov_tunables *, cached_tunables);
+
+
+static atomic_t atlas_gpu_util_pct = ATOMIC_INIT(0);
+static atomic_t atlas_gpu_freq_khz = ATOMIC_INIT(0);
+static atomic_t atlas_gpu_thermal_pct = ATOMIC_INIT(0);
+static atomic_t atlas_cpu_util_pct = ATOMIC_INIT(0);
+static atomic_t atlas_cpu_freq_khz = ATOMIC_INIT(0);
+static atomic_t atlas_cpu_thermal_pct = ATOMIC_INIT(0);
+
+void atlas_update_gpu_telemetry(unsigned int util_pct, unsigned int freq_khz,
+				unsigned int thermal_pct)
+{
+	atomic_set(&atlas_gpu_util_pct, min_t(unsigned int, util_pct, 100));
+	atomic_set(&atlas_gpu_freq_khz, freq_khz);
+	atomic_set(&atlas_gpu_thermal_pct, min_t(unsigned int, thermal_pct, 100));
+}
+EXPORT_SYMBOL_GPL(atlas_update_gpu_telemetry);
+
+void atlas_get_gpu_telemetry(unsigned int *util_pct, unsigned int *freq_khz,
+			     unsigned int *thermal_pct)
+{
+	if (util_pct)
+		*util_pct = atomic_read(&atlas_gpu_util_pct);
+	if (freq_khz)
+		*freq_khz = atomic_read(&atlas_gpu_freq_khz);
+	if (thermal_pct)
+		*thermal_pct = atomic_read(&atlas_gpu_thermal_pct);
+}
+EXPORT_SYMBOL_GPL(atlas_get_gpu_telemetry);
+
+void atlas_update_cpu_telemetry(unsigned int util_pct, unsigned int freq_khz,
+				unsigned int thermal_pct)
+{
+	atomic_set(&atlas_cpu_util_pct, min_t(unsigned int, util_pct, 100));
+	atomic_set(&atlas_cpu_freq_khz, freq_khz);
+	atomic_set(&atlas_cpu_thermal_pct, min_t(unsigned int, thermal_pct, 100));
+}
+EXPORT_SYMBOL_GPL(atlas_update_cpu_telemetry);
+
+void atlas_get_cpu_telemetry(unsigned int *util_pct, unsigned int *freq_khz,
+			     unsigned int *thermal_pct)
+{
+	if (util_pct)
+		*util_pct = atomic_read(&atlas_cpu_util_pct);
+	if (freq_khz)
+		*freq_khz = atomic_read(&atlas_cpu_freq_khz);
+	if (thermal_pct)
+		*thermal_pct = atomic_read(&atlas_cpu_thermal_pct);
+}
+EXPORT_SYMBOL_GPL(atlas_get_cpu_telemetry);
+
+static unsigned int atlas_cpu_thermal_pct_for_cpu(int cpu)
+{
+	unsigned long max_cap = arch_scale_cpu_capacity(NULL, cpu);
+	unsigned long therm_cap = thermal_cap(cpu);
+
+	if (!max_cap || therm_cap >= max_cap)
+		return 0;
+
+	return mult_frac(max_cap - therm_cap, 100, max_cap);
+}
 
 /************************ Governor internals ***********************/
 
@@ -527,7 +590,7 @@ static bool sugov_time_limit(struct sugov_policy *sg_policy,
 
 /**
  * get_next_freq - Compute a new frequency for a given cpufreq policy.
- * @sg_policy: schedpro policy object to compute the new frequency for.
+ * @sg_policy: Atlas policy object to compute the new frequency for.
  * @util: Current CPU utilization.
  * @max: CPU capacity.
  *
@@ -954,8 +1017,11 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	struct sugov_tunables *tunables = sg_policy->tunables;
 	unsigned long avg_util, floor_util, cap_util;
 	unsigned int util_pct, cpu_signal, gpu_signal, mem_signal;
+	unsigned int gpu_util_pct, gpu_freq_khz, gpu_thermal_pct;
+	unsigned int cpu_freq_khz, cpu_thermal_pct;
 	unsigned int high_load, low_load;
 	unsigned int min_util, max_util;
+	unsigned int thermal_penalty = 0;
 	u64 decay_ns;
 	bool transition = sugov_is_transition_event(flags);
 	bool heavy_load;
@@ -973,6 +1039,12 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	util_pct = mult_frac(*util, 100, max);
 	cpu_signal = util_pct;
 	gpu_signal = transition ? 100 : 0;
+	atlas_get_gpu_telemetry(&gpu_util_pct, &gpu_freq_khz, &gpu_thermal_pct);
+	gpu_signal = max(gpu_signal, gpu_util_pct);
+	cpu_freq_khz = sg_policy->policy->cur;
+	cpu_thermal_pct =
+		atlas_cpu_thermal_pct_for_cpu(cpumask_first(sg_policy->policy->cpus));
+	atlas_update_cpu_telemetry(util_pct, cpu_freq_khz, cpu_thermal_pct);
 	mem_total = totalram_pages;
 	mem_avail = si_mem_available();
 	mem_signal = (!mem_total || mem_avail >= mem_total) ? 0 :
@@ -998,11 +1070,26 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	max_util = tunables->auto_boost_max_util;
 
 	/* Promote responsiveness when graphics bursts are detected. */
-	if (sg_policy->gpu_signal_ema >= 35) {
+	if (sg_policy->gpu_signal_ema >= 35 || gpu_util_pct >= 45) {
 		high_load = max_t(unsigned int, 1, high_load - 8);
 		low_load = max_t(unsigned int, 1, low_load - 6);
 		min_util = min_t(unsigned int, SCHED_CAPACITY_SCALE,
 				 min_util + 32);
+	}
+
+	/*
+	 * When either side reports sustained thermal pressure, damp GPU-driven
+	 * CPU boosts proportionally to avoid futile frequency chasing.
+	 */
+	thermal_penalty = max(cpu_thermal_pct, gpu_thermal_pct);
+	if (thermal_penalty > 55) {
+		unsigned int damp = min_t(unsigned int, 20,
+					  (thermal_penalty - 55) / 2);
+
+		high_load = min_t(unsigned int, 100, high_load + damp);
+		low_load = min_t(unsigned int, high_load, low_load + (damp >> 1));
+		max_util = max_t(unsigned int, min_util,
+				 max_util > damp ? max_util - damp : min_util);
 	}
 
 	/* Ease off boosts when memory pressure is sustained. */
@@ -1011,6 +1098,18 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		low_load = min_t(unsigned int, high_load, low_load + 4);
 		max_util = max_t(unsigned int, min_util,
 				 mult_frac(max_util, 9, 10));
+	}
+
+	/* Atlas/Orion thermal and clock coupling. */
+	if (gpu_thermal_pct >= 75 || cpu_thermal_pct >= 75) {
+		high_load = min_t(unsigned int, 100, high_load + 8);
+		low_load = min_t(unsigned int, high_load, low_load + 6);
+		max_util = max_t(unsigned int, min_util,
+				 mult_frac(max_util, 17, 20));
+	} else if (gpu_util_pct >= 65 && gpu_freq_khz && cpu_freq_khz) {
+		if (gpu_freq_khz > cpu_freq_khz)
+			min_util = min_t(unsigned int, SCHED_CAPACITY_SCALE,
+					 min_util + 48);
 	}
 
 	low_load = min(low_load, high_load);
@@ -2053,7 +2152,7 @@ static struct kobj_type sugov_tunables_ktype = {
 
 /********************** cpufreq governor interface *********************/
 
-static struct cpufreq_governor schedpro_gov;
+static struct cpufreq_governor atlas_gov;
 
 static struct sugov_policy *sugov_policy_alloc(struct cpufreq_policy *policy)
 {
@@ -2493,8 +2592,8 @@ static void sugov_limits(struct cpufreq_policy *policy)
 	WRITE_ONCE(sg_policy->limits_changed, true);
 }
 
-static struct cpufreq_governor schedpro_gov = {
-	.name			= "schedpro",
+static struct cpufreq_governor atlas_gov = {
+	.name			= "atlas",
 	.owner			= THIS_MODULE,
 	.dynamic_switching	= true,
 	.init			= sugov_init,
@@ -2506,6 +2605,6 @@ static struct cpufreq_governor schedpro_gov = {
 
 static int __init sugov_register(void)
 {
-	return cpufreq_register_governor(&schedpro_gov);
+	return cpufreq_register_governor(&atlas_gov);
 }
 fs_initcall(sugov_register);

@@ -89,12 +89,12 @@ config BROKEN
 	bool
 
 config SINGULARITY_QOS_HINTS
-	bool "Singularity cross-subsystem QoS hints"
+	bool "Orion/Atlas cross-subsystem QoS hints"
 	default n
 	help
 	  Enables lightweight cross-subsystem accounting hooks for scheduler,
 	  reclaim, networking, and block I/O activity. The hooks are exported
-	  through /proc/singularity_qos_hints to simplify tuning workflows.
+	  through /proc/orion_atlas_qos_hints to simplify tuning workflows.
 
 config BROKEN_ON_SMP
 	bool

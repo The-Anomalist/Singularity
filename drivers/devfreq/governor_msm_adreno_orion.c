@@ -18,6 +18,7 @@
 #include <soc/qcom/scm.h>
 #include <soc/qcom/qtee_shmbridge.h>
 #include <linux/of_platform.h>
+#include <linux/orion_atlas_link.h>
 #include "governor.h"
 
 static DEFINE_SPINLOCK(tz_lock);
@@ -53,21 +54,21 @@ static DEFINE_SPINLOCK(boost_lock);
 #define TZ_V2_INIT_CA_ID_64        0xC
 #define TZ_V2_UPDATE_WITH_CA_ID_64 0xD
 
-#define TAG "singularity: "
+#define TAG "orion: "
 
-static inline u32 singularity_sample_floor(
+static inline u32 orion_sample_floor(
 	const struct devfreq_msm_adreno_tz_data *priv)
 {
 	return priv->tz_sample_floor ? priv->tz_sample_floor : FLOOR;
 }
 
-static inline u32 singularity_min_busy(
+static inline u32 orion_min_busy(
 	const struct devfreq_msm_adreno_tz_data *priv)
 {
 	return priv->tz_min_busy ? priv->tz_min_busy : MIN_BUSY;
 }
 
-static inline u32 singularity_busy_ceiling(
+static inline u32 orion_busy_ceiling(
 	const struct devfreq_msm_adreno_tz_data *priv)
 {
 	return priv->tz_busy_ceiling ? priv->tz_busy_ceiling : CEILING;
@@ -149,23 +150,23 @@ static ssize_t suspend_time_show(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "%llu\n", time_diff);
 }
 
-static void singularity_update_devfreq(struct devfreq *devfreq)
+static void orion_update_devfreq(struct devfreq *devfreq)
 {
 	mutex_lock(&devfreq->lock);
 	update_devfreq(devfreq);
 	mutex_unlock(&devfreq->lock);
 }
 
-static inline void singularity_clear_boost_window(
+static inline void orion_clear_boost_window(
 	struct devfreq_msm_adreno_tz_data *priv)
 {
 	spin_lock(&boost_lock);
-	priv->singularity_boost_end = 0;
-	priv->singularity_downscale_blocked_till = 0;
+	priv->orion_boost_end = 0;
+	priv->orion_downscale_blocked_till = 0;
 	spin_unlock(&boost_lock);
 }
 
-static void singularity_apply_perf_boost_level(
+static void orion_apply_perf_boost_level(
 	struct devfreq_msm_adreno_tz_data *priv, u32 level)
 {
 	static const struct {
@@ -192,36 +193,36 @@ static void singularity_apply_perf_boost_level(
 	case 1:
 	case 2:
 	default:
-		priv->singularity_boost_enable = true;
-		priv->singularity_boost_level = 0;
+		priv->orion_boost_enable = true;
+		priv->orion_boost_level = 0;
 		break;
 	}
-	priv->singularity_aggressiveness = profile[idx].aggressiveness;
-	priv->singularity_upthreshold_pct = profile[idx].upthreshold_pct;
-	priv->singularity_downthreshold_pct = profile[idx].downthreshold_pct;
-	priv->singularity_hispeed_load = profile[idx].hispeed_load;
-	priv->singularity_hispeed_level = profile[idx].hispeed_level;
-	priv->singularity_boost_ms = profile[idx].boost_ms;
-	priv->singularity_scene_boost_ms = profile[idx].scene_boost_ms;
-	priv->singularity_transition_boost_pct = profile[idx].transition_boost_pct;
-	priv->singularity_load_filter_pct = profile[idx].load_filter_pct;
-	priv->singularity_downscale_delay_ms = profile[idx].downscale_delay_ms;
-	priv->singularity_perf_boost_level = level;
-	if (!priv->singularity_boost_enable)
-		singularity_clear_boost_window(priv);
+	priv->orion_aggressiveness = profile[idx].aggressiveness;
+	priv->orion_upthreshold_pct = profile[idx].upthreshold_pct;
+	priv->orion_downthreshold_pct = profile[idx].downthreshold_pct;
+	priv->orion_hispeed_load = profile[idx].hispeed_load;
+	priv->orion_hispeed_level = profile[idx].hispeed_level;
+	priv->orion_boost_ms = profile[idx].boost_ms;
+	priv->orion_scene_boost_ms = profile[idx].scene_boost_ms;
+	priv->orion_transition_boost_pct = profile[idx].transition_boost_pct;
+	priv->orion_load_filter_pct = profile[idx].load_filter_pct;
+	priv->orion_downscale_delay_ms = profile[idx].downscale_delay_ms;
+	priv->orion_perf_boost_level = level;
+	if (!priv->orion_boost_enable)
+		orion_clear_boost_window(priv);
 }
 
-static ssize_t singularity_boost_enable_show(struct device *dev,
+static ssize_t orion_boost_enable_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
 	return snprintf(buf, PAGE_SIZE, "%u\n",
-		priv->singularity_boost_enable ? 1 : 0);
+		priv->orion_boost_enable ? 1 : 0);
 }
 
-static ssize_t singularity_boost_enable_store(struct device *dev,
+static ssize_t orion_boost_enable_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
@@ -235,23 +236,23 @@ static ssize_t singularity_boost_enable_store(struct device *dev,
 	if (val > 1)
 		return -EINVAL;
 
-	priv->singularity_boost_enable = !!val;
-	if (!priv->singularity_boost_enable)
-		singularity_clear_boost_window(priv);
-	singularity_update_devfreq(devfreq);
+	priv->orion_boost_enable = !!val;
+	if (!priv->orion_boost_enable)
+		orion_clear_boost_window(priv);
+	orion_update_devfreq(devfreq);
 	return count;
 }
 
-static ssize_t singularity_perf_boost_show(struct device *dev,
+static ssize_t orion_perf_boost_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", priv->singularity_perf_boost_level);
+	return snprintf(buf, PAGE_SIZE, "%u\n", priv->orion_perf_boost_level);
 }
 
-static ssize_t singularity_perf_boost_store(struct device *dev,
+static ssize_t orion_perf_boost_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
@@ -265,21 +266,21 @@ static ssize_t singularity_perf_boost_store(struct device *dev,
 	if (val > 3)
 		return -EINVAL;
 
-	singularity_apply_perf_boost_level(priv, val);
-	singularity_update_devfreq(devfreq);
+	orion_apply_perf_boost_level(priv, val);
+	orion_update_devfreq(devfreq);
 	return count;
 }
 
-static ssize_t singularity_boost_level_show(struct device *dev,
+static ssize_t orion_boost_level_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", priv->singularity_boost_level);
+	return snprintf(buf, PAGE_SIZE, "%u\n", priv->orion_boost_level);
 }
 
-static ssize_t singularity_boost_level_store(struct device *dev,
+static ssize_t orion_boost_level_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
@@ -293,21 +294,21 @@ static ssize_t singularity_boost_level_store(struct device *dev,
 	if (val >= devfreq->profile->max_state)
 		return -EINVAL;
 
-	priv->singularity_boost_level = val;
-	singularity_update_devfreq(devfreq);
+	priv->orion_boost_level = val;
+	orion_update_devfreq(devfreq);
 	return count;
 }
 
-static ssize_t singularity_boost_ms_show(struct device *dev,
+static ssize_t orion_boost_ms_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", priv->singularity_boost_ms);
+	return snprintf(buf, PAGE_SIZE, "%u\n", priv->orion_boost_ms);
 }
 
-static ssize_t singularity_boost_ms_store(struct device *dev,
+static ssize_t orion_boost_ms_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
@@ -321,22 +322,22 @@ static ssize_t singularity_boost_ms_store(struct device *dev,
 	if (val > 2000)
 		return -EINVAL;
 
-	priv->singularity_boost_ms = val;
-	singularity_update_devfreq(devfreq);
+	priv->orion_boost_ms = val;
+	orion_update_devfreq(devfreq);
 	return count;
 }
 
-static ssize_t singularity_aggressiveness_show(struct device *dev,
+static ssize_t orion_aggressiveness_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
 	return snprintf(buf, PAGE_SIZE, "%u\n",
-		priv->singularity_aggressiveness);
+		priv->orion_aggressiveness);
 }
 
-static ssize_t singularity_aggressiveness_store(struct device *dev,
+static ssize_t orion_aggressiveness_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
@@ -350,22 +351,22 @@ static ssize_t singularity_aggressiveness_store(struct device *dev,
 	if (val < 50 || val > 200)
 		return -EINVAL;
 
-	priv->singularity_aggressiveness = val;
-	singularity_update_devfreq(devfreq);
+	priv->orion_aggressiveness = val;
+	orion_update_devfreq(devfreq);
 	return count;
 }
 
-static ssize_t singularity_scene_boost_ms_show(struct device *dev,
+static ssize_t orion_scene_boost_ms_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
 	return snprintf(buf, PAGE_SIZE, "%u\n",
-		priv->singularity_scene_boost_ms);
+		priv->orion_scene_boost_ms);
 }
 
-static ssize_t singularity_scene_boost_ms_store(struct device *dev,
+static ssize_t orion_scene_boost_ms_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
@@ -379,22 +380,22 @@ static ssize_t singularity_scene_boost_ms_store(struct device *dev,
 	if (val > 4000)
 		return -EINVAL;
 
-	priv->singularity_scene_boost_ms = val;
-	singularity_update_devfreq(devfreq);
+	priv->orion_scene_boost_ms = val;
+	orion_update_devfreq(devfreq);
 	return count;
 }
 
-static ssize_t singularity_downscale_delay_ms_show(struct device *dev,
+static ssize_t orion_downscale_delay_ms_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
 	return snprintf(buf, PAGE_SIZE, "%u\n",
-		priv->singularity_downscale_delay_ms);
+		priv->orion_downscale_delay_ms);
 }
 
-static ssize_t singularity_downscale_delay_ms_store(struct device *dev,
+static ssize_t orion_downscale_delay_ms_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
@@ -408,22 +409,22 @@ static ssize_t singularity_downscale_delay_ms_store(struct device *dev,
 	if (val > 1000)
 		return -EINVAL;
 
-	priv->singularity_downscale_delay_ms = val;
-	singularity_update_devfreq(devfreq);
+	priv->orion_downscale_delay_ms = val;
+	orion_update_devfreq(devfreq);
 	return count;
 }
 
-static ssize_t singularity_transition_boost_pct_show(struct device *dev,
+static ssize_t orion_transition_boost_pct_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
 	return snprintf(buf, PAGE_SIZE, "%u\n",
-		priv->singularity_transition_boost_pct);
+		priv->orion_transition_boost_pct);
 }
 
-static ssize_t singularity_transition_boost_pct_store(struct device *dev,
+static ssize_t orion_transition_boost_pct_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
@@ -437,22 +438,22 @@ static ssize_t singularity_transition_boost_pct_store(struct device *dev,
 	if (val > 100)
 		return -EINVAL;
 
-	priv->singularity_transition_boost_pct = val;
-	singularity_update_devfreq(devfreq);
+	priv->orion_transition_boost_pct = val;
+	orion_update_devfreq(devfreq);
 	return count;
 }
 
-static ssize_t singularity_transition_contexts_show(struct device *dev,
+static ssize_t orion_transition_contexts_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
 	return snprintf(buf, PAGE_SIZE, "%u\n",
-		priv->singularity_transition_contexts);
+		priv->orion_transition_contexts);
 }
 
-static ssize_t singularity_transition_contexts_store(struct device *dev,
+static ssize_t orion_transition_contexts_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
@@ -466,21 +467,21 @@ static ssize_t singularity_transition_contexts_store(struct device *dev,
 	if (val > 32)
 		return -EINVAL;
 
-	priv->singularity_transition_contexts = val;
-	singularity_update_devfreq(devfreq);
+	priv->orion_transition_contexts = val;
+	orion_update_devfreq(devfreq);
 	return count;
 }
 
-static ssize_t singularity_upthreshold_pct_show(struct device *dev,
+static ssize_t orion_upthreshold_pct_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", priv->singularity_upthreshold_pct);
+	return snprintf(buf, PAGE_SIZE, "%u\n", priv->orion_upthreshold_pct);
 }
 
-static ssize_t singularity_upthreshold_pct_store(struct device *dev,
+static ssize_t orion_upthreshold_pct_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
@@ -491,25 +492,25 @@ static ssize_t singularity_upthreshold_pct_store(struct device *dev,
 	ret = kstrtoul(buf, 0, &val);
 	if (ret)
 		return ret;
-	if (val < 50 || val > 100 || val <= priv->singularity_downthreshold_pct)
+	if (val < 50 || val > 100 || val <= priv->orion_downthreshold_pct)
 		return -EINVAL;
 
-	priv->singularity_upthreshold_pct = val;
-	singularity_update_devfreq(devfreq);
+	priv->orion_upthreshold_pct = val;
+	orion_update_devfreq(devfreq);
 	return count;
 }
 
-static ssize_t singularity_downthreshold_pct_show(struct device *dev,
+static ssize_t orion_downthreshold_pct_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
 	return snprintf(buf, PAGE_SIZE, "%u\n",
-		priv->singularity_downthreshold_pct);
+		priv->orion_downthreshold_pct);
 }
 
-static ssize_t singularity_downthreshold_pct_store(struct device *dev,
+static ssize_t orion_downthreshold_pct_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
@@ -520,52 +521,24 @@ static ssize_t singularity_downthreshold_pct_store(struct device *dev,
 	ret = kstrtoul(buf, 0, &val);
 	if (ret)
 		return ret;
-	if (val > 50 || val >= priv->singularity_upthreshold_pct)
+	if (val > 50 || val >= priv->orion_upthreshold_pct)
 		return -EINVAL;
 
-	priv->singularity_downthreshold_pct = val;
-	singularity_update_devfreq(devfreq);
+	priv->orion_downthreshold_pct = val;
+	orion_update_devfreq(devfreq);
 	return count;
 }
 
-static ssize_t singularity_load_filter_pct_show(struct device *dev,
+static ssize_t orion_load_filter_pct_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", priv->singularity_load_filter_pct);
+	return snprintf(buf, PAGE_SIZE, "%u\n", priv->orion_load_filter_pct);
 }
 
-static ssize_t singularity_load_filter_pct_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct devfreq *devfreq = to_devfreq(dev);
-	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
-	unsigned long val;
-	int ret;
-
-	ret = kstrtoul(buf, 0, &val);
-	if (ret)
-		return ret;
-	if (val > 100)
-		return -EINVAL;
-
-	priv->singularity_load_filter_pct = val;
-	singularity_update_devfreq(devfreq);
-	return count;
-}
-
-static ssize_t singularity_hispeed_load_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	struct devfreq *devfreq = to_devfreq(dev);
-	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
-
-	return snprintf(buf, PAGE_SIZE, "%u\n", priv->singularity_hispeed_load);
-}
-
-static ssize_t singularity_hispeed_load_store(struct device *dev,
+static ssize_t orion_load_filter_pct_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
@@ -579,21 +552,49 @@ static ssize_t singularity_hispeed_load_store(struct device *dev,
 	if (val > 100)
 		return -EINVAL;
 
-	priv->singularity_hispeed_load = val;
-	singularity_update_devfreq(devfreq);
+	priv->orion_load_filter_pct = val;
+	orion_update_devfreq(devfreq);
 	return count;
 }
 
-static ssize_t singularity_hispeed_level_show(struct device *dev,
+static ssize_t orion_hispeed_load_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", priv->singularity_hispeed_level);
+	return snprintf(buf, PAGE_SIZE, "%u\n", priv->orion_hispeed_load);
 }
 
-static ssize_t singularity_hispeed_level_store(struct device *dev,
+static ssize_t orion_hispeed_load_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct devfreq *devfreq = to_devfreq(dev);
+	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
+	unsigned long val;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret)
+		return ret;
+	if (val > 100)
+		return -EINVAL;
+
+	priv->orion_hispeed_load = val;
+	orion_update_devfreq(devfreq);
+	return count;
+}
+
+static ssize_t orion_hispeed_level_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct devfreq *devfreq = to_devfreq(dev);
+	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
+
+	return snprintf(buf, PAGE_SIZE, "%u\n", priv->orion_hispeed_level);
+}
+
+static ssize_t orion_hispeed_level_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
@@ -607,58 +608,58 @@ static ssize_t singularity_hispeed_level_store(struct device *dev,
 	if (val >= devfreq->profile->max_state)
 		return -EINVAL;
 
-	priv->singularity_hispeed_level = val;
-	singularity_update_devfreq(devfreq);
+	priv->orion_hispeed_level = val;
+	orion_update_devfreq(devfreq);
 	return count;
 }
 
-static ssize_t singularity_effective_busy_pct_show(struct device *dev,
+static ssize_t orion_effective_busy_pct_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct devfreq *devfreq = to_devfreq(dev);
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
 	return snprintf(buf, PAGE_SIZE, "%u\n",
-		priv->singularity_smoothed_busy_pct);
+		priv->orion_smoothed_busy_pct);
 }
 
 static DEVICE_ATTR_RO(gpu_load);
 
 static DEVICE_ATTR_RO(suspend_time);
-static DEVICE_ATTR_RW(singularity_boost_enable);
-static DEVICE_ATTR_RW(singularity_perf_boost);
-static DEVICE_ATTR_RW(singularity_boost_level);
-static DEVICE_ATTR_RW(singularity_boost_ms);
-static DEVICE_ATTR_RW(singularity_aggressiveness);
-static DEVICE_ATTR_RW(singularity_scene_boost_ms);
-static DEVICE_ATTR_RW(singularity_downscale_delay_ms);
-static DEVICE_ATTR_RW(singularity_transition_boost_pct);
-static DEVICE_ATTR_RW(singularity_transition_contexts);
-static DEVICE_ATTR_RW(singularity_upthreshold_pct);
-static DEVICE_ATTR_RW(singularity_downthreshold_pct);
-static DEVICE_ATTR_RW(singularity_load_filter_pct);
-static DEVICE_ATTR_RW(singularity_hispeed_load);
-static DEVICE_ATTR_RW(singularity_hispeed_level);
-static DEVICE_ATTR_RO(singularity_effective_busy_pct);
+static DEVICE_ATTR_RW(orion_boost_enable);
+static DEVICE_ATTR_RW(orion_perf_boost);
+static DEVICE_ATTR_RW(orion_boost_level);
+static DEVICE_ATTR_RW(orion_boost_ms);
+static DEVICE_ATTR_RW(orion_aggressiveness);
+static DEVICE_ATTR_RW(orion_scene_boost_ms);
+static DEVICE_ATTR_RW(orion_downscale_delay_ms);
+static DEVICE_ATTR_RW(orion_transition_boost_pct);
+static DEVICE_ATTR_RW(orion_transition_contexts);
+static DEVICE_ATTR_RW(orion_upthreshold_pct);
+static DEVICE_ATTR_RW(orion_downthreshold_pct);
+static DEVICE_ATTR_RW(orion_load_filter_pct);
+static DEVICE_ATTR_RW(orion_hispeed_load);
+static DEVICE_ATTR_RW(orion_hispeed_level);
+static DEVICE_ATTR_RO(orion_effective_busy_pct);
 
-static const struct device_attribute *singularity_attr_list[] = {
+static const struct device_attribute *orion_attr_list[] = {
 		&dev_attr_gpu_load,
 		&dev_attr_suspend_time,
-		&dev_attr_singularity_boost_enable,
-		&dev_attr_singularity_perf_boost,
-		&dev_attr_singularity_boost_level,
-		&dev_attr_singularity_boost_ms,
-		&dev_attr_singularity_aggressiveness,
-		&dev_attr_singularity_scene_boost_ms,
-		&dev_attr_singularity_downscale_delay_ms,
-		&dev_attr_singularity_transition_boost_pct,
-		&dev_attr_singularity_transition_contexts,
-		&dev_attr_singularity_upthreshold_pct,
-		&dev_attr_singularity_downthreshold_pct,
-		&dev_attr_singularity_load_filter_pct,
-		&dev_attr_singularity_hispeed_load,
-		&dev_attr_singularity_hispeed_level,
-		&dev_attr_singularity_effective_busy_pct,
+		&dev_attr_orion_boost_enable,
+		&dev_attr_orion_perf_boost,
+		&dev_attr_orion_boost_level,
+		&dev_attr_orion_boost_ms,
+		&dev_attr_orion_aggressiveness,
+		&dev_attr_orion_scene_boost_ms,
+		&dev_attr_orion_downscale_delay_ms,
+		&dev_attr_orion_transition_boost_pct,
+		&dev_attr_orion_transition_contexts,
+		&dev_attr_orion_upthreshold_pct,
+		&dev_attr_orion_downthreshold_pct,
+		&dev_attr_orion_load_filter_pct,
+		&dev_attr_orion_hispeed_load,
+		&dev_attr_orion_hispeed_level,
+		&dev_attr_orion_effective_busy_pct,
 		NULL
 };
 
@@ -680,6 +681,95 @@ void compute_work_load(struct devfreq_dev_status *stats,
 	acc_relative_busy += busy;
 
 	spin_unlock(&sample_lock);
+}
+
+
+static void orion_update_atlas_telemetry(struct devfreq *devfreq,
+					 unsigned int busy_pct,
+					 unsigned long current_freq)
+{
+	unsigned long max_freq;
+	unsigned int thermal_pct = 0;
+
+	if (!devfreq || !devfreq->profile || !devfreq->profile->freq_table)
+		return;
+
+	max_freq = devfreq->profile->freq_table[0];
+	if (!max_freq)
+		return;
+
+	/*
+	 * We infer thermal pressure from sustained high load at reduced clocks,
+	 * which tracks throttling behavior without requiring thermal hooks.
+	 */
+	if (busy_pct >= 70 && current_freq < max_freq)
+		thermal_pct = 100 - mult_frac(current_freq, 100, max_freq);
+
+	atlas_update_gpu_telemetry(min_t(unsigned int, busy_pct, 100),
+				   (unsigned int)(current_freq / 1000),
+				   thermal_pct);
+}
+
+static void orion_apply_atlas_cpu_sync(
+	struct devfreq_msm_adreno_tz_data *priv,
+	unsigned int *upthreshold_pct,
+	unsigned int *downthreshold_pct,
+	unsigned int *transition_boost_pct,
+	unsigned long *boost_end,
+	unsigned int effective_busy_pct)
+{
+	unsigned int cpu_util_pct = 0, cpu_freq_khz = 0, cpu_thermal_pct = 0;
+
+	atlas_get_cpu_telemetry(&cpu_util_pct, &cpu_freq_khz, &cpu_thermal_pct);
+
+	/*
+	 * Atlas can ask Orion to be more eager during CPU-heavy bursts while
+	 * backing off when CPU thermal pressure is elevated.
+	 */
+	if (cpu_util_pct >= 70 && cpu_thermal_pct < 65) {
+		if (upthreshold_pct && downthreshold_pct && transition_boost_pct) {
+			*upthreshold_pct = max_t(unsigned int, 50, *upthreshold_pct - 6);
+			*transition_boost_pct = min_t(unsigned int, 100,
+						      *transition_boost_pct + 8);
+		}
+		if (boost_end && priv->orion_boost_enable &&
+		    priv->orion_boost_ms && effective_busy_pct >= 50)
+			*boost_end = max_t(unsigned long, *boost_end,
+					   jiffies +
+					   msecs_to_jiffies(priv->orion_boost_ms >> 1));
+	}
+
+	/*
+	 * Soft thermal zone: reduce eagerness before hard throttling starts to
+	 * lower oscillation between adjacent GPU levels during sustained bursts.
+	 */
+	if (upthreshold_pct && downthreshold_pct && transition_boost_pct &&
+	    cpu_thermal_pct >= 60 && cpu_thermal_pct < 75) {
+		*upthreshold_pct = min_t(unsigned int, 100, *upthreshold_pct + 4);
+		*downthreshold_pct = min_t(unsigned int, 50, *downthreshold_pct + 2);
+		*transition_boost_pct = max_t(unsigned int, 0,
+					      *transition_boost_pct - 4);
+	}
+
+	if (upthreshold_pct && downthreshold_pct && transition_boost_pct &&
+	    cpu_thermal_pct >= 75) {
+		*upthreshold_pct = min_t(unsigned int, 100, *upthreshold_pct + 8);
+		*downthreshold_pct = min_t(unsigned int, 50, *downthreshold_pct + 6);
+		*transition_boost_pct = max_t(unsigned int, 0,
+					      *transition_boost_pct - 10);
+	}
+
+	if (upthreshold_pct && cpu_freq_khz && cpu_util_pct >= 60 &&
+	    cpu_thermal_pct < 70 &&
+	    cpu_freq_khz < 1400000)
+		*upthreshold_pct = max_t(unsigned int, 50, *upthreshold_pct - 4);
+
+	/*
+	 * If the CPU is hot and already near saturation, don't stretch GPU boost
+	 * windows; this keeps power budget focused on the active bottleneck.
+	 */
+	if (boost_end && cpu_thermal_pct >= 70 && cpu_util_pct >= 80)
+		*boost_end = 0;
 }
 
 /* Trap into the TrustZone, and call funcs there. */
@@ -896,6 +986,7 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	int context_count = 0;
 	u64 adjusted_busy;
 	u32 busy_pct = 0, effective_busy_pct = 0;
+	u32 upthreshold_pct, downthreshold_pct, transition_boost_pct;
 
 	/* keeps stats.private_data == NULL   */
 	result = devfreq_update_stats(devfreq);
@@ -920,8 +1011,8 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	 * busier than MIN_BUSY.
 	 */
 	if ((stats->total_time == 0) ||
-		(priv->bin.total_time < singularity_sample_floor(priv)) ||
-		(unsigned int) priv->bin.busy_time < singularity_min_busy(priv)) {
+		(priv->bin.total_time < orion_sample_floor(priv)) ||
+		(unsigned int) priv->bin.busy_time < orion_min_busy(priv)) {
 		return 0;
 	}
 
@@ -936,7 +1027,7 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	 * increase frequency.  Otherwise run the normal algorithm.
 	 */
 	if (!priv->disable_busy_time_burst &&
-			priv->bin.busy_time > singularity_busy_ceiling(priv)) {
+			priv->bin.busy_time > orion_busy_ceiling(priv)) {
 		val = -1 * level;
 	} else {
 		unsigned int refresh_rate = dsi_panel_get_refresh_rate();
@@ -944,9 +1035,9 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 		scm_data[0] = level;
 		scm_data[1] = priv->bin.total_time;
 		adjusted_busy = (u64)priv->bin.busy_time;
-		if (priv->singularity_aggressiveness)
+		if (priv->orion_aggressiveness)
 			adjusted_busy = div64_u64(
-				adjusted_busy * priv->singularity_aggressiveness,
+				adjusted_busy * priv->orion_aggressiveness,
 				100);
 		if (adjusted_busy > (u64)priv->bin.total_time)
 			adjusted_busy = (u64)priv->bin.total_time;
@@ -964,31 +1055,39 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	priv->bin.total_time = 0;
 	priv->bin.busy_time = 0;
 
-	if (!priv->singularity_smoothed_busy_pct ||
-		priv->singularity_load_filter_pct >= 100) {
+	if (!priv->orion_smoothed_busy_pct ||
+		priv->orion_load_filter_pct >= 100) {
 		effective_busy_pct = busy_pct;
-	} else if (!priv->singularity_load_filter_pct) {
-		effective_busy_pct = priv->singularity_smoothed_busy_pct;
+	} else if (!priv->orion_load_filter_pct) {
+		effective_busy_pct = priv->orion_smoothed_busy_pct;
 	} else {
 		effective_busy_pct = div_u64((u64)busy_pct *
-			priv->singularity_load_filter_pct +
-			(u64)priv->singularity_smoothed_busy_pct *
-			(100 - priv->singularity_load_filter_pct), 100);
+			priv->orion_load_filter_pct +
+			(u64)priv->orion_smoothed_busy_pct *
+			(100 - priv->orion_load_filter_pct), 100);
 	}
-	priv->singularity_smoothed_busy_pct = effective_busy_pct;
+	priv->orion_smoothed_busy_pct = effective_busy_pct;
+	orion_update_atlas_telemetry(devfreq, effective_busy_pct,
+				     stats->current_frequency);
+	upthreshold_pct = priv->orion_upthreshold_pct;
+	downthreshold_pct = priv->orion_downthreshold_pct;
+	transition_boost_pct = priv->orion_transition_boost_pct;
+	orion_apply_atlas_cpu_sync(priv, &upthreshold_pct, &downthreshold_pct,
+				   &transition_boost_pct, NULL,
+				   effective_busy_pct);
 
 	/*
 	 * If the decision is to move to a different level, make sure the GPU
 	 * frequency changes.
 	 */
-	if (effective_busy_pct >= priv->singularity_upthreshold_pct && val >= 0)
+	if (effective_busy_pct >= upthreshold_pct && val >= 0)
 		val = -1;
-	else if (effective_busy_pct <= priv->singularity_downthreshold_pct &&
+	else if (effective_busy_pct <= downthreshold_pct &&
 			val <= 0)
 		val = 1;
 
-	if (val > 0 && priv->singularity_downscale_delay_ms &&
-		time_before(jiffies, priv->singularity_downscale_blocked_till))
+	if (val > 0 && priv->orion_downscale_delay_ms &&
+		time_before(jiffies, priv->orion_downscale_blocked_till))
 		val = 0;
 
 	if (val) {
@@ -997,39 +1096,42 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 		level = min_t(int, level, devfreq->profile->max_state - 1);
 	}
 
-	if (priv->singularity_hispeed_load &&
-		effective_busy_pct >= priv->singularity_hispeed_load) {
-		int hispeed_level = clamp_t(int, priv->singularity_hispeed_level,
+	if (priv->orion_hispeed_load &&
+		effective_busy_pct >= priv->orion_hispeed_load) {
+		int hispeed_level = clamp_t(int, priv->orion_hispeed_level,
 			0, devfreq->profile->max_state - 1);
 
 		level = min(level, hispeed_level);
 	}
 
-	if (priv->singularity_boost_enable) {
+	if (priv->orion_boost_enable) {
 		unsigned long boost_end;
 		bool boost_active = false;
 
 		spin_lock(&boost_lock);
-		boost_end = priv->singularity_boost_end;
+		boost_end = priv->orion_boost_end;
+		orion_apply_atlas_cpu_sync(priv, NULL, NULL, NULL,
+					   &boost_end, effective_busy_pct);
+		priv->orion_boost_end = boost_end;
 		spin_unlock(&boost_lock);
 
 		if (boost_end && time_before(jiffies, boost_end))
 			boost_active = true;
 		else if (boost_end) {
 			spin_lock(&boost_lock);
-			priv->singularity_boost_end = 0;
+			priv->orion_boost_end = 0;
 			spin_unlock(&boost_lock);
 		}
 
 		if (boost_active) {
-			int boost_level = priv->singularity_boost_level;
+			int boost_level = priv->orion_boost_level;
 
 			boost_level = clamp_t(int, boost_level, 0,
 				devfreq->profile->max_state - 1);
 			level = min(level, boost_level);
-			if (priv->singularity_transition_boost_pct &&
+			if (transition_boost_pct &&
 				effective_busy_pct >= (100 -
-					priv->singularity_transition_boost_pct))
+					transition_boost_pct))
 				level = max(level - 1, 0);
 		}
 	}
@@ -1058,26 +1160,26 @@ static int tz_notify(struct notifier_block *nb, unsigned long type, void *devp)
 		}
 		break;
 	case ADRENO_DEVFREQ_NOTIFY_SUBMIT:
-		if (priv->singularity_boost_enable &&
-				priv->singularity_boost_ms) {
-			unsigned long boost_ms = priv->singularity_boost_ms;
+		if (priv->orion_boost_enable &&
+				priv->orion_boost_ms) {
+			unsigned long boost_ms = priv->orion_boost_ms;
 
-			if (priv->singularity_transition_contexts &&
+			if (priv->orion_transition_contexts &&
 				devfreq->last_status.private_data &&
 				(*((int *)devfreq->last_status.private_data) >=
-					priv->singularity_transition_contexts) &&
-				priv->singularity_scene_boost_ms > boost_ms)
-				boost_ms = priv->singularity_scene_boost_ms;
+					priv->orion_transition_contexts) &&
+				priv->orion_scene_boost_ms > boost_ms)
+				boost_ms = priv->orion_scene_boost_ms;
 
 			spin_lock(&boost_lock);
-			priv->singularity_boost_end =
+			priv->orion_boost_end =
 				jiffies + msecs_to_jiffies(boost_ms);
 			spin_unlock(&boost_lock);
 		}
-		if (priv->singularity_downscale_delay_ms)
-			priv->singularity_downscale_blocked_till =
+		if (priv->orion_downscale_delay_ms)
+			priv->orion_downscale_blocked_till =
 				jiffies + msecs_to_jiffies(
-					priv->singularity_downscale_delay_ms);
+					priv->orion_downscale_delay_ms);
 		break;
 	/* ignored by this governor */
 	default:
@@ -1112,9 +1214,9 @@ static int tz_start(struct devfreq *devfreq)
 
 	priv = devfreq->data;
 	priv->nb.notifier_call = tz_notify;
-	priv->singularity_boost_end = 0;
-	priv->singularity_downscale_blocked_till = 0;
-	priv->singularity_smoothed_busy_pct = 0;
+	priv->orion_boost_end = 0;
+	priv->orion_downscale_blocked_till = 0;
+	priv->orion_smoothed_busy_pct = 0;
 
 	out = 1;
 	if (devfreq->profile->max_state < MSM_ADRENO_MAX_PWRLEVELS) {
@@ -1144,8 +1246,8 @@ static int tz_start(struct devfreq *devfreq)
 		return ret;
 	}
 
-	for (i = 0; singularity_attr_list[i] != NULL; i++)
-		device_create_file(&devfreq->dev, singularity_attr_list[i]);
+	for (i = 0; orion_attr_list[i] != NULL; i++)
+		device_create_file(&devfreq->dev, orion_attr_list[i]);
 
 	return kgsl_devfreq_add_notifier(devfreq->dev.parent, &priv->nb);
 }
@@ -1157,8 +1259,8 @@ static int tz_stop(struct devfreq *devfreq)
 
 	kgsl_devfreq_del_notifier(devfreq->dev.parent, &priv->nb);
 
-	for (i = 0; singularity_attr_list[i] != NULL; i++)
-		device_remove_file(&devfreq->dev, singularity_attr_list[i]);
+	for (i = 0; orion_attr_list[i] != NULL; i++)
+		device_remove_file(&devfreq->dev, orion_attr_list[i]);
 
 	flush_workqueue(workqueue);
 
@@ -1177,8 +1279,8 @@ static int tz_suspend(struct devfreq *devfreq)
 
 	priv->bin.total_time = 0;
 	priv->bin.busy_time = 0;
-	priv->singularity_downscale_blocked_till = 0;
-	priv->singularity_smoothed_busy_pct = 0;
+	priv->orion_downscale_blocked_till = 0;
+	priv->orion_smoothed_busy_pct = 0;
 	return 0;
 }
 
@@ -1233,7 +1335,7 @@ static int tz_handler(struct devfreq *devfreq, unsigned int event, void *data)
 		if (devfreq->data) {
 			struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
-			priv->singularity_smoothed_busy_pct = 0;
+			priv->orion_smoothed_busy_pct = 0;
 		}
 		/* fallthrough */
 	case DEVFREQ_GOV_INTERVAL:
@@ -1298,27 +1400,27 @@ static void do_partner_resume_event(struct work_struct *work)
 }
 
 
-static struct devfreq_governor msm_adreno_singularity = {
-	.name = "singularity",
+static struct devfreq_governor msm_adreno_orion = {
+	.name = "orion",
 	.get_target_freq = tz_get_target_freq,
 	.event_handler = tz_handler,
 };
 
-static int __init msm_adreno_singularity_init(void)
+static int __init msm_adreno_orion_init(void)
 {
 	workqueue = create_freezable_workqueue(
-		"governor_msm_adreno_singularity_wq");
+		"governor_msm_adreno_orion_wq");
 
 	if (workqueue == NULL)
 		return -ENOMEM;
 
-	return devfreq_add_governor(&msm_adreno_singularity);
+	return devfreq_add_governor(&msm_adreno_orion);
 }
-subsys_initcall(msm_adreno_singularity_init);
+subsys_initcall(msm_adreno_orion_init);
 
-static void __exit msm_adreno_singularity_exit(void)
+static void __exit msm_adreno_orion_exit(void)
 {
-	int ret = devfreq_remove_governor(&msm_adreno_singularity);
+	int ret = devfreq_remove_governor(&msm_adreno_orion);
 
 	if (ret)
 		pr_err(TAG "failed to remove governor %d\n", ret);
@@ -1327,6 +1429,6 @@ static void __exit msm_adreno_singularity_exit(void)
 		destroy_workqueue(workqueue);
 }
 
-module_exit(msm_adreno_singularity_exit);
+module_exit(msm_adreno_orion_exit);
 
 MODULE_LICENSE("GPL v2");
