@@ -1173,25 +1173,37 @@ static int __ufs_qcom_set_bus_vote(struct ufs_qcom_host *host, int vote)
 {
 	int err = 0;
 
+	if (vote < 0)
+		return -EINVAL;
+
+	if (host->use_icc && vote >= host->num_icc_votes)
+		return -EINVAL;
+
 	if (vote != host->bus_vote.curr_vote) {
 		if (host->use_icc) {
 			int i;
 
 			for (i = 0; i < host->num_icc_paths; i++) {
 				int idx = vote * host->num_icc_paths + i;
+				u32 avg = host->icc_avg_bw[idx];
+				u32 peak = host->icc_peak_bw[idx];
 
-				if (vote >= host->num_icc_votes) {
-					err = -EINVAL;
-					break;
-				}
+				if (host->is_icc_bw_valid &&
+				    host->curr_icc_avg_bw[i] == avg &&
+				    host->curr_icc_peak_bw[i] == peak)
+					continue;
 
 				err = icc_set_bw(host->icc_paths[i],
-						 host->icc_avg_bw[idx],
-						 host->icc_peak_bw[idx]);
+						 avg, peak);
 				if (err)
 					break;
+
+				host->curr_icc_avg_bw[i] = avg;
+				host->curr_icc_peak_bw[i] = peak;
 			}
 
+			if (!err)
+				host->is_icc_bw_valid = true;
 			if (!err)
 				goto update_vote;
 

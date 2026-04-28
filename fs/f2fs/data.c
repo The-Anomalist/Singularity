@@ -265,6 +265,17 @@ static void f2fs_post_read_work(struct work_struct *work)
 	f2fs_verify_and_finish_bio(ctx->bio, true);
 }
 
+static void f2fs_post_read_inline(struct bio_post_read_ctx *ctx, bool in_task)
+{
+	if (ctx->enabled_steps & STEP_DECRYPT)
+		fscrypt_decrypt_bio(ctx->bio);
+
+	if (ctx->enabled_steps & STEP_DECOMPRESS)
+		f2fs_handle_step_decompress(ctx, in_task);
+
+	f2fs_verify_and_finish_bio(ctx->bio, in_task);
+}
+
 static void f2fs_read_end_io(struct bio *bio)
 {
 	struct f2fs_sb_info *sbi = F2FS_P_SB(bio_first_page_all(bio));
@@ -296,9 +307,13 @@ static void f2fs_read_end_io(struct bio *bio)
 				!f2fs_low_mem_mode(sbi)) {
 			f2fs_handle_step_decompress(ctx, intask);
 		} else if (enabled_steps) {
-			INIT_WORK(&ctx->work, f2fs_post_read_work);
-			queue_work(ctx->sbi->post_read_wq, &ctx->work);
-			return;
+			if (intask) {
+				f2fs_post_read_inline(ctx, true);
+			} else {
+				INIT_WORK(&ctx->work, f2fs_post_read_work);
+				queue_work(ctx->sbi->post_read_wq, &ctx->work);
+				return;
+			}
 		}
 	}
 

@@ -338,6 +338,9 @@ struct ufs_qcom_host {
 	struct icc_path *icc_paths[2];
 	u32 *icc_avg_bw;
 	u32 *icc_peak_bw;
+	u32 curr_icc_avg_bw[2];
+	u32 curr_icc_peak_bw[2];
+	bool is_icc_bw_valid;
 	int num_icc_votes;
 	int num_icc_paths;
 	bool use_icc;

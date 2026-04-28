@@ -458,6 +458,7 @@ static bool close_io(struct rq_wb *rwb)
 static inline unsigned int get_limit(struct rq_wb *rwb, unsigned long rw)
 {
 	unsigned int limit;
+	unsigned int inflight;
 
 	/*
 	 * If we got disabled, just return UINT_MAX. This ensures that
@@ -480,11 +481,20 @@ static inline unsigned int get_limit(struct rq_wb *rwb, unsigned long rw)
 	if ((rw & REQ_HIPRIO) || wb_recent_wait(rwb) || current_is_kswapd())
 		limit = rwb->rq_depth.max_depth;
 	else if ((rw & REQ_BACKGROUND) || close_io(rwb)) {
+		inflight = wbt_inflight(rwb);
 		/*
 		 * If less than 100ms since we completed unrelated IO,
 		 * limit us to half the depth for background writeback.
+		 *
+		 * For light write bursts on fast MQ devices, allow a larger
+		 * window to avoid oscillating between sleep/wakeup while still
+		 * keeping enough headroom for foreground reads.
 		 */
-		limit = rwb->wb_background;
+		if (rwb->rq_depth.max_depth > RWB_DEF_DEPTH &&
+		    inflight < rwb->wb_background / 2)
+			limit = rwb->wb_normal;
+		else
+			limit = rwb->wb_background;
 	} else
 		limit = rwb->wb_normal;
 

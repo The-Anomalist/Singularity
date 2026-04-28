@@ -881,7 +881,8 @@ again:
 		written += copied;
 		length -= copied;
 
-		balance_dirty_pages_ratelimited(inode->i_mapping);
+		if (!(flags & IOMAP_NOWAIT))
+			balance_dirty_pages_ratelimited(inode->i_mapping);
 	} while (iov_iter_count(i) && length);
 
 	return written ? written : status;

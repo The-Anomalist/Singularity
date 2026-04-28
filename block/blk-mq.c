@@ -1405,6 +1405,13 @@ static void __blk_mq_delay_run_hw_queue(struct blk_mq_hw_ctx *hctx, bool async,
 	if (unlikely(blk_mq_hctx_stopped(hctx)))
 		return;
 
+	/*
+	 * Avoid repeatedly queueing immediate run_work when one is already
+	 * pending. Freshly queued requests will be picked up by that worker.
+	 */
+	if (!msecs && work_pending(&hctx->run_work.work))
+		return;
+
 	if (!async && !(hctx->flags & BLK_MQ_F_BLOCKING)) {
 		int cpu = get_cpu();
 		if (cpumask_test_cpu(cpu, hctx->cpumask)) {
