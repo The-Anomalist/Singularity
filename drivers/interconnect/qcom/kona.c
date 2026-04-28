@@ -303,18 +303,18 @@ static bool kona_npu_keepalive_enable = true;
 static unsigned long kona_npu_keepalive_ab_kb = 512000;   /* 512 MB/s */
 static unsigned long kona_npu_keepalive_ib_kb = 1152000;  /* 1.152 GB/s */
 static bool kona_dsp_keepalive_enable = true;
-static unsigned long kona_dsp_keepalive_ab_kb = 256000;   /* 256 MB/s */
-static unsigned long kona_dsp_keepalive_ib_kb = 768000;   /* 768 MB/s */
+static unsigned long kona_dsp_keepalive_ab_kb = 384000;   /* 384 MB/s */
+static unsigned long kona_dsp_keepalive_ib_kb = 1152000;  /* 1.152 GB/s */
 static bool kona_media_keepalive_enable = true;
-static unsigned long kona_media_keepalive_ab_kb = 512000;  /* 512 MB/s */
-static unsigned long kona_media_keepalive_ib_kb = 1200000; /* 1.2 GB/s */
+static unsigned long kona_media_keepalive_ab_kb = 896000;  /* 896 MB/s */
+static unsigned long kona_media_keepalive_ib_kb = 2000000; /* 2.0 GB/s */
 static bool kona_disp_keepalive_enable = true;
 static unsigned long kona_disp_keepalive_ab_kb = 120000;   /* 120 MB/s */
 static unsigned long kona_disp_keepalive_ib_kb = 240000;   /* 240 MB/s */
 static bool kona_keepalive_decay_enable = true;
-static unsigned int kona_keepalive_decay_window_ms = 220;
+static unsigned int kona_keepalive_decay_window_ms = 300;
 static unsigned int kona_keepalive_decay_min_percent = 25;
-static unsigned int kona_sleep_keepalive_percent = 12;
+static unsigned int kona_sleep_keepalive_percent = 18;
 static unsigned int kona_gpu_ib_boost_percent = 188;
 static unsigned int kona_gpu_ib_min_ratio_percent = 235;
 static unsigned int kona_gpu_llcc_boost_percent = 142;
@@ -387,19 +387,19 @@ MODULE_PARM_DESC(kona_dsp_keepalive_enable,
         "Keep non-zero floor for cam/video/cdsp config AB/IB between short idle gaps");
 module_param(kona_dsp_keepalive_ab_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_dsp_keepalive_ab_kb,
-        "dsp keepalive AB floor in KB/s (default: 256000)");
+        "dsp keepalive AB floor in KB/s (default: 384000)");
 module_param(kona_dsp_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_dsp_keepalive_ib_kb,
-        "dsp keepalive IB floor in KB/s (default: 768000)");
+        "dsp keepalive IB floor in KB/s (default: 1152000)");
 module_param(kona_media_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_media_keepalive_enable,
 	"Keep non-zero floor for video/cvp/camera data paths between short idle gaps");
 module_param(kona_media_keepalive_ab_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_media_keepalive_ab_kb,
-	"media keepalive AB floor in KB/s (default: 512000)");
+	"media keepalive AB floor in KB/s (default: 896000)");
 module_param(kona_media_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_media_keepalive_ib_kb,
-	"media keepalive IB floor in KB/s (default: 1200000)");
+	"media keepalive IB floor in KB/s (default: 2000000)");
 module_param(kona_disp_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_disp_keepalive_enable,
 	"Keep non-zero floor for disp0/disp1 DDR AB/IB between idle/off transitions");
@@ -414,13 +414,13 @@ MODULE_PARM_DESC(kona_keepalive_decay_enable,
 	"linearly decay keepalive votes after the last active request (default: on)");
 module_param(kona_keepalive_decay_window_ms, uint, 0644);
 MODULE_PARM_DESC(kona_keepalive_decay_window_ms,
-	"keepalive decay window in ms before allowing full collapse (default: 220)");
+	"keepalive decay window in ms before allowing full collapse (default: 300)");
 module_param(kona_keepalive_decay_min_percent, uint, 0644);
 MODULE_PARM_DESC(kona_keepalive_decay_min_percent,
 	"minimum keepalive strength percent while inside decay window (default: 25)");
 module_param(kona_sleep_keepalive_percent, uint, 0644);
 MODULE_PARM_DESC(kona_sleep_keepalive_percent,
-	"Percent of keepalive floor retained while display is inactive (default: 12)");
+	"Percent of keepalive floor retained while display is inactive (default: 18)");
 
 module_param(kona_gpu_ib_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_ib_boost_percent,
