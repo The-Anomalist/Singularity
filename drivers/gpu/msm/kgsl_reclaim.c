@@ -344,13 +344,7 @@ void kgsl_reclaim_proc_private_init(struct kgsl_process_private *process)
 	mutex_init(&process->reclaim_lock);
 	INIT_WORK(&process->fg_work, kgsl_reclaim_foreground_work);
 	set_bit(KGSL_PROC_PINNED_STATE, &process->state);
-	/*
-	 * Default new processes to background state so notifier-driven reclaim
-	 * can work without requiring immediate userspace state writes.
-	 * Userspace can still move hot apps to foreground via the per-process
-	 * sysfs state node.
-	 */
-	clear_bit(KGSL_PROC_STATE, &process->state);
+	set_bit(KGSL_PROC_STATE, &process->state);
 }
 
 int kgsl_reclaim_init(struct kgsl_device *device)
@@ -359,8 +353,6 @@ int kgsl_reclaim_init(struct kgsl_device *device)
 		return 0;
 
 	kgsl_reclaim = true;
-	dev_info(device->dev,
-		"process reclaim enabled (default process state: background)\n");
 
 	kgsl_reclaim_nb.notifier_call = kgsl_reclaim_callback;
 	return proc_reclaim_notifier_register(&kgsl_reclaim_nb);

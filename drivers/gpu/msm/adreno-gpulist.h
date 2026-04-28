@@ -1252,7 +1252,7 @@ static const struct adreno_a6xx_core adreno_gpu_core_a650v2 = {
 		.features = ADRENO_64BIT | ADRENO_RPMH | ADRENO_GPMU |
 			ADRENO_IOCOHERENT | ADRENO_CONTENT_PROTECTION |
 			ADRENO_IFPC | ADRENO_PREEMPTION | ADRENO_ACD |
-			ADRENO_LM | ADRENO_APRIV | ADRENO_PROCESS_RECLAIM,
+			ADRENO_LM | ADRENO_APRIV,
 		.gpudev = &adreno_a6xx_gpudev,
 		.gmem_size = SZ_1M + SZ_128K, /* verified 1152kB */
 		.busy_mask = 0xfffffffe,
