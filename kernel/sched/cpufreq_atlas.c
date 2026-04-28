@@ -1024,13 +1024,11 @@ static void sugov_apply_tunable_boosts(struct sugov_cpu *sg_cpu, u64 time,
 				       unsigned long *util,
 				       unsigned long max)
 {
-	struct sugov_policy *sg_policy = sg_cpu->sg_policy;
-	struct sugov_tunables *tunables = sg_policy->tunables;
 	(void)time;
 	(void)flags;
 
 	/* WALT path does not pass through schedutil_cpu_util(). */
-	if (tunables->auto_cfg.uclamp_helper && !use_pelt())
+	if (!use_pelt())
 		*util = min(max, *util +
 			schedtune_cpu_margin_with(*util, sg_cpu->cpu, NULL));
 }
@@ -1040,7 +1038,7 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 				   unsigned long *util,
 				   unsigned long max)
 {
-	struct sugov_tunables *tunables = sg_policy->tunables;
+	struct sugov_auto_cfg *auto_cfg = &sg_policy->tunables->auto_cfg;
 	unsigned long avg_util, floor_util, cap_util;
 	unsigned int util_pct, cpu_signal, gpu_signal, mem_signal;
 	unsigned int shared_mem_pressure_pct, shared_mem_contention_pct;
@@ -1058,7 +1056,7 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	bool heavy_load;
 	long mem_avail, mem_total;
 
-	if (!max)
+	if (!auto_cfg->auto_boost || !max)
 		return;
 
 	avg_util = sg_policy->auto_boost_avg_util;
@@ -1100,25 +1098,17 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	sg_policy->mem_signal_ema =
 		((sg_policy->mem_signal_ema * 7) + mem_signal) >> 3;
 
-	if (use_pelt()) {
-		high_load = DEFAULT_AUTO_BOOST_HIGH_LOAD_PELT;
-		low_load = DEFAULT_AUTO_BOOST_LOW_LOAD_PELT;
-		min_util = DEFAULT_AUTO_BOOST_MIN_UTIL_PELT;
-		max_util = DEFAULT_AUTO_BOOST_MAX_UTIL_PELT;
-		decay_us = DEFAULT_AUTO_BOOST_DECAY_US_PELT;
-	} else {
-		high_load = DEFAULT_AUTO_BOOST_HIGH_LOAD_WALT;
-		low_load = DEFAULT_AUTO_BOOST_LOW_LOAD_WALT;
-		min_util = DEFAULT_AUTO_BOOST_MIN_UTIL_WALT;
-		max_util = DEFAULT_AUTO_BOOST_MAX_UTIL_WALT;
-		decay_us = DEFAULT_AUTO_BOOST_DECAY_US_WALT;
-	}
-	heavy_util_thres = DEFAULT_AUTO_BOOST_HEAVY_UTIL;
-	heavy_tasks_thres = DEFAULT_AUTO_BOOST_HEAVY_TASKS;
-	efficiency_load = DEFAULT_AUTO_BOOST_EFFICIENCY_LOAD;
-	efficiency_util = DEFAULT_AUTO_BOOST_EFFICIENCY_UTIL;
+	high_load = auto_cfg->auto_boost_high_load;
+	low_load = auto_cfg->auto_boost_low_load;
+	min_util = auto_cfg->auto_boost_min_util;
+	max_util = auto_cfg->auto_boost_max_util;
+	decay_us = auto_cfg->auto_boost_decay_us;
+	heavy_util_thres = auto_cfg->auto_boost_heavy_util;
+	heavy_tasks_thres = auto_cfg->auto_boost_heavy_tasks;
+	efficiency_load = auto_cfg->auto_boost_efficiency_load;
+	efficiency_util = auto_cfg->auto_boost_efficiency_util;
 	heavy_floor_util = sg_policy->has_prime_cpu ?
-		DEFAULT_AUTO_BOOST_PRIME_UTIL : DEFAULT_AUTO_BOOST_GOLD_UTIL;
+		auto_cfg->auto_boost_prime_util : auto_cfg->auto_boost_gold_util;
 
 	/* Promote responsiveness when graphics bursts are detected. */
 	if (sg_policy->gpu_signal_ema >= 35 || gpu_util_pct >= 45) {
