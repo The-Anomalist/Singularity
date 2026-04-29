@@ -2492,7 +2492,7 @@ void task_dirty_inc(struct task_struct *tsk);
 /*
  * Improve sequential read throughput for app/data scans common on Android.
  */
-#define VM_READAHEAD_PAGES	(SZ_256K / PAGE_SIZE)
+#define VM_READAHEAD_PAGES	(SZ_512K / PAGE_SIZE)
 
 int force_page_cache_readahead(struct address_space *mapping, struct file *filp,
 			pgoff_t offset, unsigned long nr_to_read);
