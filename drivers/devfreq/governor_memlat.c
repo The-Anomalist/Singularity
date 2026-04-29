@@ -31,6 +31,9 @@ struct memlat_node {
 	unsigned int stall_floor;
 	unsigned int wb_pct_thres;
 	unsigned int wb_filter_ratio;
+	unsigned int boost_pct;
+	unsigned int boost_stall_floor;
+	unsigned int boost_wb_pct;
 	bool mon_started;
 	bool already_zero;
 	struct list_head list;
@@ -260,11 +263,11 @@ static void gov_stop(struct devfreq *df)
 static int devfreq_memlat_get_freq(struct devfreq *df,
 					unsigned long *freq)
 {
-	int i, lat_dev = 0;
+	int i, lat_dev = 0, peak_dev = 0;
 	struct memlat_node *node = df->data;
 	struct memlat_hwmon *hw = node->hw;
-	unsigned long max_freq = 0;
-	unsigned int ratio;
+	unsigned long max_freq = 0, peak_core_freq = 0;
+	unsigned int ratio, dyn_boost_pct = 0;
 
 	/*
 	 * node->resume_freq is set to 0 at the end of resume (after the update)
@@ -289,6 +292,11 @@ static int devfreq_memlat_get_freq(struct devfreq *df,
 		if (!hw->core_stats[i].freq)
 			continue;
 
+		if (hw->core_stats[i].freq > peak_core_freq) {
+			peak_core_freq = hw->core_stats[i].freq;
+			peak_dev = i;
+		}
+
 		trace_memlat_dev_meas(dev_name(df->dev.parent),
 					hw->core_stats[i].id,
 					hw->core_stats[i].inst_count,
@@ -305,10 +313,47 @@ static int devfreq_memlat_get_freq(struct devfreq *df,
 			lat_dev = i;
 			max_freq = hw->core_stats[i].freq;
 		}
+
+		if (node->boost_pct) {
+			unsigned int stall_boost = 0, wb_boost = 0;
+
+			if (hw->core_stats[i].stall_pct > node->boost_stall_floor) {
+				stall_boost = mult_frac(node->boost_pct,
+						hw->core_stats[i].stall_pct -
+						node->boost_stall_floor,
+						max_t(unsigned int, 1,
+						100 - node->boost_stall_floor));
+			}
+
+			if (hw->core_stats[i].wb_pct > node->boost_wb_pct) {
+				wb_boost = mult_frac(node->boost_pct,
+						hw->core_stats[i].wb_pct -
+						node->boost_wb_pct,
+						max_t(unsigned int, 1,
+						100 - node->boost_wb_pct));
+			}
+
+			dyn_boost_pct = max3(dyn_boost_pct, stall_boost, wb_boost);
+		}
 	}
 
 	if (max_freq)
 		max_freq = core_to_dev_freq(node, max_freq);
+
+	/*
+	 * If pressure is high but threshold filtering rejected all candidates,
+	 * don't drop the vote to zero. Fall back to the highest observed core.
+	 */
+	if (!max_freq && dyn_boost_pct && peak_core_freq) {
+		lat_dev = peak_dev;
+		max_freq = core_to_dev_freq(node, peak_core_freq);
+	}
+
+	if (max_freq && dyn_boost_pct) {
+		max_freq += mult_frac(max_freq, dyn_boost_pct, 100);
+		if (df->max_freq)
+			max_freq = min(max_freq, df->max_freq);
+	}
 
 	if (max_freq || !node->already_zero) {
 		trace_memlat_dev_update(dev_name(df->dev.parent),
@@ -329,12 +374,18 @@ gov_attr(ratio_ceil, 1U, 20000U);
 gov_attr(stall_floor, 0U, 100U);
 gov_attr(wb_pct_thres, 0U, 100U);
 gov_attr(wb_filter_ratio, 0U, 50000U);
+gov_attr(boost_pct, 0U, 100U);
+gov_attr(boost_stall_floor, 0U, 100U);
+gov_attr(boost_wb_pct, 0U, 100U);
 
 static struct attribute *memlat_dev_attr[] = {
 	&dev_attr_ratio_ceil.attr,
 	&dev_attr_stall_floor.attr,
 	&dev_attr_wb_pct_thres.attr,
 	&dev_attr_wb_filter_ratio.attr,
+	&dev_attr_boost_pct.attr,
+	&dev_attr_boost_stall_floor.attr,
+	&dev_attr_boost_wb_pct.attr,
 	&dev_attr_freq_map.attr,
 	NULL,
 };
@@ -499,6 +550,9 @@ static struct memlat_node *register_common(struct device *dev,
 	node->ratio_ceil = 10;
 	node->wb_pct_thres = 100;
 	node->wb_filter_ratio = 25000;
+	node->boost_pct = 20;
+	node->boost_stall_floor = 35;
+	node->boost_wb_pct = 35;
 	node->hw = hw;
 
 	if (hw->get_child_of_node) {
