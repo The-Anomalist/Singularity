@@ -735,11 +735,11 @@ EXPORT_SYMBOL_GPL(wbt_enable_default);
 u64 wbt_default_latency_nsec(struct request_queue *q)
 {
 	/*
-	 * We default to 2msec for non-rotational storage, and 75msec
+	 * We default to 4msec for non-rotational storage, and 75msec
 	 * for rotational storage.
 	 */
 	if (blk_queue_nonrot(q))
-		return 2000000ULL;
+		return 4000000ULL;
 	else
 		return 75000000ULL;
 }

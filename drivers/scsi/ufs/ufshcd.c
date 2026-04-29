@@ -266,8 +266,12 @@ static void ufshcd_update_uic_error_cnt(struct ufs_hba *hba, u32 reg, int type)
 /* default value of ref clock gating wait time is 100 micro seconds */
 #define UFSHCD_REF_CLK_GATING_WAIT_US 100 /* microsecs */
 
-#define UFSHCD_CLK_GATING_DELAY_MS_PWR_SAVE	10
-#define UFSHCD_CLK_GATING_DELAY_MS_PERF		50
+/*
+ * Keep UFS clocks active a bit longer between bursts to avoid frequent
+ * gate/ungate churn that can inflate mixed/random storage latency.
+ */
+#define UFSHCD_CLK_GATING_DELAY_MS_PWR_SAVE	20
+#define UFSHCD_CLK_GATING_DELAY_MS_PERF		120
 
 /* IOCTL opcode for command - ufs set device read only */
 #define UFS_IOCTL_BLKROSET      BLKROSET

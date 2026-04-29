@@ -178,11 +178,10 @@ int kswapd_threads_current = DEF_KSWAPD_THREADS_PER_NODE;
  * From 0 .. 100.  Higher means more swappy.
  */
 /*
- * Favor file cache retention on mobile devices so foreground application
- * launches and storage-backed benchmarks are less likely to regress under
- * mixed memory pressure.
+ * Favor file cache retention for app and benchmark I/O workloads while still
+ * allowing swap usage under pressure.
  */
-int vm_swappiness = 40;
+int vm_swappiness = 20;
 /*
  * The total number of pages which are beyond the high watermark within all
  * zones.

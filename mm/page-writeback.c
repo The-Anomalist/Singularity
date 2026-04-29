@@ -71,10 +71,11 @@ static long ratelimit_pages = 32;
  * Start background writeback (via writeback threads) at this percentage
  */
 /*
- * Mobile UFS/eMMC devices generally deliver better burst throughput when
- * writeback starts slightly later, reducing frequent small flushes.
+ * Mobile storage benchmarks are typically sensitive to long, bursty
+ * writeback stalls. Use a lower background threshold so writeback starts
+ * earlier and keeps foreground I/O latency steadier.
  */
-int dirty_background_ratio = 15;
+int dirty_background_ratio = 8;
 
 /*
  * dirty_background_bytes starts at 0 (disabled) so that it is a function of
@@ -91,7 +92,11 @@ int vm_highmem_is_dirtyable;
 /*
  * The generator of dirty data starts writeback at this percentage
  */
-int vm_dirty_ratio = 30;
+/*
+ * Keep the global dirty limit tighter on flash-backed systems to reduce
+ * large flush storms that can hurt sequential write and mixed random scores.
+ */
+int vm_dirty_ratio = 20;
 
 /*
  * vm_dirty_bytes starts at 0 (disabled) so that it is a function of
