@@ -1126,7 +1126,7 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		all_vm_events(vm_events);
 		pswpout_now = vm_events[PSWPOUT];
 	}
-	refault_now = global_node_page_state(NR_WORKINGSET_REFAULT);
+	refault_now = global_node_page_state(WORKINGSET_REFAULT);
 	reclaim_signal = min_t(unsigned int, 100,
 		(pgscan_now > prev_pgscan) ?
 		(pgscan_now - prev_pgscan) >> 7 : 0);
