@@ -18,6 +18,7 @@
 #include <linux/sched/sysctl.h>
 #include <linux/mm.h>
 #include <linux/atomic.h>
+#include <linux/vmstat.h>
 #include <linux/orion_atlas_link.h>
 
 #ifdef OPLUS_FEATURE_POWER_CPUFREQ
@@ -161,6 +162,9 @@ static atomic_t atlas_cpu_freq_khz = ATOMIC_INIT(0);
 static atomic_t atlas_cpu_thermal_pct = ATOMIC_INIT(0);
 static atomic_t atlas_mem_pressure_pct = ATOMIC_INIT(0);
 static atomic_t atlas_mem_contention_pct = ATOMIC_INIT(0);
+static atomic_t atlas_mem_reclaim_pct = ATOMIC_INIT(0);
+static atomic_t atlas_mem_swap_pct = ATOMIC_INIT(0);
+static atomic_t atlas_mem_workingset_refault_pct = ATOMIC_INIT(0);
 
 void atlas_update_gpu_telemetry(unsigned int util_pct, unsigned int freq_khz,
 				unsigned int thermal_pct)
@@ -223,6 +227,30 @@ void atlas_get_mem_telemetry(unsigned int *pressure_pct,
 		*contention_pct = atomic_read(&atlas_mem_contention_pct);
 }
 EXPORT_SYMBOL_GPL(atlas_get_mem_telemetry);
+
+void atlas_update_mem_stats(unsigned int reclaim_pct, unsigned int swap_pct,
+			    unsigned int workingset_refault_pct)
+{
+	atomic_set(&atlas_mem_reclaim_pct,
+		   min_t(unsigned int, reclaim_pct, 100));
+	atomic_set(&atlas_mem_swap_pct, min_t(unsigned int, swap_pct, 100));
+	atomic_set(&atlas_mem_workingset_refault_pct,
+		   min_t(unsigned int, workingset_refault_pct, 100));
+}
+EXPORT_SYMBOL_GPL(atlas_update_mem_stats);
+
+void atlas_get_mem_stats(unsigned int *reclaim_pct, unsigned int *swap_pct,
+			 unsigned int *workingset_refault_pct)
+{
+	if (reclaim_pct)
+		*reclaim_pct = atomic_read(&atlas_mem_reclaim_pct);
+	if (swap_pct)
+		*swap_pct = atomic_read(&atlas_mem_swap_pct);
+	if (workingset_refault_pct)
+		*workingset_refault_pct =
+			atomic_read(&atlas_mem_workingset_refault_pct);
+}
+EXPORT_SYMBOL_GPL(atlas_get_mem_stats);
 
 static unsigned int atlas_cpu_thermal_pct_for_cpu(int cpu)
 {
@@ -1042,6 +1070,8 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	unsigned long avg_util, floor_util, cap_util;
 	unsigned int util_pct, cpu_signal, gpu_signal, mem_signal;
 	unsigned int shared_mem_pressure_pct, shared_mem_contention_pct;
+	unsigned int shared_mem_reclaim_pct, shared_mem_swap_pct;
+	unsigned int shared_mem_refault_pct;
 	unsigned int gpu_util_pct, gpu_freq_khz, gpu_thermal_pct;
 	unsigned int cpu_freq_khz, cpu_thermal_pct;
 	unsigned int high_load, low_load;
@@ -1055,6 +1085,11 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	bool transition = sugov_is_transition_event(flags);
 	bool heavy_load;
 	long mem_avail, mem_total;
+	static unsigned long prev_pgscan;
+	static unsigned long prev_pswpout;
+	static unsigned long prev_refault;
+	unsigned long pgscan_now, pswpout_now, refault_now;
+	unsigned int reclaim_signal, swap_signal, refault_signal;
 
 	if (!auto_cfg->auto_boost || !max)
 		return;
@@ -1080,9 +1115,36 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		100 - mult_frac(mem_avail, 100, mem_total);
 	atlas_get_mem_telemetry(&shared_mem_pressure_pct,
 				&shared_mem_contention_pct);
+	atlas_get_mem_stats(&shared_mem_reclaim_pct, &shared_mem_swap_pct,
+			    &shared_mem_refault_pct);
 	mem_signal = max(mem_signal, shared_mem_pressure_pct);
+	pgscan_now = global_node_page_state(NR_VMSCAN_WRITE) +
+		   global_node_page_state(NR_VMSCAN_IMMEDIATE);
+	{
+		unsigned long vm_events[NR_VM_EVENT_ITEMS] = { 0 };
+
+		all_vm_events(vm_events);
+		pswpout_now = vm_events[PSWPOUT];
+	}
+	refault_now = global_node_page_state(NR_WORKINGSET_REFAULT);
+	reclaim_signal = min_t(unsigned int, 100,
+		(pgscan_now > prev_pgscan) ?
+		(pgscan_now - prev_pgscan) >> 7 : 0);
+	swap_signal = min_t(unsigned int, 100,
+		(pswpout_now > prev_pswpout) ?
+		(pswpout_now - prev_pswpout) >> 4 : 0);
+	refault_signal = min_t(unsigned int, 100,
+		(refault_now > prev_refault) ?
+		(refault_now - prev_refault) >> 5 : 0);
+	prev_pgscan = pgscan_now;
+	prev_pswpout = pswpout_now;
+	prev_refault = refault_now;
+	reclaim_signal = max(reclaim_signal, shared_mem_reclaim_pct);
+	swap_signal = max(swap_signal, shared_mem_swap_pct);
+	refault_signal = max(refault_signal, shared_mem_refault_pct);
 	atlas_update_mem_telemetry(mem_signal,
 				   max(mem_signal, shared_mem_contention_pct));
+	atlas_update_mem_stats(reclaim_signal, swap_signal, refault_signal);
 
 	/*
 	 * Lightweight "online learning":
@@ -1139,6 +1201,13 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		low_load = min_t(unsigned int, high_load, low_load + 4);
 		max_util = max_t(unsigned int, min_util,
 				 mult_frac(max_util, 9, 10));
+	}
+
+	if (reclaim_signal >= 45 || swap_signal >= 30 || refault_signal >= 35) {
+		high_load = min_t(unsigned int, 100, high_load + 5);
+		low_load = min_t(unsigned int, high_load, low_load + 3);
+		max_util = max_t(unsigned int, min_util,
+				 mult_frac(max_util, 17, 20));
 	}
 
 	if (shared_mem_contention_pct >= 65 && gpu_util_pct >= 50 &&

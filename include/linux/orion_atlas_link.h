@@ -17,6 +17,10 @@ void atlas_update_mem_telemetry(unsigned int pressure_pct,
 				unsigned int contention_pct);
 void atlas_get_mem_telemetry(unsigned int *pressure_pct,
 			     unsigned int *contention_pct);
+void atlas_update_mem_stats(unsigned int reclaim_pct, unsigned int swap_pct,
+			    unsigned int workingset_refault_pct);
+void atlas_get_mem_stats(unsigned int *reclaim_pct, unsigned int *swap_pct,
+			 unsigned int *workingset_refault_pct);
 #else
 static inline void atlas_update_gpu_telemetry(unsigned int util_pct,
 				      unsigned int freq_khz,
@@ -66,6 +70,24 @@ static inline void atlas_get_mem_telemetry(unsigned int *pressure_pct,
 		*pressure_pct = 0;
 	if (contention_pct)
 		*contention_pct = 0;
+}
+
+static inline void atlas_update_mem_stats(unsigned int reclaim_pct,
+					  unsigned int swap_pct,
+					  unsigned int workingset_refault_pct)
+{
+}
+
+static inline void atlas_get_mem_stats(unsigned int *reclaim_pct,
+				       unsigned int *swap_pct,
+				       unsigned int *workingset_refault_pct)
+{
+	if (reclaim_pct)
+		*reclaim_pct = 0;
+	if (swap_pct)
+		*swap_pct = 0;
+	if (workingset_refault_pct)
+		*workingset_refault_pct = 0;
 }
 #endif
 

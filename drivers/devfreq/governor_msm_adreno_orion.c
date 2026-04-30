@@ -11,6 +11,7 @@
 #include <linux/io.h>
 #include <linux/ftrace.h>
 #include <linux/mm.h>
+#include <linux/vmstat.h>
 #include <linux/jiffies.h>
 #include <linux/msm_adreno_devfreq.h>
 #include <asm/cacheflush.h>
@@ -749,6 +750,11 @@ static void orion_update_atlas_telemetry(struct devfreq *devfreq,
 	unsigned int thermal_pct = 0;
 	long mem_total, mem_avail;
 	unsigned int mem_pressure_pct, mem_contention_pct;
+	unsigned int reclaim_pct, swap_pct, refault_pct;
+	static unsigned long prev_pgscan;
+	static unsigned long prev_pswpout;
+	static unsigned long prev_refault;
+	unsigned long pgscan_now, pswpout_now, refault_now;
 
 	if (!devfreq || !devfreq->profile || !devfreq->profile->freq_table)
 		return;
@@ -782,6 +788,28 @@ static void orion_update_atlas_telemetry(struct devfreq *devfreq,
 					   mem_contention_pct + 12);
 
 	atlas_update_mem_telemetry(mem_pressure_pct, mem_contention_pct);
+	pgscan_now = global_node_page_state(NR_VMSCAN_WRITE) +
+		     global_node_page_state(NR_VMSCAN_IMMEDIATE);
+	{
+		unsigned long vm_events[NR_VM_EVENT_ITEMS] = { 0 };
+
+		all_vm_events(vm_events);
+		pswpout_now = vm_events[PSWPOUT];
+	}
+	refault_now = global_node_page_state(WORKINGSET_REFAULT);
+	reclaim_pct = min_t(unsigned int, 100,
+			    (pgscan_now > prev_pgscan) ?
+			    (pgscan_now - prev_pgscan) >> 7 : 0);
+	swap_pct = min_t(unsigned int, 100,
+			 (pswpout_now > prev_pswpout) ?
+			 (pswpout_now - prev_pswpout) >> 4 : 0);
+	refault_pct = min_t(unsigned int, 100,
+			    (refault_now > prev_refault) ?
+			    (refault_now - prev_refault) >> 5 : 0);
+	prev_pgscan = pgscan_now;
+	prev_pswpout = pswpout_now;
+	prev_refault = refault_now;
+	atlas_update_mem_stats(reclaim_pct, swap_pct, refault_pct);
 }
 
 static void orion_apply_atlas_cpu_sync(
@@ -794,9 +822,11 @@ static void orion_apply_atlas_cpu_sync(
 {
 	unsigned int cpu_util_pct = 0, cpu_freq_khz = 0, cpu_thermal_pct = 0;
 	unsigned int mem_pressure_pct = 0, mem_contention_pct = 0;
+	unsigned int mem_reclaim_pct = 0, mem_swap_pct = 0, mem_refault_pct = 0;
 
 	atlas_get_cpu_telemetry(&cpu_util_pct, &cpu_freq_khz, &cpu_thermal_pct);
 	atlas_get_mem_telemetry(&mem_pressure_pct, &mem_contention_pct);
+	atlas_get_mem_stats(&mem_reclaim_pct, &mem_swap_pct, &mem_refault_pct);
 
 	/*
 	 * Atlas can ask Orion to be more eager during CPU-heavy bursts while
@@ -850,6 +880,15 @@ static void orion_apply_atlas_cpu_sync(
 	    mem_contention_pct >= 70 && cpu_util_pct < 60) {
 		*upthreshold_pct = min_t(unsigned int, 100, *upthreshold_pct + 4);
 		*downthreshold_pct = min_t(unsigned int, 50, *downthreshold_pct + 2);
+	}
+
+	if (upthreshold_pct && downthreshold_pct &&
+	    (mem_reclaim_pct >= 40 || mem_swap_pct >= 25 || mem_refault_pct >= 30)) {
+		*upthreshold_pct = min_t(unsigned int, 100, *upthreshold_pct + 5);
+		*downthreshold_pct = min_t(unsigned int, 50, *downthreshold_pct + 3);
+		if (transition_boost_pct)
+			*transition_boost_pct = max_t(unsigned int, 0,
+						      *transition_boost_pct - 6);
 	}
 
 	/*
