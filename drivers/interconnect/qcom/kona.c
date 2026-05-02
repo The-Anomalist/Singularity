@@ -252,15 +252,15 @@ MODULE_PARM_DESC(kona_max_downscale_percent,
  * - kona_perf_bias_turbo: extra bias for very large votes (race-to-performance).
  * - kona_perf_light_kb / kona_perf_turbo_kb: thresholds for selecting a profile.
  */
-static unsigned int kona_perf_bias = 132;
-static unsigned int kona_perf_bias_light = 110;
-static unsigned int kona_perf_bias_turbo = 160;
+static unsigned int kona_perf_bias = 108;
+static unsigned int kona_perf_bias_light = 102;
+static unsigned int kona_perf_bias_turbo = 112;
 #define KONA_PRIME_EXTRA_BIAS_PERCENT	10
 static unsigned long kona_perf_light_kb = 1000000;   /* 1 GB/s */
 static unsigned long kona_perf_turbo_kb = 14000000;  /* 14 GB/s */
-static bool kona_perf_sustain_boost_enable = true;
+static bool kona_perf_sustain_boost_enable = false;
 static unsigned long kona_perf_sustain_kb = 3600000; /* 3.6 GB/s */
-static unsigned int kona_perf_sustain_extra_bias = 12;
+static unsigned int kona_perf_sustain_extra_bias = 0;
 module_param(kona_perf_bias, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias,
         "Percent headroom added on CPU/DDR/LLCC/GPU/NPU paths (default: 132)");
@@ -293,19 +293,19 @@ MODULE_PARM_DESC(kona_perf_sustain_extra_bias,
  * a responsive corner instead of repeatedly collapsing to idle.
  * ib_*:        bias and floor IB over AB so command bursts hit DDR quickly.
  */
-static bool kona_gpu_keepalive_enable = true;
+static bool kona_gpu_keepalive_enable = false;
 static unsigned long kona_gpu_keepalive_ab_kb = 640000;   /* 640 MB/s */
 static unsigned long kona_gpu_keepalive_ib_kb = 1400000;  /* 1.4 GB/s */
-static bool kona_cpu_keepalive_enable = true;
+static bool kona_cpu_keepalive_enable = false;
 static unsigned long kona_cpu_keepalive_ab_kb = 320000;   /* 320 MB/s */
 static unsigned long kona_cpu_keepalive_ib_kb = 768000;   /* 768 MB/s */
-static bool kona_npu_keepalive_enable = true;
+static bool kona_npu_keepalive_enable = false;
 static unsigned long kona_npu_keepalive_ab_kb = 512000;   /* 512 MB/s */
 static unsigned long kona_npu_keepalive_ib_kb = 1152000;  /* 1.152 GB/s */
-static bool kona_dsp_keepalive_enable = true;
+static bool kona_dsp_keepalive_enable = false;
 static unsigned long kona_dsp_keepalive_ab_kb = 384000;   /* 384 MB/s */
 static unsigned long kona_dsp_keepalive_ib_kb = 1152000;  /* 1.152 GB/s */
-static bool kona_media_keepalive_enable = true;
+static bool kona_media_keepalive_enable = false;
 static unsigned long kona_media_keepalive_ab_kb = 896000;  /* 896 MB/s */
 static unsigned long kona_media_keepalive_ib_kb = 2000000; /* 2.0 GB/s */
 static bool kona_disp_keepalive_enable = true;
@@ -321,7 +321,7 @@ static unsigned int kona_gpu_llcc_boost_percent = 142;
 static unsigned int kona_gpu_llcc_min_ratio_percent = 185;
 static unsigned int kona_npu_ib_boost_percent = 176;
 static unsigned int kona_npu_ib_min_ratio_percent = 230;
-static bool kona_npu_oc_mem_pinning_enable = true;
+static bool kona_npu_oc_mem_pinning_enable = false;
 static unsigned long kona_npu_oc_pin_threshold_kb = 21000000; /* 21 GB/s */
 static unsigned int kona_npu_oc_pin_exit_percent = 75;
 static unsigned int kona_npu_oc_pin_hold_ms = 200;
@@ -329,20 +329,20 @@ static unsigned long kona_npu_oc_floor_ab_kb = 20000000;      /* 20 GB/s */
 static unsigned long kona_npu_oc_floor_ib_kb = 33000000;      /* 33 GB/s */
 static unsigned long kona_npu_oc_llcc_floor_ab_kb = 15000000; /* 15 GB/s */
 static unsigned long kona_npu_oc_llcc_floor_ib_kb = 25000000; /* 25 GB/s */
-static bool kona_gpu_bimc_pinning_enable = true;
-static bool kona_gpu_bimc_no_hyst_enable = true;
+static bool kona_gpu_bimc_pinning_enable = false;
+static bool kona_gpu_bimc_no_hyst_enable = false;
 static unsigned long kona_gpu_bimc_floor_ab_kb = 16500000; /* 16.5 GB/s */
 static unsigned long kona_gpu_bimc_floor_ib_kb = 35000000; /* 35 GB/s */
 static unsigned long kona_gpu_bimc_pin_threshold_kb = 6500000; /* 6.5 GB/s */
 static unsigned int kona_gpu_bimc_pin_exit_percent = 70;
 static unsigned int kona_gpu_bimc_pin_hold_ms = 220;
 static unsigned int kona_gpu_bimc_min_ratio_percent = 245;
-static bool kona_gpu_llcc_turbo_enable = true;
+static bool kona_gpu_llcc_turbo_enable = false;
 static unsigned long kona_gpu_llcc_turbo_enter_ib_kb = 7200000; /* 7.2 GB/s */
 static unsigned long kona_gpu_llcc_turbo_exit_ib_kb = 5400000;  /* 5.4 GB/s */
 static unsigned long kona_gpu_llcc_turbo_ab_kb = 23500000;      /* 23.5 GB/s */
 static unsigned long kona_gpu_llcc_turbo_ib_kb = 28500000;      /* 28.5 GB/s */
-static bool kona_cpu_prime_oc_mem_pinning_enable = true;
+static bool kona_cpu_prime_oc_mem_pinning_enable = false;
 static unsigned long kona_cpu_prime_oc_pin_threshold_kb = 20000000; /* 20 GB/s */
 static unsigned int kona_cpu_prime_oc_pin_exit_percent = 75;
 static unsigned int kona_cpu_prime_oc_pin_hold_ms = 240;
@@ -351,7 +351,7 @@ static unsigned long kona_cpu_prime_oc_floor_ib_kb = 43000000;      /* 43 GB/s *
 static unsigned long kona_cpu_prime_oc_llcc_floor_ab_kb = 18000000; /* 18 GB/s */
 static unsigned long kona_cpu_prime_oc_llcc_floor_ib_kb = 28000000; /* 28 GB/s */
 static unsigned int kona_cpu_prime_oc_min_ratio_percent = 180;
-static bool kona_cpu0_1804_boost_enable = true;
+static bool kona_cpu0_1804_boost_enable = false;
 static unsigned long kona_cpu0_1804_trigger_kb = 1305600; /* 1.804 GHz corner */
 static unsigned int kona_cpu0_1804_boost_percent = 118;
 static unsigned int kona_cpu0_1804_min_ratio_percent = 160;
