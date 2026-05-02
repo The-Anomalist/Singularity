@@ -34,13 +34,17 @@ struct memlat_node {
 	unsigned int boost_pct;
 	unsigned int boost_stall_floor;
 	unsigned int boost_wb_pct;
+	unsigned int pressure_stall_floor;
+	unsigned int pressure_wb_floor;
+	unsigned int min_freq_persist_pct;
+	unsigned int perf_increase_pct;
+	unsigned long prev_req_freq;
 	bool mon_started;
 	bool already_zero;
 	struct list_head list;
 	void *orig_data;
 	struct memlat_hwmon *hw;
 	struct devfreq_governor *gov;
-	struct attribute_group *attr_grp;
 	unsigned long resume_freq;
 };
 
@@ -50,61 +54,6 @@ static DEFINE_MUTEX(list_lock);
 static int memlat_use_cnt;
 static int compute_use_cnt;
 static DEFINE_MUTEX(state_lock);
-
-#define show_attr(name) \
-static ssize_t show_##name(struct device *dev,				\
-			struct device_attribute *attr, char *buf)	\
-{									\
-	struct devfreq *df = to_devfreq(dev);				\
-	struct memlat_node *hw = df->data;				\
-	return scnprintf(buf, PAGE_SIZE, "%u\n", hw->name);		\
-}
-
-#define store_attr(name, _min, _max) \
-static ssize_t store_##name(struct device *dev,				\
-			struct device_attribute *attr, const char *buf,	\
-			size_t count)					\
-{									\
-	struct devfreq *df = to_devfreq(dev);				\
-	struct memlat_node *hw = df->data;				\
-	int ret;							\
-	unsigned int val;						\
-	ret = kstrtouint(buf, 10, &val);				\
-	if (ret)							\
-		return ret;						\
-	val = max(val, _min);						\
-	val = min(val, _max);						\
-	hw->name = val;							\
-	return count;							\
-}
-
-#define gov_attr(__attr, min, max)	\
-show_attr(__attr)			\
-store_attr(__attr, min, max)		\
-static DEVICE_ATTR(__attr, 0644, show_##__attr, store_##__attr)
-
-static ssize_t freq_map_show(struct device *dev, struct device_attribute *attr,
-			char *buf)
-{
-	struct devfreq *df = to_devfreq(dev);
-	struct memlat_node *n = df->data;
-	struct core_dev_map *map = n->hw->freq_map;
-	unsigned int cnt = 0;
-
-	cnt += scnprintf(buf, PAGE_SIZE, "Core freq (MHz)\tDevice BW\n");
-
-	while (map->core_mhz && cnt < PAGE_SIZE) {
-		cnt += scnprintf(buf + cnt, PAGE_SIZE - cnt, "%15u\t%9u\n",
-				map->core_mhz, map->target_freq);
-		map++;
-	}
-	if (cnt < PAGE_SIZE)
-		cnt += scnprintf(buf + cnt, PAGE_SIZE - cnt, "\n");
-
-	return cnt;
-}
-
-static DEVICE_ATTR_RO(freq_map);
 
 static unsigned long core_to_dev_freq(struct memlat_node *node,
 		unsigned long coref)
@@ -200,14 +149,7 @@ static int gov_start(struct devfreq *df)
 	if (ret)
 		goto err_start;
 
-	ret = sysfs_create_group(&df->dev.kobj, node->attr_grp);
-	if (ret)
-		goto err_sysfs;
-
 	return 0;
-
-err_sysfs:
-	stop_monitor(df);
 err_start:
 	df->data = node->orig_data;
 	node->orig_data = NULL;
@@ -253,7 +195,6 @@ static void gov_stop(struct devfreq *df)
 	struct memlat_node *node = df->data;
 	struct memlat_hwmon *hw = node->hw;
 
-	sysfs_remove_group(&df->dev.kobj, node->attr_grp);
 	stop_monitor(df);
 	df->data = node->orig_data;
 	node->orig_data = NULL;
@@ -268,6 +209,8 @@ static int devfreq_memlat_get_freq(struct devfreq *df,
 	struct memlat_hwmon *hw = node->hw;
 	unsigned long max_freq = 0, peak_core_freq = 0;
 	unsigned int ratio, dyn_boost_pct = 0;
+	unsigned int dyn_persist_pct = node->min_freq_persist_pct;
+	bool pressure_seen = false;
 
 	/*
 	 * node->resume_freq is set to 0 at the end of resume (after the update)
@@ -335,6 +278,24 @@ static int devfreq_memlat_get_freq(struct devfreq *df,
 
 			dyn_boost_pct = max3(dyn_boost_pct, stall_boost, wb_boost);
 		}
+
+		if (hw->core_stats[i].stall_pct >= node->pressure_stall_floor ||
+		    hw->core_stats[i].wb_pct >= node->pressure_wb_floor)
+			pressure_seen = true;
+
+		if (pressure_seen) {
+			unsigned int pressure_delta = max(hw->core_stats[i].stall_pct,
+							  hw->core_stats[i].wb_pct);
+
+			if (pressure_delta > node->pressure_stall_floor) {
+				unsigned int extra = mult_frac(node->perf_increase_pct,
+						pressure_delta - node->pressure_stall_floor,
+						max_t(unsigned int, 1,
+						100 - node->pressure_stall_floor));
+				dyn_persist_pct = max(dyn_persist_pct,
+						      node->min_freq_persist_pct + extra);
+			}
+		}
 	}
 
 	if (max_freq)
@@ -355,6 +316,14 @@ static int devfreq_memlat_get_freq(struct devfreq *df,
 			max_freq = min(max_freq, df->max_freq);
 	}
 
+	if (!max_freq && pressure_seen && node->prev_req_freq &&
+	    dyn_persist_pct) {
+		max_freq = mult_frac(node->prev_req_freq,
+				     min(dyn_persist_pct, 95U), 100);
+		if (df->max_freq)
+			max_freq = min(max_freq, df->max_freq);
+	}
+
 	if (max_freq || !node->already_zero) {
 		trace_memlat_dev_update(dev_name(df->dev.parent),
 					hw->core_stats[lat_dev].id,
@@ -365,45 +334,11 @@ static int devfreq_memlat_get_freq(struct devfreq *df,
 	}
 
 	node->already_zero = !max_freq;
+	node->prev_req_freq = max_freq;
 
 	*freq = max_freq;
 	return 0;
 }
-
-gov_attr(ratio_ceil, 1U, 20000U);
-gov_attr(stall_floor, 0U, 100U);
-gov_attr(wb_pct_thres, 0U, 100U);
-gov_attr(wb_filter_ratio, 0U, 50000U);
-gov_attr(boost_pct, 0U, 100U);
-gov_attr(boost_stall_floor, 0U, 100U);
-gov_attr(boost_wb_pct, 0U, 100U);
-
-static struct attribute *memlat_dev_attr[] = {
-	&dev_attr_ratio_ceil.attr,
-	&dev_attr_stall_floor.attr,
-	&dev_attr_wb_pct_thres.attr,
-	&dev_attr_wb_filter_ratio.attr,
-	&dev_attr_boost_pct.attr,
-	&dev_attr_boost_stall_floor.attr,
-	&dev_attr_boost_wb_pct.attr,
-	&dev_attr_freq_map.attr,
-	NULL,
-};
-
-static struct attribute *compute_dev_attr[] = {
-	&dev_attr_freq_map.attr,
-	NULL,
-};
-
-static struct attribute_group memlat_dev_attr_group = {
-	.name = "mem_latency",
-	.attrs = memlat_dev_attr,
-};
-
-static struct attribute_group compute_dev_attr_group = {
-	.name = "compute",
-	.attrs = compute_dev_attr,
-};
 
 #define MIN_MS	0U
 #define MAX_MS	500U
@@ -553,6 +488,10 @@ static struct memlat_node *register_common(struct device *dev,
 	node->boost_pct = 20;
 	node->boost_stall_floor = 35;
 	node->boost_wb_pct = 35;
+	node->pressure_stall_floor = 25;
+	node->pressure_wb_floor = 25;
+	node->min_freq_persist_pct = 75;
+	node->perf_increase_pct = 20;
 	node->hw = hw;
 
 	if (hw->get_child_of_node) {
@@ -588,8 +527,6 @@ int register_compute(struct device *dev, struct memlat_hwmon *hw)
 
 	mutex_lock(&state_lock);
 	node->gov = &devfreq_gov_compute;
-	node->attr_grp = &compute_dev_attr_group;
-
 	if (!compute_use_cnt)
 		ret = devfreq_add_governor(&devfreq_gov_compute);
 	if (!ret)
@@ -618,8 +555,6 @@ int register_memlat(struct device *dev, struct memlat_hwmon *hw)
 
 	mutex_lock(&state_lock);
 	node->gov = &devfreq_gov_memlat;
-	node->attr_grp = &memlat_dev_attr_group;
-
 	if (!memlat_use_cnt)
 		ret = devfreq_add_governor(&devfreq_gov_memlat);
 	if (!ret)
