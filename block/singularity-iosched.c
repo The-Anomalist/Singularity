@@ -11,20 +11,31 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/jiffies.h>
 
 #define SING_NR_CLASSES          2
 #define SING_SYNC_CLASS          0
 #define SING_BG_CLASS            1
 #define SING_MAX_BUCKETS         16
+#define SING_DYN_FG_BATCH_MIN    2
+#define SING_DYN_FG_BATCH_MAX    12
+#define SING_BG_STARVE_MS        12
 
 static unsigned int sing_fg_batch = 6;
 module_param_named(fg_batch, sing_fg_batch, uint, 0644);
 MODULE_PARM_DESC(fg_batch, "Consecutive sync-class dispatch budget");
 
+static bool sing_adaptive_batch = true;
+module_param_named(adaptive_batch, sing_adaptive_batch, bool, 0644);
+MODULE_PARM_DESC(adaptive_batch,
+		 "Adapt sync dispatch budget to queue pressure and write ratio");
+
 struct sing_data {
 	struct list_head q[SING_NR_CLASSES][SING_MAX_BUCKETS];
+	unsigned long bg_head_jiffies[SING_MAX_BUCKETS];
 	unsigned int rr[SING_NR_CLASSES];
 	unsigned int fg_budget;
+	unsigned int queued[SING_NR_CLASSES];
 };
 
 static inline unsigned int sing_class(struct request *rq)
@@ -52,6 +63,50 @@ static inline struct list_head *sing_list(struct sing_data *sd,
 	return &sd->q[sing_class(rq)][sing_bucket(rq)];
 }
 
+static inline bool sing_bg_starving(struct sing_data *sd)
+{
+	unsigned int i;
+	unsigned long now = jiffies;
+	unsigned long starve = msecs_to_jiffies(SING_BG_STARVE_MS);
+
+	for (i = 0; i < SING_MAX_BUCKETS; i++) {
+		if (!sd->bg_head_jiffies[i])
+			continue;
+		if (time_after_eq(now, sd->bg_head_jiffies[i] + starve))
+			return true;
+	}
+
+	return false;
+}
+
+static inline unsigned int sing_dynamic_fg_batch(struct sing_data *sd)
+{
+	unsigned int sync_q = sd->queued[SING_SYNC_CLASS];
+	unsigned int bg_q = sd->queued[SING_BG_CLASS];
+	unsigned int total_q = sync_q + bg_q;
+	unsigned int batch;
+
+	if (!sing_adaptive_batch)
+		return max_t(unsigned int, 1, sing_fg_batch);
+
+	batch = clamp_t(unsigned int, sing_fg_batch,
+			SING_DYN_FG_BATCH_MIN, SING_DYN_FG_BATCH_MAX);
+
+	/*
+	 * Preserve foreground latency under heavy queue pressure. If the queue
+	 * is mostly background writes, ease off to create larger contiguous
+	 * write windows and reduce wakeups.
+	 */
+	if (total_q > 24 && sync_q > bg_q)
+		batch = min_t(unsigned int, batch + 2, SING_DYN_FG_BATCH_MAX);
+	else if (bg_q > (sync_q << 1))
+		batch = max_t(unsigned int, batch - 2, SING_DYN_FG_BATCH_MIN);
+	else if (total_q < 8)
+		batch = max_t(unsigned int, batch - 1, SING_DYN_FG_BATCH_MIN);
+
+	return batch;
+}
+
 static void sing_merged_requests(struct request_queue *q, struct request *rq,
 				 struct request *next)
 {
@@ -73,6 +128,9 @@ static int sing_dispatch_class(struct request_queue *q, struct sing_data *sd,
 			continue;
 
 		list_del_init(&rq->queuelist);
+		if (class == SING_BG_CLASS && list_empty(&sd->q[class][b]))
+			sd->bg_head_jiffies[b] = 0;
+		sd->queued[class]--;
 		sd->rr[class] = (b + 1) & (SING_MAX_BUCKETS - 1);
 		elv_dispatch_sort(q, rq);
 		return 1;
@@ -84,8 +142,15 @@ static int sing_dispatch_class(struct request_queue *q, struct sing_data *sd,
 static int sing_dispatch(struct request_queue *q, int force)
 {
 	struct sing_data *sd = q->elevator->elevator_data;
+	unsigned int fg_batch = sing_dynamic_fg_batch(sd);
 
-	if (sd->fg_budget < sing_fg_batch && sing_dispatch_class(q, sd, SING_SYNC_CLASS)) {
+	/* Bound BG latency to avoid stalling streaming writes. */
+	if (sing_bg_starving(sd) && sing_dispatch_class(q, sd, SING_BG_CLASS)) {
+		sd->fg_budget = 0;
+		return 1;
+	}
+
+	if (sd->fg_budget < fg_batch && sing_dispatch_class(q, sd, SING_SYNC_CLASS)) {
 		sd->fg_budget++;
 		return 1;
 	}
@@ -96,7 +161,7 @@ static int sing_dispatch(struct request_queue *q, int force)
 	}
 
 	if (sing_dispatch_class(q, sd, SING_SYNC_CLASS)) {
-		sd->fg_budget = min(sd->fg_budget + 1, sing_fg_batch);
+		sd->fg_budget = min(sd->fg_budget + 1, fg_batch);
 		return 1;
 	}
 
@@ -106,8 +171,15 @@ static int sing_dispatch(struct request_queue *q, int force)
 static void sing_add_request(struct request_queue *q, struct request *rq)
 {
 	struct sing_data *sd = q->elevator->elevator_data;
+	unsigned int class = sing_class(rq);
+	unsigned int bucket = sing_bucket(rq);
+	struct list_head *head = &sd->q[class][bucket];
+	bool was_empty = list_empty(head);
 
-	list_add_tail(&rq->queuelist, sing_list(sd, rq));
+	list_add_tail(&rq->queuelist, head);
+	sd->queued[class]++;
+	if (class == SING_BG_CLASS && was_empty)
+		sd->bg_head_jiffies[bucket] = jiffies;
 }
 
 static struct request *sing_former_request(struct request_queue *q,
