@@ -849,6 +849,26 @@ int iommu_dma_map_sg(struct device *dev, struct scatterlist *sg,
 	dma_addr_t iova;
 	size_t iova_len;
 
+	/*
+	 * Fast path for the overwhelmingly-common single-entry case: avoid
+	 * scatterlist reformatting and the finalisation walk, while still
+	 * returning a standard SG DMA descriptor to callers.
+	 */
+	if (likely(nents == 1)) {
+		dma_addr_t addr;
+
+		addr = iommu_dma_map_page(dev, sg_page(sg), sg->offset,
+					  sg->length, prot);
+		if (iommu_dma_mapping_error(dev, addr)) {
+			iommu_dma_invalidate_sg(sg, nents);
+			return 0;
+		}
+
+		sg_dma_address(sg) = addr;
+		sg_dma_len(sg) = sg->length;
+		return 1;
+	}
+
 	domain = iommu_get_domain_for_dev(dev);
 	if (!domain)
 		return 0;
@@ -883,6 +903,13 @@ void iommu_dma_unmap_sg(struct device *dev, struct scatterlist *sg, int nents,
 	dma_addr_t start, end;
 	struct scatterlist *tmp;
 	int i;
+
+	if (likely(nents == 1)) {
+		__iommu_dma_unmap(iommu_get_domain_for_dev(dev),
+				sg_dma_address(sg), sg_dma_len(sg));
+		return;
+	}
+
 	/*
 	 * The scatterlist segments are mapped into a single
 	 * contiguous IOVA allocation, so this is incredibly easy.

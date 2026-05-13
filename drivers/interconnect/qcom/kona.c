@@ -315,6 +315,11 @@ static bool kona_keepalive_decay_enable = true;
 static unsigned int kona_keepalive_decay_window_ms = 300;
 static unsigned int kona_keepalive_decay_min_percent = 25;
 static unsigned int kona_sleep_keepalive_percent = 18;
+static unsigned int kona_sleep_perf_floor_percent = 45;
+module_param_named(kona_sleep_perf_floor_percent, kona_sleep_perf_floor_percent, uint, 0644);
+MODULE_PARM_DESC(kona_sleep_perf_floor_percent,
+	"Percent of performance floors kept while display is inactive (default: 45)");
+
 static unsigned int kona_gpu_ib_boost_percent = 188;
 static unsigned int kona_gpu_ib_min_ratio_percent = 235;
 static unsigned int kona_gpu_llcc_boost_percent = 142;
@@ -584,6 +589,15 @@ static u64 kona_icc_add_headroom(u64 value, unsigned int bias)
         return mul_u64_u32_div(value, bias, 100);
 }
 
+static inline bool kona_icc_sleep_mode_active(struct kona_icc_provider *qp,
+				      const struct kona_icc_node_desc *desc)
+{
+	if (desc->role == KONA_ROLE_DISPLAY)
+		return false;
+
+	return !READ_ONCE(qp->display_active);
+}
+
 static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 					 unsigned int index, u64 *ab, u64 *ib)
 {
@@ -770,6 +784,13 @@ static void kona_icc_apply_hysteresis(struct kona_icc_provider *qp,
 
 	if (kona_gpu_bimc_no_hyst_enable &&
 	    (desc->id == KONA_ICC_GPU_TO_MEM || desc->id == KONA_ICC_GMU_TO_MEM))
+		return;
+
+	/*
+	 * When the display is off, prioritize fast collapse over smoothness so
+	 * idle drain stays low during screen-off standby.
+	 */
+	if (kona_icc_sleep_mode_active(qp, desc))
 		return;
 
 	/* Only suppress very small downvotes; keep upscales and big drops. */
@@ -1160,6 +1181,20 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 		break;
 	default:
 		break;
+	}
+
+	if (kona_icc_sleep_mode_active(qp, desc)) {
+		unsigned int sleep_floor_percent;
+
+		sleep_floor_percent = min_t(unsigned int,
+					kona_sleep_perf_floor_percent, 100);
+		if (!sleep_floor_percent) {
+			*ab = 0;
+			*ib = 0;
+		} else {
+			*ab = mul_u64_u32_div(*ab, sleep_floor_percent, 100);
+			*ib = mul_u64_u32_div(*ib, sleep_floor_percent, 100);
+		}
 	}
 
 	/* Final safety net: clamp any very small non-zero votes. */
