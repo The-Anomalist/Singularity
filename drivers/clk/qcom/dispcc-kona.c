@@ -40,17 +40,31 @@
 static struct icc_path *kona_cc_get_icc_path(struct device *dev, const char *who)
 {
 	static const char * const try_names[] = {
+		/* Legacy Kona names. */
 		"dispcc",
 		"videocc",
 		"camcc",
+		/* Common 2025/2026 DT naming styles. */
+		"disp",
+		"video",
+		"cam",
 		"cfg",
 		"disp-cfg",
 		"video-cfg",
 		"cam-cfg",
+		"mm-noc",
+		"mnoc",
+		"mem-noc",
+		"snoc",
 		NULL, /* sentinel */
 	};
 	struct icc_path *path;
 	int i;
+
+	/* First try a controller-specific interconnect name. */
+	path = devm_of_icc_get(dev, who);
+	if (!IS_ERR(path))
+		return path;
 
 	for (i = 0; try_names[i]; i++) {
 		path = devm_of_icc_get(dev, try_names[i]);
@@ -59,8 +73,8 @@ static struct icc_path *kona_cc_get_icc_path(struct device *dev, const char *who
 
 		/* If provider isn't ready yet, keep msm_bus fallback. */
 		if (PTR_ERR(path) == -EPROBE_DEFER) {
-			dev_dbg(dev, "%s: %s ICC provider not ready (%s), using msm_bus fallback\n",
-				who, who, try_names[i]);
+			dev_dbg(dev, "%s: ICC provider not ready (%s), using msm_bus fallback\n",
+				who, try_names[i]);
 			return NULL;
 		}
 	}
