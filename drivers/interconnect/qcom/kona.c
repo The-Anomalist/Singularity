@@ -320,6 +320,27 @@ module_param_named(kona_sleep_perf_floor_percent, kona_sleep_perf_floor_percent,
 MODULE_PARM_DESC(kona_sleep_perf_floor_percent,
 	"Percent of performance floors kept while display is inactive (default: 45)");
 
+static bool kona_active_floor_scaling_enable = true;
+static unsigned long kona_active_floor_low_kb = 1200000;   /* 1.2 GB/s */
+static unsigned long kona_active_floor_high_kb = 6000000;  /* 6.0 GB/s */
+static unsigned int kona_active_floor_low_percent = 70;
+static unsigned int kona_active_floor_mid_percent = 85;
+module_param_named(kona_active_floor_scaling_enable, kona_active_floor_scaling_enable, bool, 0644);
+MODULE_PARM_DESC(kona_active_floor_scaling_enable,
+	"Enable display-on workload-aware downscaling of non-display performance floors");
+module_param_named(kona_active_floor_low_kb, kona_active_floor_low_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_active_floor_low_kb,
+	"Display-on request threshold KB/s for low floor scaling bucket");
+module_param_named(kona_active_floor_high_kb, kona_active_floor_high_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_active_floor_high_kb,
+	"Display-on request threshold KB/s for high floor scaling bucket");
+module_param_named(kona_active_floor_low_percent, kona_active_floor_low_percent, uint, 0644);
+MODULE_PARM_DESC(kona_active_floor_low_percent,
+	"Percent of post-path floor kept for low display-on non-display workload votes");
+module_param_named(kona_active_floor_mid_percent, kona_active_floor_mid_percent, uint, 0644);
+MODULE_PARM_DESC(kona_active_floor_mid_percent,
+	"Percent of post-path floor kept for medium display-on non-display workload votes");
+
 static unsigned int kona_gpu_ib_boost_percent = 188;
 static unsigned int kona_gpu_ib_min_ratio_percent = 235;
 static unsigned int kona_gpu_llcc_boost_percent = 142;
@@ -880,6 +901,7 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 	bool npu_pin_active;
 	bool cpu_prime_pin_active;
 	u64 req_max;
+	unsigned int active_scale_percent = 100;
 
 	if (!kona_perf_floor_enable)
 		return;
@@ -1181,6 +1203,34 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 		break;
 	default:
 		break;
+	}
+
+	/*
+	 * Display-on active scaling for non-display paths:
+	 * - low request: reduce floors aggressively (default 70%)
+	 * - medium request: reduce floors moderately (default 85%)
+	 * - high request: keep full floors (100%)
+	 *
+	 * Classify on raw client request max(req_ab, req_ib), not post-floor vote.
+	 * Apply after path-specific floors and before minimum clamps/bias.
+	 */
+	if (kona_active_floor_scaling_enable &&
+	    !kona_icc_sleep_mode_active(qp, desc) &&
+	    desc->role != KONA_ROLE_DISPLAY) {
+		unsigned long low_kb = kona_active_floor_low_kb;
+		unsigned long high_kb = max(kona_active_floor_high_kb, low_kb);
+		unsigned int low_pct = clamp_val(kona_active_floor_low_percent, 0, 100);
+		unsigned int mid_pct = clamp_val(kona_active_floor_mid_percent, 0, 100);
+
+		if (req_max <= low_kb)
+			active_scale_percent = low_pct;
+		else if (req_max < high_kb)
+			active_scale_percent = mid_pct;
+
+		if (active_scale_percent < 100) {
+			*ab = mul_u64_u32_div(*ab, active_scale_percent, 100);
+			*ib = mul_u64_u32_div(*ib, active_scale_percent, 100);
+		}
 	}
 
 	if (kona_icc_sleep_mode_active(qp, desc)) {
