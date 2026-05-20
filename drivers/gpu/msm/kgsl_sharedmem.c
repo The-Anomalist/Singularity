@@ -1053,6 +1053,7 @@ kgsl_sharedmem_page_alloc_user(struct kgsl_memdesc *memdesc,
 	size_t len;
 	unsigned int align;
 	bool memwq_flush_done = false;
+	bool mempool_drain_done = false;
 
 	static DEFINE_RATELIMIT_STATE(_rs,
 					DEFAULT_RATELIMIT_INTERVAL,
@@ -1136,6 +1137,18 @@ kgsl_sharedmem_page_alloc_user(struct kgsl_memdesc *memdesc,
 			if (page_count == -ENOMEM && !memwq_flush_done) {
 				flush_workqueue(kgsl_driver.mem_workqueue);
 				memwq_flush_done = true;
+				continue;
+			}
+
+			/*
+			 * A large benchmark can get stuck when reusable pages are
+			 * trapped in KGSL pools and the buddy allocator cannot
+			 * satisfy additional pressure quickly enough. Drain
+			 * non-reserved pools once and retry allocation.
+			 */
+			if (page_count == -ENOMEM && !mempool_drain_done) {
+				kgsl_pool_reduce_mempools(0);
+				mempool_drain_done = true;
 				continue;
 			}
 
