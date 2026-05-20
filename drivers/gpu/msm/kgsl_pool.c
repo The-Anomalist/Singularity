@@ -47,6 +47,15 @@ struct kgsl_page_pool {
 static struct kgsl_page_pool kgsl_pools[KGSL_MAX_POOLS];
 static int kgsl_num_pools;
 static int kgsl_pool_max_pages;
+/*
+ * Allow high-order pool misses to spill to system allocation before
+ * immediately degrading to lower-order pages.
+ *
+ * Some heavy GPU benchmarks can transiently exhaust reserved pools, and
+ * forcing smaller fallback pages increases mapping pressure and can cause
+ * workloads to timeout before completion.
+ */
+static bool kgsl_pool_sysmem_fallback = true;
 
 
 /* Returns KGSL pool corresponding to input page order*/
@@ -335,15 +344,32 @@ int kgsl_pool_alloc_page(int *page_size, struct page **pages,
 	/* Allocate a new page if not allocated from pool */
 	if (page == NULL) {
 		gfp_t gfp_mask = kgsl_gfp_mask(order);
+		bool tried_sysmem_fallback = false;
 
 		/* Only allocate non-reserved memory for certain pools */
 		if (!pool->allocation_allowed && pool_idx > 0) {
-			size = PAGE_SIZE <<
+			/*
+			 * For reserved-only pools, try a direct system
+			 * allocation first to preserve larger page mappings
+			 * under transient memory pressure. If this fails, fall
+			 * back to the legacy lower-order retry behavior.
+			 */
+			if (kgsl_pool_sysmem_fallback) {
+				page = alloc_pages(gfp_mask, order);
+				tried_sysmem_fallback = true;
+				if (page)
+					kgsl_zero_page(page, order);
+			}
+
+			if (!page) {
+				size = PAGE_SIZE <<
 					kgsl_pools[pool_idx-1].pool_order;
-			goto eagain;
+				goto eagain;
+			}
 		}
 
-		page = alloc_pages(gfp_mask, order);
+		if (!page)
+			page = alloc_pages(gfp_mask, order);
 
 		if (!page) {
 			if (pool_idx > 0) {
@@ -355,7 +381,8 @@ int kgsl_pool_alloc_page(int *page_size, struct page **pages,
 				return -ENOMEM;
 		}
 
-		kgsl_zero_page(page, order);
+		if (!tried_sysmem_fallback)
+			kgsl_zero_page(page, order);
 	}
 
 done:
