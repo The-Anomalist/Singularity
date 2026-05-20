@@ -485,13 +485,13 @@ static struct memlat_node *register_common(struct device *dev,
 	node->ratio_ceil = 10;
 	node->wb_pct_thres = 100;
 	node->wb_filter_ratio = 25000;
-	node->boost_pct = 20;
-	node->boost_stall_floor = 35;
-	node->boost_wb_pct = 35;
-	node->pressure_stall_floor = 25;
-	node->pressure_wb_floor = 25;
-	node->min_freq_persist_pct = 75;
-	node->perf_increase_pct = 20;
+	node->boost_pct = 30;
+	node->boost_stall_floor = 28;
+	node->boost_wb_pct = 28;
+	node->pressure_stall_floor = 20;
+	node->pressure_wb_floor = 20;
+	node->min_freq_persist_pct = 88;
+	node->perf_increase_pct = 35;
 	node->hw = hw;
 
 	if (hw->get_child_of_node) {
