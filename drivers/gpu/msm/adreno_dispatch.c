@@ -5,6 +5,7 @@
  */
 
 #include <linux/slab.h>
+#include <linux/math64.h>
 
 #include "adreno.h"
 #include "adreno_trace.h"
@@ -55,6 +56,12 @@ unsigned int adreno_drawobj_timeout = 2000;
 /* Interval for reading and comparing fault detection registers */
 static unsigned int _fault_timer_interval = 200;
 
+/*
+ * Cap dynamically scaled timeout so genuine hangs still recover in a
+ * predictable window even at very low benchmark frequencies.
+ */
+#define ADRENO_DRAWOBJ_TIMEOUT_MAX_MS 8000
+
 #define DRAWQUEUE_RB(_drawqueue) \
 	((struct adreno_ringbuffer *) \
 		container_of((_drawqueue),\
@@ -64,6 +71,7 @@ static unsigned int _fault_timer_interval = 200;
 
 static int adreno_dispatch_retire_drawqueue(struct adreno_device *adreno_dev,
 		struct adreno_dispatcher_drawqueue *drawqueue);
+static unsigned int _adreno_drawobj_timeout_ms(struct kgsl_device *device);
 
 static inline bool drawqueue_is_current(
 		struct adreno_dispatcher_drawqueue *drawqueue)
@@ -715,7 +723,7 @@ static int sendcmd(struct adreno_device *adreno_dev,
 
 	if (dispatch_q->inflight == 1)
 		dispatch_q->expires = jiffies +
-			msecs_to_jiffies(adreno_drawobj_timeout);
+			msecs_to_jiffies(_adreno_drawobj_timeout_ms(device));
 
 	trace_adreno_cmdbatch_submitted(drawobj, (int) dispatcher->inflight,
 		time.ticks, (unsigned long) secs, nsecs / 1000, drawctxt->rb,
@@ -2539,7 +2547,35 @@ static void _adreno_dispatch_check_timeout(struct adreno_device *adreno_dev,
 	 * This makes sure dispatcher doesn't run endlessly in cases where
 	 * we couldn't run recovery
 	 */
-	drawqueue->expires = jiffies + msecs_to_jiffies(adreno_drawobj_timeout);
+	drawqueue->expires = jiffies +
+		msecs_to_jiffies(_adreno_drawobj_timeout_ms(device));
+}
+
+/*
+ * Scale the timeout to match the active GPU frequency. When users clamp clocks
+ * for long-running benchmarks, command completion naturally stretches and fixed
+ * timeout windows can trigger false positives.
+ */
+static unsigned int _adreno_drawobj_timeout_ms(struct kgsl_device *device)
+{
+	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
+	unsigned int base = adreno_drawobj_timeout;
+	unsigned int current, max;
+	u64 scaled;
+
+	if (!pwr->num_pwrlevels)
+		return base;
+
+	current = pwr->pwrlevels[pwr->active_pwrlevel].gpu_freq;
+	max = pwr->pwrlevels[0].gpu_freq;
+
+	if (!current || !max || current >= max)
+		return base;
+
+	scaled = div_u64((u64) base * max, current);
+	scaled = min_t(u64, scaled, ADRENO_DRAWOBJ_TIMEOUT_MAX_MS);
+
+	return max_t(unsigned int, base, (unsigned int) scaled);
 }
 
 static int adreno_dispatch_process_drawqueue(struct adreno_device *adreno_dev,
@@ -2562,7 +2598,7 @@ static int adreno_dispatch_process_drawqueue(struct adreno_device *adreno_dev,
 
 	if (count) {
 		drawqueue->expires = jiffies +
-			msecs_to_jiffies(adreno_drawobj_timeout);
+			msecs_to_jiffies(_adreno_drawobj_timeout_ms(device));
 		return count;
 	}
 
