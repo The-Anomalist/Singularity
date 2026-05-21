@@ -1543,13 +1543,13 @@ static int mdss_fb_resume_sub(struct msm_fb_data_type *mfd)
 	if (ret) {
 		pr_warn("mdss_fb_pan_idle for fb%d failed. ret=%d\n",
 			mfd->index, ret);
-		return ret;
+		goto exit;
 	}
 
 	ret = mdss_fb_send_panel_event(mfd, MDSS_EVENT_RESUME, NULL);
 	if (ret) {
 		pr_warn("unable to resume fb%d (%d)\n", mfd->index, ret);
-		return ret;
+		goto exit;
 	}
 
 	/* resume state var recover */
@@ -1573,6 +1573,7 @@ static int mdss_fb_resume_sub(struct msm_fb_data_type *mfd)
 		else
 			fb_set_suspend(mfd->fbi, FBINFO_STATE_RUNNING);
 	}
+exit:
 	mfd->is_power_setting = false;
 	complete_all(&mfd->power_set_comp);
 
