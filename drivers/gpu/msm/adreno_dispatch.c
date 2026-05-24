@@ -2560,19 +2560,19 @@ static unsigned int _adreno_drawobj_timeout_ms(struct kgsl_device *device)
 {
 	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
 	unsigned int base = adreno_drawobj_timeout;
-	unsigned int current, max;
+	unsigned int cur_freq, max_freq;
 	u64 scaled;
 
 	if (!pwr->num_pwrlevels)
 		return base;
 
-	current = pwr->pwrlevels[pwr->active_pwrlevel].gpu_freq;
-	max = pwr->pwrlevels[0].gpu_freq;
+	cur_freq = pwr->pwrlevels[pwr->active_pwrlevel].gpu_freq;
+	max_freq = pwr->pwrlevels[0].gpu_freq;
 
-	if (!current || !max || current >= max)
+	if (!cur_freq || !max_freq || cur_freq >= max_freq)
 		return base;
 
-	scaled = div_u64((u64) base * max, current);
+	scaled = div_u64((u64) base * max_freq, cur_freq);
 	scaled = min_t(u64, scaled, ADRENO_DRAWOBJ_TIMEOUT_MAX_MS);
 
 	return max_t(unsigned int, base, (unsigned int) scaled);
@@ -2581,6 +2581,7 @@ static unsigned int _adreno_drawobj_timeout_ms(struct kgsl_device *device)
 static int adreno_dispatch_process_drawqueue(struct adreno_device *adreno_dev,
 		struct adreno_dispatcher_drawqueue *drawqueue)
 {
+	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 	int count = adreno_dispatch_retire_drawqueue(adreno_dev, drawqueue);
 
 	/* Nothing to do if there are no pending commands */
