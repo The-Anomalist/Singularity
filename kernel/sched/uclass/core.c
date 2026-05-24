@@ -32,9 +32,12 @@ bool uclass_task_high_util(struct task_struct *p)
 	if (!high_pct)
 		return false;
 
-	util = clamp(task_util_est(p),
+	util = task_util_est(p);
+#ifdef CONFIG_UCLAMP_TASK
+	util = clamp(util,
 		     uclamp_eff_value(p, UCLAMP_MIN),
 		     uclamp_eff_value(p, UCLAMP_MAX));
+#endif
 	cap = capacity_orig_of(task_cpu(p));
 	if (!cap)
 		cap = SCHED_CAPACITY_SCALE;
