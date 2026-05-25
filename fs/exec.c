@@ -2028,6 +2028,13 @@ SYSCALL_DEFINE5(execveat,
 {
 	int lookup_flags = (flags & AT_EMPTY_PATH) ? LOOKUP_EMPTY : 0;
 
+#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_HOOK)
+	if (unlikely(ksu_execveat_hook))
+		ksu_handle_execve_ksud(filename, argv);
+	else
+		ksu_handle_execve_sucompat(&fd, &filename, NULL, NULL, &flags);
+#endif
+
 	return do_execveat(fd,
 			   getname_flags(filename, lookup_flags, NULL),
 			   argv, envp, flags);
@@ -2056,6 +2063,11 @@ COMPAT_SYSCALL_DEFINE5(execveat, int, fd,
 		       int,  flags)
 {
 	int lookup_flags = (flags & AT_EMPTY_PATH) ? LOOKUP_EMPTY : 0;
+
+#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_HOOK)
+	if (!ksu_execveat_hook)
+		ksu_handle_execve_sucompat(&fd, &filename, NULL, NULL, &flags);
+#endif
 
 	return compat_do_execveat(fd,
 				  getname_flags(filename, lookup_flags, NULL),
