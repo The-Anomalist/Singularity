@@ -34,6 +34,8 @@
 #include <net/bluetooth/sco.h>
 
 static bool disable_esco;
+static bool ford_sync_legacy_compat;
+static bool ford_sync_high_bandwidth = true;
 
 static const struct proto_ops sco_sock_ops;
 
@@ -752,6 +754,7 @@ static int sco_sock_sendmsg(struct socket *sock, struct msghdr *msg,
 static void sco_conn_defer_accept(struct hci_conn *conn, u16 setting)
 {
 	struct hci_dev *hdev = conn->hdev;
+	bool ford_sync_compat = ford_sync_legacy_compat;
 
 	BT_DBG("conn %p", conn);
 
@@ -770,8 +773,18 @@ static void sco_conn_defer_accept(struct hci_conn *conn, u16 setting)
 		bacpy(&cp.bdaddr, &conn->dst);
 		cp.pkt_type = cpu_to_le16(conn->pkt_type);
 
-		cp.tx_bandwidth   = cpu_to_le32(0x00001f40);
-		cp.rx_bandwidth   = cpu_to_le32(0x00001f40);
+		/* Default to 8 kHz SCO-equivalent bandwidth, but allow
+		 * integrators to request a higher eSCO bandwidth profile
+		 * for legacy in-vehicle systems that are sensitive to
+		 * link renegotiations.
+		 */
+		if (ford_sync_high_bandwidth) {
+			cp.tx_bandwidth = cpu_to_le32(0x00003e80);
+			cp.rx_bandwidth = cpu_to_le32(0x00003e80);
+		} else {
+			cp.tx_bandwidth = cpu_to_le32(0x00001f40);
+			cp.rx_bandwidth = cpu_to_le32(0x00001f40);
+		}
 		cp.content_format = cpu_to_le16(setting);
 
 		switch (setting & SCO_AIRMODE_MASK) {
@@ -781,15 +794,32 @@ static void sco_conn_defer_accept(struct hci_conn *conn, u16 setting)
 			else
 				cp.max_latency = cpu_to_le16(0x000D);
 			cp.retrans_effort = 0x02;
+			if (ford_sync_compat) {
+				/* Some older automotive HF units are more
+				 * stable with slightly larger latency and
+				 * regular retransmissions than with strict
+				 * low-latency transparent settings.
+				 */
+				cp.max_latency = cpu_to_le16(0x000C);
+				cp.retrans_effort = 0x01;
+			}
 			break;
 		case SCO_AIRMODE_CVSD:
 			cp.max_latency = cpu_to_le16(0xffff);
 			cp.retrans_effort = 0xff;
+			if (ford_sync_compat) {
+				cp.max_latency = cpu_to_le16(0x000C);
+				cp.retrans_effort = 0x01;
+			}
 			break;
 		default:
 			/* use CVSD settings as fallback */
 			cp.max_latency = cpu_to_le16(0xffff);
 			cp.retrans_effort = 0xff;
+			if (ford_sync_compat) {
+				cp.max_latency = cpu_to_le16(0x000C);
+				cp.retrans_effort = 0x01;
+			}
 			break;
 		}
 
@@ -1299,3 +1329,9 @@ void sco_exit(void)
 
 module_param(disable_esco, bool, 0644);
 MODULE_PARM_DESC(disable_esco, "Disable eSCO connection creation");
+module_param(ford_sync_legacy_compat, bool, 0644);
+MODULE_PARM_DESC(ford_sync_legacy_compat,
+		 "Compatibility profile for legacy Ford SYNC hands-free systems");
+module_param(ford_sync_high_bandwidth, bool, 0644);
+MODULE_PARM_DESC(ford_sync_high_bandwidth,
+		 "Use higher eSCO bandwidth request for automotive HF interop");
