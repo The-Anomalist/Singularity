@@ -1212,9 +1212,16 @@ static void a6xx_cp_hw_err_callback(struct adreno_device *adreno_dev, int bit)
 	if (status1 & BIT(A6XX_CP_UCODE_ERROR))
 		dev_crit_ratelimited(device->dev, "CP ucode error interrupt\n");
 	if (status1 & BIT(A6XX_CP_HW_FAULT_ERROR)) {
+		unsigned int rptr, wptr, rbbm_status;
+
 		kgsl_regread(device, A6XX_CP_HW_FAULT, &status2);
+		kgsl_regread(device, A6XX_CP_RB_RPTR, &rptr);
+		kgsl_regread(device, A6XX_CP_RB_WPTR, &wptr);
+		kgsl_regread(device, A6XX_RBBM_STATUS, &rbbm_status);
+
 		dev_crit_ratelimited(device->dev,
-			"CP | Ringbuffer HW fault | status=%x\n", status2);
+			"CP | Ringbuffer HW fault | status=%x rptr=%x wptr=%x rbbm_status=%x\n",
+			status2, rptr, wptr, rbbm_status);
 	}
 	if (status1 & BIT(A6XX_CP_REGISTER_PROTECTION_ERROR)) {
 		kgsl_regread(device, A6XX_CP_PROTECT_STATUS, &status2);

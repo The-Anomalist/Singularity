@@ -3218,6 +3218,19 @@ bool adreno_isidle(struct kgsl_device *device)
 	return adreno_hw_isidle(adreno_dev);
 }
 
+static void adreno_dump_ringbuffer_state(struct adreno_device *adreno_dev)
+{
+	struct adreno_ringbuffer *rb;
+	int i;
+
+	FOR_EACH_RINGBUFFER(adreno_dev, rb, i) {
+		dev_err(adreno_dev->dev.dev,
+			"rb[%d] wptr=%x rptr=%x queued=%u\n",
+			rb->id, rb->wptr, adreno_get_rptr(rb),
+			(unsigned int) atomic_read(&rb->dispatch_q.cmd_q_count));
+	}
+}
+
 /* Print some key registers if a spin-for-idle times out */
 void adreno_spin_idle_debug(struct adreno_device *adreno_dev,
 		const char *str)
@@ -3237,6 +3250,7 @@ void adreno_spin_idle_debug(struct adreno_device *adreno_dev,
 	adreno_readreg(adreno_dev, ADRENO_REG_RBBM_INT_0_STATUS, &intstatus);
 	adreno_readreg(adreno_dev, ADRENO_REG_CP_HW_FAULT, &hwfault);
 
+	adreno_dump_ringbuffer_state(adreno_dev);
 
 	/*
 	 * If CP is stuck, gmu may not perform as expected. So force a gmu
