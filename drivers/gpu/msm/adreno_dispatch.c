@@ -13,13 +13,13 @@
 #include "kgsl_timeline.h"
 
 /* Number of commands that can be queued in a context before it sleeps */
-static unsigned int _context_drawqueue_size = 50;
+static unsigned int _context_drawqueue_size = 54;
 
 /* Number of milliseconds to wait for the context queue to clear */
-static unsigned int _context_queue_wait = 10000;
+static unsigned int _context_queue_wait = 9000;
 
 /* Number of drawobjs sent at a time from a single context */
-static unsigned int _context_drawobj_burst = 6;
+static unsigned int _context_drawobj_burst = 7;
 
 /*
  * GFT throttle parameters. If GFT recovered more than
@@ -34,7 +34,7 @@ static unsigned int _fault_throttle_burst = 3;
  * Maximum ringbuffer inflight for the single submitting context case - this
  * should be sufficiently high to keep the GPU loaded
  */
-static unsigned int _dispatcher_q_inflight_hi = 18;
+static unsigned int _dispatcher_q_inflight_hi = 21;
 
 /*
  * Minimum inflight for the multiple context case - this should sufficiently low
@@ -60,7 +60,7 @@ static unsigned int _fault_timer_interval = 200;
  * Cap dynamically scaled timeout so genuine hangs still recover in a
  * predictable window even at very low benchmark frequencies.
  */
-#define ADRENO_DRAWOBJ_TIMEOUT_MAX_MS 8000
+#define ADRENO_DRAWOBJ_TIMEOUT_MAX_MS 20000
 
 #define DRAWQUEUE_RB(_drawqueue) \
 	((struct adreno_ringbuffer *) \
