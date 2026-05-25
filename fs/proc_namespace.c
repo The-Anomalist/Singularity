@@ -12,6 +12,9 @@
 #include <linux/security.h>
 #include <linux/fs_struct.h>
 #include <linux/sched/task.h>
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#include <linux/susfs_def.h>
+#endif
 
 #include "proc/internal.h" /* only for get_proc_task() in ->open() */
 
