@@ -25,6 +25,18 @@
 #include <linux/susfs.h>
 #endif
 
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+extern int susfs_sus_mount(struct vfsmount *mnt, struct path *root);
+#endif
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT_MNT_ID_REORDER
+extern bool uid_matches_proc_need_to_reorder_mnt_id(void);
+extern int susfs_get_fake_mnt_id(int mnt_id, int *out_mnt_id, int *out_parent_mnt_id);
+extern void susfs_add_mnt_id_recorder(struct mnt_namespace *mnt_ns);
+extern void susfs_remove_mnt_id_recorder(void);
+#endif
+
 static __poll_t mounts_poll(struct file *file, poll_table *wait)
 {
 	struct seq_file *m = file->private_data;
