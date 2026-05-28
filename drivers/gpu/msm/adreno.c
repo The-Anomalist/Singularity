@@ -3227,7 +3227,7 @@ static void adreno_dump_ringbuffer_state(struct adreno_device *adreno_dev)
 		dev_err(adreno_dev->dev.dev,
 			"rb[%d] wptr=%x rptr=%x queued=%u\n",
 			rb->id, rb->wptr, adreno_get_rptr(rb),
-			(unsigned int) atomic_read(&rb->dispatch_q.cmd_q_count));
+			rb->dispatch_q.inflight);
 	}
 }
 
