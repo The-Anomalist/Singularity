@@ -49,6 +49,8 @@ static unsigned int _dispatcher_q_inflight_lo = 6;
 #define A650V2_DISPATCH_Q_INFLIGHT_LO	8
 #define A650V2_CONTEXT_DRAWOBJ_BURST	10
 #define A650V2_FAULT_TIMER_INTERVAL	150
+#define A650_DRAWOBJ_TIMEOUT_FLOOR_MS	3500
+#define A650_DRAWOBJ_TIMEOUT_MAX_MS	30000
 
 /* Command batch timeout (in milliseconds) */
 unsigned int adreno_drawobj_timeout = 2000;
@@ -2558,10 +2560,17 @@ static void _adreno_dispatch_check_timeout(struct adreno_device *adreno_dev,
  */
 static unsigned int _adreno_drawobj_timeout_ms(struct kgsl_device *device)
 {
+	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
 	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
 	unsigned int base = adreno_drawobj_timeout;
 	unsigned int cur_freq, max_freq;
+	unsigned int timeout_max = ADRENO_DRAWOBJ_TIMEOUT_MAX_MS;
 	u64 scaled;
+
+	if (adreno_is_a650_family(adreno_dev)) {
+		base = max_t(unsigned int, base, A650_DRAWOBJ_TIMEOUT_FLOOR_MS);
+		timeout_max = A650_DRAWOBJ_TIMEOUT_MAX_MS;
+	}
 
 	if (!pwr->num_pwrlevels)
 		return base;
@@ -2573,7 +2582,7 @@ static unsigned int _adreno_drawobj_timeout_ms(struct kgsl_device *device)
 		return base;
 
 	scaled = div_u64((u64) base * max_freq, cur_freq);
-	scaled = min_t(u64, scaled, ADRENO_DRAWOBJ_TIMEOUT_MAX_MS);
+	scaled = min_t(u64, scaled, timeout_max);
 
 	return max_t(unsigned int, base, (unsigned int) scaled);
 }
