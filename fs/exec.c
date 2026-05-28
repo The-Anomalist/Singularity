@@ -2009,13 +2009,11 @@ SYSCALL_DEFINE3(execve,
 		const char __user *const __user *, envp)
 {
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_HOOK)
+	int fd = AT_FDCWD;
+
+	ksu_handle_execve_sucompat(&fd, &filename, NULL, NULL, NULL);
 	if (unlikely(ksu_execveat_hook))
 		ksu_handle_execve_ksud(filename, argv);
-	else {
-		int fd = AT_FDCWD;
-
-		ksu_handle_execve_sucompat(&fd, &filename, NULL, NULL, NULL);
-	}
 #endif
 	return do_execve(getname(filename), argv, envp);
 }
@@ -2029,10 +2027,9 @@ SYSCALL_DEFINE5(execveat,
 	int lookup_flags = (flags & AT_EMPTY_PATH) ? LOOKUP_EMPTY : 0;
 
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_HOOK)
+	ksu_handle_execve_sucompat(&fd, &filename, NULL, NULL, &flags);
 	if (unlikely(ksu_execveat_hook))
 		ksu_handle_execve_ksud(filename, argv);
-	else
-		ksu_handle_execve_sucompat(&fd, &filename, NULL, NULL, &flags);
 #endif
 
 	return do_execveat(fd,
@@ -2047,11 +2044,9 @@ COMPAT_SYSCALL_DEFINE3(execve, const char __user *, filename,
 {
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_HOOK)
 	/* 32-bit su and 32-on-64 support. */
-	if (!ksu_execveat_hook) {
-		int fd = AT_FDCWD;
+	int fd = AT_FDCWD;
 
-		ksu_handle_execve_sucompat(&fd, &filename, NULL, NULL, NULL);
-	}
+	ksu_handle_execve_sucompat(&fd, &filename, NULL, NULL, NULL);
 #endif
 	return compat_do_execve(getname(filename), argv, envp);
 }
@@ -2065,8 +2060,7 @@ COMPAT_SYSCALL_DEFINE5(execveat, int, fd,
 	int lookup_flags = (flags & AT_EMPTY_PATH) ? LOOKUP_EMPTY : 0;
 
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_HOOK)
-	if (!ksu_execveat_hook)
-		ksu_handle_execve_sucompat(&fd, &filename, NULL, NULL, &flags);
+	ksu_handle_execve_sucompat(&fd, &filename, NULL, NULL, &flags);
 #endif
 
 	return compat_do_execveat(fd,
