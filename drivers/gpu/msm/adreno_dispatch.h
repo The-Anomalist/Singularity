@@ -54,6 +54,7 @@ struct adreno_dispatcher_drawqueue {
  * @work: work_struct to put the dispatcher in a work queue
  * @kobj: kobject for the dispatcher directory in the device sysfs node
  * @idle_gate: Gate to wait on for dispatcher to idle
+ * @soft_fault_misses: Number of consecutive soft fault samples with no progress
  */
 struct adreno_dispatcher {
 	struct mutex mutex;
@@ -67,6 +68,7 @@ struct adreno_dispatcher {
 	struct kthread_work work;
 	struct kobject kobj;
 	struct completion idle_gate;
+	unsigned int soft_fault_misses;
 };
 
 enum adreno_dispatcher_flags {
