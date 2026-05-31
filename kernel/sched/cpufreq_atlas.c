@@ -166,6 +166,7 @@ static atomic_t atlas_mem_contention_pct = ATOMIC_INIT(0);
 static atomic_t atlas_mem_reclaim_pct = ATOMIC_INIT(0);
 static atomic_t atlas_mem_swap_pct = ATOMIC_INIT(0);
 static atomic_t atlas_mem_workingset_refault_pct = ATOMIC_INIT(0);
+static atomic_t atlas_display_active = ATOMIC_INIT(1);
 
 void atlas_update_gpu_telemetry(unsigned int util_pct, unsigned int freq_khz,
 				unsigned int thermal_pct)
@@ -253,6 +254,18 @@ void atlas_get_mem_stats(unsigned int *reclaim_pct, unsigned int *swap_pct,
 }
 EXPORT_SYMBOL_GPL(atlas_get_mem_stats);
 
+void atlas_update_display_state(bool active)
+{
+	atomic_set(&atlas_display_active, active ? 1 : 0);
+}
+EXPORT_SYMBOL_GPL(atlas_update_display_state);
+
+bool atlas_display_state_active(void)
+{
+	return atomic_read(&atlas_display_active);
+}
+EXPORT_SYMBOL_GPL(atlas_display_state_active);
+
 static unsigned int atlas_cpu_thermal_pct_for_cpu(int cpu)
 {
 	unsigned long max_cap = arch_scale_cpu_capacity(NULL, cpu);
@@ -333,10 +346,27 @@ static inline bool conservative_pl(void)
 #endif
 }
 
+static void sugov_clear_display_off_boosts(struct sugov_policy *sg_policy)
+{
+	sg_policy->freq_hold_until_ns = 0;
+	sg_policy->auto_boost_until_ns = 0;
+	sg_policy->efficiency_until_ns = 0;
+	sg_policy->auto_boost_avg_util = 0;
+	sg_policy->cpu_signal_ema = 0;
+	sg_policy->gpu_signal_ema = 0;
+	sg_policy->mem_signal_ema = 0;
+	sg_policy->fusion_signal_ema = 0;
+}
+
 static bool sugov_up_down_rate_limit(struct sugov_policy *sg_policy, u64 time,
 				     unsigned int next_freq)
 {
 	s64 delta_ns;
+
+	if (!atlas_display_state_active()) {
+		sugov_clear_display_off_boosts(sg_policy);
+		return false;
+	}
 
 	delta_ns = time - sg_policy->last_freq_update_time;
 
@@ -363,7 +393,7 @@ static inline bool sugov_is_transition_event(unsigned int flags)
 static inline void sugov_note_transition_boost(struct sugov_policy *sg_policy,
 					      u64 time, unsigned int flags)
 {
-	if (!sugov_is_transition_event(flags))
+	if (!atlas_display_state_active() || !sugov_is_transition_event(flags))
 		return;
 
 	/*
@@ -1097,6 +1127,11 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 
 	if (!auto_cfg->auto_boost || !max)
 		return;
+
+	if (!atlas_display_state_active()) {
+		sugov_clear_display_off_boosts(sg_policy);
+		return;
+	}
 
 	avg_util = sg_policy->auto_boost_avg_util;
 	if (!avg_util)

@@ -21,6 +21,8 @@ void atlas_update_mem_stats(unsigned int reclaim_pct, unsigned int swap_pct,
 			    unsigned int workingset_refault_pct);
 void atlas_get_mem_stats(unsigned int *reclaim_pct, unsigned int *swap_pct,
 			 unsigned int *workingset_refault_pct);
+void atlas_update_display_state(bool active);
+bool atlas_display_state_active(void);
 #else
 static inline void atlas_update_gpu_telemetry(unsigned int util_pct,
 				      unsigned int freq_khz,
@@ -88,6 +90,15 @@ static inline void atlas_get_mem_stats(unsigned int *reclaim_pct,
 		*swap_pct = 0;
 	if (workingset_refault_pct)
 		*workingset_refault_pct = 0;
+}
+
+static inline void atlas_update_display_state(bool active)
+{
+}
+
+static inline bool atlas_display_state_active(void)
+{
+	return true;
 }
 #endif
 

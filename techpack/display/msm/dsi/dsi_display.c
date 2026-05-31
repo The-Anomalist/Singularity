@@ -7,6 +7,7 @@
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 #include <linux/err.h>
+#include <linux/orion_atlas_link.h>
 
 #include "msm_drv.h"
 #include "sde_connector.h"
@@ -8417,6 +8418,7 @@ int dsi_display_enable(struct dsi_display *display)
 		}
 
 		display->panel->panel_initialized = true;
+		atlas_update_display_state(true);
 		DSI_DEBUG("cont splash enabled, display enable not required\n");
 #ifdef OPLUS_BUG_STABILITY
 		set_oplus_display_power_status(OPLUS_DISPLAY_POWER_ON);
@@ -8532,6 +8534,9 @@ int dsi_display_enable(struct dsi_display *display)
 error_disable_panel:
 	(void)dsi_panel_disable(display->panel);
 error:
+	if (!rc)
+		atlas_update_display_state(true);
+
 	mutex_unlock(&display->display_lock);
 
 #ifdef OPLUS_FEATURE_ADFR
@@ -8734,6 +8739,9 @@ int dsi_display_disable(struct dsi_display *display)
 					    &notifier_data);
 #endif /* OPLUS_FEATURE_SAU */
 	}
+
+	if (!display->poms_pending && !rc)
+		atlas_update_display_state(false);
 
 #ifdef OPLUS_FEATURE_ADFR
 	/* if qsync mode is on, force qsync window to be closed to avoid tearing issue */
