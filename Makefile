@@ -461,6 +461,20 @@ CLANG_FLAGS :=
 
 KBUILD_CFLAGS += -DOPLUS_CUSTOM_OP_DEF
 
+# KernelSU Next legacy is carried through drivers/kernelsu as an external
+# symlinked tree.  Some non-GKI build environments copy that tree without its
+# .git metadata; upstream KernelSU Next Kbuild then falls back to KSU_VERSION=1,
+# which makes newer managers report the driver as too old or not detected.
+# Export sane v3.2.0-legacy defaults while still allowing the build command or a
+# real KernelSU Next git checkout to override them.
+KSU_GIT_VERSION ?= 2979
+KSU_GIT_TAG ?= v3.2.0-legacy
+KSU_GIT_VERSION_VALID ?= 1
+KSU_NEXT_MANAGER_SIZE ?= 0x3e6
+KSU_NEXT_MANAGER_HASH ?= 79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7
+export KSU_GIT_VERSION KSU_GIT_TAG KSU_GIT_VERSION_VALID
+export KSU_NEXT_MANAGER_SIZE KSU_NEXT_MANAGER_HASH
+
 -include OplusKernelEnvConfig.mk
 
 export ARCH SRCARCH CONFIG_SHELL HOSTCC KBUILD_HOSTCFLAGS CROSS_COMPILE LD CC
