@@ -586,7 +586,7 @@ ssize_t ksys_read(unsigned int fd, char __user *buf, size_t count)
 	return ret;
 }
 
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_HOOK)
+#ifdef CONFIG_KSU_MANUAL_HOOK
 extern bool ksu_vfs_read_hook __read_mostly;
 extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr,
 			       size_t *count_ptr);
@@ -594,7 +594,7 @@ extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr,
 
 SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 {
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_HOOK)
+#ifdef CONFIG_KSU_MANUAL_HOOK
 	if (unlikely(ksu_vfs_read_hook))
 		ksu_handle_sys_read(fd, &buf, &count);
 #endif

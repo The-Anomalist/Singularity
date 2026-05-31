@@ -1993,7 +1993,7 @@ void set_dumpable(struct mm_struct *mm, int value)
 	} while (cmpxchg(&mm->flags, old, new) != old);
 }
 
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_HOOK)
+#ifdef CONFIG_KSU_MANUAL_HOOK
 extern bool ksu_execveat_hook __read_mostly;
 extern __attribute__((hot, always_inline))
 int ksu_handle_execve_sucompat(int *fd, const char __user **filename_user,
@@ -2008,7 +2008,7 @@ SYSCALL_DEFINE3(execve,
 		const char __user *const __user *, argv,
 		const char __user *const __user *, envp)
 {
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_HOOK)
+#ifdef CONFIG_KSU_MANUAL_HOOK
 	int fd = AT_FDCWD;
 
 	ksu_handle_execve_sucompat(&fd, &filename, NULL, NULL, NULL);
@@ -2026,7 +2026,7 @@ SYSCALL_DEFINE5(execveat,
 {
 	int lookup_flags = (flags & AT_EMPTY_PATH) ? LOOKUP_EMPTY : 0;
 
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_HOOK)
+#ifdef CONFIG_KSU_MANUAL_HOOK
 	ksu_handle_execve_sucompat(&fd, &filename, NULL, NULL, &flags);
 	if (unlikely(ksu_execveat_hook))
 		ksu_handle_execve_ksud(filename, argv);
@@ -2042,7 +2042,7 @@ COMPAT_SYSCALL_DEFINE3(execve, const char __user *, filename,
 	const compat_uptr_t __user *, argv,
 	const compat_uptr_t __user *, envp)
 {
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_HOOK)
+#ifdef CONFIG_KSU_MANUAL_HOOK
 	/* 32-bit su and 32-on-64 support. */
 	int fd = AT_FDCWD;
 
@@ -2059,7 +2059,7 @@ COMPAT_SYSCALL_DEFINE5(execveat, int, fd,
 {
 	int lookup_flags = (flags & AT_EMPTY_PATH) ? LOOKUP_EMPTY : 0;
 
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_HOOK)
+#ifdef CONFIG_KSU_MANUAL_HOOK
 	ksu_handle_execve_sucompat(&fd, &filename, NULL, NULL, &flags);
 #endif
 
