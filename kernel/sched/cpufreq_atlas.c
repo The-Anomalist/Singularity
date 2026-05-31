@@ -102,6 +102,7 @@ struct sugov_policy {
 	unsigned int		cpu_signal_ema;
 	unsigned int		gpu_signal_ema;
 	unsigned int		mem_signal_ema;
+	unsigned int		fusion_signal_ema;
 	bool			has_prime_cpu;
 
 	/* The next fields are only needed if fast switch cannot be used: */
@@ -1080,6 +1081,9 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	unsigned int heavy_util_thres, heavy_tasks_thres;
 	unsigned int efficiency_load, efficiency_util;
 	unsigned int heavy_floor_util;
+	unsigned int cpu_momentum, gpu_momentum, mem_momentum;
+	unsigned int fusion_signal, fusion_ema, fusion_sum;
+	u64 fusion_boost_until;
 	unsigned int thermal_penalty = 0;
 	u64 decay_ns;
 	bool transition = sugov_is_transition_event(flags);
@@ -1147,18 +1151,35 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	atlas_update_mem_stats(reclaim_signal, swap_signal, refault_signal);
 
 	/*
-	 * Lightweight "online learning":
+	 * Lightweight online learning with a derivative term:
 	 * - cpu_signal follows utilization,
 	 * - gpu_signal follows transition bursts often seen in rendering,
 	 * - mem_signal follows system memory pressure.
-	 * Exponential smoothing keeps behavior stable while adapting quickly.
+	 *
+	 * The momentum terms are computed before EWMA update, so Atlas can
+	 * react to the leading edge of a CPU/GPU burst while still using the
+	 * smoothed signals below for hysteresis and steady-state decisions.
 	 */
+	cpu_momentum = cpu_signal > sg_policy->cpu_signal_ema ?
+		cpu_signal - sg_policy->cpu_signal_ema : 0;
+	gpu_momentum = gpu_signal > sg_policy->gpu_signal_ema ?
+		gpu_signal - sg_policy->gpu_signal_ema : 0;
+	mem_momentum = mem_signal > sg_policy->mem_signal_ema ?
+		mem_signal - sg_policy->mem_signal_ema : 0;
+
 	sg_policy->cpu_signal_ema =
 		((sg_policy->cpu_signal_ema * 7) + cpu_signal) >> 3;
 	sg_policy->gpu_signal_ema =
 		((sg_policy->gpu_signal_ema * 3) + gpu_signal) >> 2;
 	sg_policy->mem_signal_ema =
 		((sg_policy->mem_signal_ema * 7) + mem_signal) >> 3;
+
+	fusion_sum = cpu_signal * 3 + gpu_signal * 2 + mem_signal +
+		cpu_momentum * 2 + gpu_momentum * 2 + mem_momentum;
+	fusion_signal = min_t(unsigned int, 100, fusion_sum / 11);
+	sg_policy->fusion_signal_ema =
+		((sg_policy->fusion_signal_ema * 5) + fusion_signal) / 6;
+	fusion_ema = sg_policy->fusion_signal_ema;
 
 	high_load = auto_cfg->auto_boost_high_load;
 	low_load = auto_cfg->auto_boost_low_load;
@@ -1171,6 +1192,7 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	efficiency_util = auto_cfg->auto_boost_efficiency_util;
 	heavy_floor_util = sg_policy->has_prime_cpu ?
 		auto_cfg->auto_boost_prime_util : auto_cfg->auto_boost_gold_util;
+	thermal_penalty = max(cpu_thermal_pct, gpu_thermal_pct);
 
 	/* Promote responsiveness when graphics bursts are detected. */
 	if (sg_policy->gpu_signal_ema >= 35 || gpu_util_pct >= 45) {
@@ -1181,10 +1203,28 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	}
 
 	/*
+	 * Cross-domain fusion: boost only when CPU, GPU and memory pressure agree
+	 * or are accelerating together. This behaves like a tiny bottleneck
+	 * classifier and avoids spending CPU headroom on isolated GPU load.
+	 */
+	if ((fusion_signal >= 75 || fusion_ema >= 60) && thermal_penalty < 65) {
+		high_load = max_t(unsigned int, 1, high_load - 6);
+		low_load = max_t(unsigned int, 1, low_load - 4);
+		min_util = min_t(unsigned int, SCHED_CAPACITY_SCALE,
+				 min_util + 40);
+		if (cpu_momentum >= 20 || gpu_momentum >= 25) {
+			fusion_boost_until = time +
+				(auto_cfg->auto_boost_decay_us * NSEC_PER_USEC);
+			sg_policy->auto_boost_until_ns =
+				max(sg_policy->auto_boost_until_ns,
+				    fusion_boost_until);
+		}
+	}
+
+	/*
 	 * When either side reports sustained thermal pressure, damp GPU-driven
 	 * CPU boosts proportionally to avoid futile frequency chasing.
 	 */
-	thermal_penalty = max(cpu_thermal_pct, gpu_thermal_pct);
 	if (thermal_penalty > 55) {
 		unsigned int damp = min_t(unsigned int, 20,
 					  (thermal_penalty - 55) / 2);

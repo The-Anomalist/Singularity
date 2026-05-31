@@ -823,23 +823,33 @@ static void orion_apply_atlas_cpu_sync(
 	unsigned int cpu_util_pct = 0, cpu_freq_khz = 0, cpu_thermal_pct = 0;
 	unsigned int mem_pressure_pct = 0, mem_contention_pct = 0;
 	unsigned int mem_reclaim_pct = 0, mem_swap_pct = 0, mem_refault_pct = 0;
+	static unsigned int cpu_util_ema;
+	unsigned int cpu_momentum, coupled_pressure, coupled_sum;
 
 	atlas_get_cpu_telemetry(&cpu_util_pct, &cpu_freq_khz, &cpu_thermal_pct);
 	atlas_get_mem_telemetry(&mem_pressure_pct, &mem_contention_pct);
 	atlas_get_mem_stats(&mem_reclaim_pct, &mem_swap_pct, &mem_refault_pct);
 
+	cpu_momentum = cpu_util_pct > cpu_util_ema ?
+		cpu_util_pct - cpu_util_ema : 0;
+	cpu_util_ema = ((cpu_util_ema * 7) + cpu_util_pct) >> 3;
+	coupled_sum = cpu_util_pct * 3 + effective_busy_pct * 3 +
+		mem_contention_pct + cpu_momentum * 2;
+	coupled_pressure = min_t(unsigned int, 100, coupled_sum / 9);
+
 	/*
 	 * Atlas can ask Orion to be more eager during CPU-heavy bursts while
 	 * backing off when CPU thermal pressure is elevated.
 	 */
-	if (cpu_util_pct >= 70 && cpu_thermal_pct < 65) {
+	if ((cpu_util_pct >= 70 || coupled_pressure >= 70) && cpu_thermal_pct < 65) {
 		if (upthreshold_pct && downthreshold_pct && transition_boost_pct) {
 			*upthreshold_pct = max_t(unsigned int, 50, *upthreshold_pct - 6);
 			*transition_boost_pct = min_t(unsigned int, 100,
 						      *transition_boost_pct + 8);
 		}
 		if (boost_end && priv->orion_boost_enable &&
-		    priv->orion_boost_ms && effective_busy_pct >= 50)
+		    priv->orion_boost_ms &&
+		    (effective_busy_pct >= 50 || coupled_pressure >= 70))
 			*boost_end = max_t(unsigned long, *boost_end,
 					   jiffies +
 					   msecs_to_jiffies(priv->orion_boost_ms >> 1));
@@ -869,6 +879,14 @@ static void orion_apply_atlas_cpu_sync(
 	    cpu_thermal_pct < 70 &&
 	    cpu_freq_khz < 1400000)
 		*upthreshold_pct = max_t(unsigned int, 50, *upthreshold_pct - 4);
+
+	/* CPU leading-edge demand plus active GPU work predicts imminent stalls. */
+	if (upthreshold_pct && transition_boost_pct && cpu_thermal_pct < 68 &&
+	    cpu_momentum >= 18 && effective_busy_pct >= 45) {
+		*upthreshold_pct = max_t(unsigned int, 50, *upthreshold_pct - 5);
+		*transition_boost_pct = min_t(unsigned int, 100,
+					      *transition_boost_pct + 6);
+	}
 
 	if (upthreshold_pct && downthreshold_pct &&
 	    mem_pressure_pct >= 75 && cpu_thermal_pct < 75) {
