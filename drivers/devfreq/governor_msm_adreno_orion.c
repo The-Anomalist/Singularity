@@ -113,6 +113,37 @@ static void orion_build_auto_policy(struct devfreq_msm_adreno_tz_data *priv,
 			  mem_contention_pct >= 60;
 }
 
+static unsigned int
+orion_predict_busy(struct devfreq_msm_adreno_tz_data *priv,
+		   unsigned int busy_pct, unsigned int context_count,
+		   unsigned int refresh_rate)
+{
+	int trend, filtered_trend;
+	unsigned int predicted = busy_pct;
+
+	trend = (int)busy_pct - (int)priv->orion_last_busy_pct;
+	filtered_trend = (priv->orion_busy_trend_pct + trend) / 2;
+	priv->orion_busy_trend_pct = filtered_trend;
+	priv->orion_last_busy_pct = busy_pct;
+
+	if (filtered_trend > 0)
+		predicted += min_t(unsigned int, filtered_trend, 30);
+	else if (filtered_trend < -12)
+		predicted -= min_t(unsigned int, predicted, (-filtered_trend) / 3);
+
+	if (context_count > 1)
+		predicted += min_t(unsigned int, 12, context_count * 3);
+
+	/* Higher refresh rates have shorter frame budgets, so react earlier. */
+	if (refresh_rate > 60 && busy_pct >= 45)
+		predicted += min_t(unsigned int, 10, (refresh_rate - 60) / 12);
+
+	predicted = min_t(unsigned int, predicted, 100);
+	priv->orion_predicted_busy_pct = predicted;
+
+	return predicted;
+}
+
 static inline u32 orion_sample_floor(
 	const struct devfreq_msm_adreno_tz_data *priv)
 {
@@ -405,7 +436,7 @@ static ssize_t orion_aggressiveness_store(struct device *dev,
 	ret = kstrtoul(buf, 0, &val);
 	if (ret)
 		return ret;
-	if (val < 50 || val > 200)
+	if (val < 50 || val > 300)
 		return -EINVAL;
 
 	priv->orion_aggressiveness = val;
@@ -680,6 +711,17 @@ static ssize_t orion_effective_busy_pct_show(struct device *dev,
 		priv->orion_smoothed_busy_pct);
 }
 
+static ssize_t
+orion_predicted_busy_pct_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct devfreq *devfreq = to_devfreq(dev);
+	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
+
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+		priv->orion_predicted_busy_pct);
+}
+
 static DEVICE_ATTR_RO(gpu_load);
 
 static DEVICE_ATTR_RO(suspend_time);
@@ -698,6 +740,7 @@ static DEVICE_ATTR_RW(orion_load_filter_pct);
 static DEVICE_ATTR_RW(orion_hispeed_load);
 static DEVICE_ATTR_RW(orion_hispeed_level);
 static DEVICE_ATTR_RO(orion_effective_busy_pct);
+static DEVICE_ATTR_RO(orion_predicted_busy_pct);
 
 static const struct device_attribute *orion_attr_list[] = {
 		&dev_attr_gpu_load,
@@ -717,6 +760,7 @@ static const struct device_attribute *orion_attr_list[] = {
 		&dev_attr_orion_hispeed_load,
 		&dev_attr_orion_hispeed_level,
 		&dev_attr_orion_effective_busy_pct,
+		&dev_attr_orion_predicted_busy_pct,
 		NULL
 };
 
@@ -1132,14 +1176,16 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	int result = 0;
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 	struct devfreq_dev_status *stats = &devfreq->last_status;
-	int val, level = 0;
+	int val = 0, level = 0;
 	unsigned int scm_data[4];
 	int context_count = 0;
 	u64 adjusted_busy;
-	u32 busy_pct = 0, effective_busy_pct = 0;
+	u32 busy_pct = 0, effective_busy_pct = 0, predicted_busy_pct = 0;
 	u32 upthreshold_pct, downthreshold_pct, transition_boost_pct;
 	u32 hispeed_load, boost_ms;
 	u32 mem_pressure_pct = 0, mem_contention_pct = 0;
+	unsigned int refresh_rate = dsi_panel_get_refresh_rate();
+	unsigned long block_until;
 	bool force_max_perf = false;
 
 	/* keeps stats.private_data == NULL   */
@@ -1184,8 +1230,6 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 			priv->bin.busy_time > orion_busy_ceiling(priv)) {
 		val = -1 * level;
 	} else {
-		unsigned int refresh_rate = dsi_panel_get_refresh_rate();
-
 		scm_data[0] = level;
 		scm_data[1] = priv->bin.total_time;
 		adjusted_busy = (u64)priv->bin.busy_time;
@@ -1221,27 +1265,39 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 			(100 - priv->orion_load_filter_pct), 100);
 	}
 	priv->orion_smoothed_busy_pct = effective_busy_pct;
+	predicted_busy_pct = orion_predict_busy(priv, effective_busy_pct,
+						 context_count, refresh_rate);
 	orion_update_atlas_telemetry(devfreq, effective_busy_pct,
 				     stats->current_frequency, context_count);
 	atlas_get_mem_telemetry(&mem_pressure_pct, &mem_contention_pct);
-	orion_build_auto_policy(priv, effective_busy_pct, context_count,
+	orion_build_auto_policy(priv, predicted_busy_pct, context_count,
 				mem_pressure_pct, mem_contention_pct,
 				&upthreshold_pct, &downthreshold_pct,
 				&transition_boost_pct, &hispeed_load,
 				&boost_ms, &force_max_perf);
 	orion_apply_atlas_cpu_sync(priv, &upthreshold_pct, &downthreshold_pct,
 				   &transition_boost_pct, NULL,
-				   effective_busy_pct);
+				   predicted_busy_pct);
 
 	/*
 	 * If the decision is to move to a different level, make sure the GPU
 	 * frequency changes.
 	 */
-	if (effective_busy_pct >= upthreshold_pct && val >= 0)
+	if (predicted_busy_pct >= upthreshold_pct && val >= 0)
 		val = -1;
 	else if (effective_busy_pct <= downthreshold_pct &&
+			predicted_busy_pct <= downthreshold_pct + 5 &&
 			val <= 0)
 		val = 1;
+
+	if (predicted_busy_pct > effective_busy_pct &&
+	    priv->orion_downscale_delay_ms && context_count > 0) {
+		block_until = jiffies +
+			msecs_to_jiffies(priv->orion_downscale_delay_ms >> 1);
+		priv->orion_downscale_blocked_till =
+			max_t(unsigned long, priv->orion_downscale_blocked_till,
+			      block_until);
+	}
 
 	if (val > 0 && priv->orion_downscale_delay_ms &&
 		time_before(jiffies, priv->orion_downscale_blocked_till))
@@ -1256,7 +1312,7 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	if (force_max_perf)
 		level = 0;
 
-	if (hispeed_load && effective_busy_pct >= hispeed_load) {
+	if (hispeed_load && predicted_busy_pct >= hispeed_load) {
 		int hispeed_level = clamp_t(int, priv->orion_hispeed_level,
 			0, devfreq->profile->max_state - 1);
 
@@ -1270,7 +1326,7 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 		spin_lock(&boost_lock);
 		boost_end = priv->orion_boost_end;
 		orion_apply_atlas_cpu_sync(priv, NULL, NULL, NULL,
-					   &boost_end, effective_busy_pct);
+					   &boost_end, predicted_busy_pct);
 		priv->orion_boost_end = boost_end;
 		spin_unlock(&boost_lock);
 
@@ -1289,11 +1345,11 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 				devfreq->profile->max_state - 1);
 			level = min(level, boost_level);
 			if (transition_boost_pct &&
-				effective_busy_pct >= (100 -
+				predicted_busy_pct >= (100 -
 					transition_boost_pct))
 				level = max(level - 1, 0);
 			if (boost_ms > priv->orion_boost_ms &&
-			    effective_busy_pct >= upthreshold_pct)
+			    predicted_busy_pct >= upthreshold_pct)
 				level = max(level - 1, 0);
 		}
 	}
@@ -1328,14 +1384,17 @@ static int tz_notify(struct notifier_block *nb, unsigned long type, void *devp)
 			unsigned int transition_boost_pct, hispeed_load;
 			unsigned int boost_ms, mem_pressure_pct = 0;
 			unsigned int mem_contention_pct = 0;
+			unsigned int demand_pct;
 			bool force_max_perf = false;
 
 			if (devfreq->last_status.private_data)
-				context_count = *((int *)devfreq->last_status.private_data);
+				context_count =
+					*((int *)devfreq->last_status.private_data);
 			atlas_get_mem_telemetry(&mem_pressure_pct,
 						&mem_contention_pct);
-			orion_build_auto_policy(priv,
-						priv->orion_smoothed_busy_pct,
+			demand_pct = max(priv->orion_smoothed_busy_pct,
+					 priv->orion_predicted_busy_pct);
+			orion_build_auto_policy(priv, demand_pct,
 						context_count,
 						mem_pressure_pct,
 						mem_contention_pct,
@@ -1391,6 +1450,9 @@ static int tz_start(struct devfreq *devfreq)
 	priv->orion_boost_end = 0;
 	priv->orion_downscale_blocked_till = 0;
 	priv->orion_smoothed_busy_pct = 0;
+	priv->orion_predicted_busy_pct = 0;
+	priv->orion_busy_trend_pct = 0;
+	priv->orion_last_busy_pct = 0;
 
 	out = 1;
 	if (devfreq->profile->max_state < MSM_ADRENO_MAX_PWRLEVELS) {
@@ -1455,6 +1517,9 @@ static int tz_suspend(struct devfreq *devfreq)
 	priv->bin.busy_time = 0;
 	priv->orion_downscale_blocked_till = 0;
 	priv->orion_smoothed_busy_pct = 0;
+	priv->orion_predicted_busy_pct = 0;
+	priv->orion_busy_trend_pct = 0;
+	priv->orion_last_busy_pct = 0;
 	return 0;
 }
 
@@ -1510,6 +1575,9 @@ static int tz_handler(struct devfreq *devfreq, unsigned int event, void *data)
 			struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 
 			priv->orion_smoothed_busy_pct = 0;
+			priv->orion_predicted_busy_pct = 0;
+			priv->orion_busy_trend_pct = 0;
+			priv->orion_last_busy_pct = 0;
 		}
 		/* fallthrough */
 	case DEVFREQ_GOV_INTERVAL:

@@ -82,6 +82,9 @@ struct devfreq_msm_adreno_tz_data {
 	u32 orion_hispeed_level;
 	u32 orion_perf_boost_level;
 	u32 orion_smoothed_busy_pct;
+	u32 orion_predicted_busy_pct;
+	s32 orion_busy_trend_pct;
+	u32 orion_last_busy_pct;
 };
 
 struct msm_adreno_extended_profile {
