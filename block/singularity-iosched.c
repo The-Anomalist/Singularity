@@ -18,8 +18,8 @@
 #define SING_BG_CLASS            1
 #define SING_MAX_BUCKETS         16
 #define SING_DYN_FG_BATCH_MIN    2
-#define SING_DYN_FG_BATCH_MAX    12
-#define SING_BG_STARVE_MS        12
+#define SING_DYN_FG_BATCH_MAX    8
+#define SING_BG_STARVE_MS        4
 
 static unsigned int sing_fg_batch = 6;
 module_param_named(fg_batch, sing_fg_batch, uint, 0644);
@@ -29,6 +29,11 @@ static bool sing_adaptive_batch = true;
 module_param_named(adaptive_batch, sing_adaptive_batch, bool, 0644);
 MODULE_PARM_DESC(adaptive_batch,
 		 "Adapt sync dispatch budget to queue pressure and write ratio");
+
+static unsigned int sing_bg_starve_ms = SING_BG_STARVE_MS;
+module_param_named(bg_starve_ms, sing_bg_starve_ms, uint, 0644);
+MODULE_PARM_DESC(bg_starve_ms,
+		 "Maximum time to defer background I/O while sync I/O is queued");
 
 struct sing_data {
 	struct list_head q[SING_NR_CLASSES][SING_MAX_BUCKETS];
@@ -67,7 +72,8 @@ static inline bool sing_bg_starving(struct sing_data *sd)
 {
 	unsigned int i;
 	unsigned long now = jiffies;
-	unsigned long starve = msecs_to_jiffies(SING_BG_STARVE_MS);
+	unsigned long starve = msecs_to_jiffies(max_t(unsigned int, 1,
+							 sing_bg_starve_ms));
 
 	for (i = 0; i < SING_MAX_BUCKETS; i++) {
 		if (!sd->bg_head_jiffies[i])
@@ -93,24 +99,48 @@ static inline unsigned int sing_dynamic_fg_batch(struct sing_data *sd)
 			SING_DYN_FG_BATCH_MIN, SING_DYN_FG_BATCH_MAX);
 
 	/*
-	 * Preserve foreground latency under heavy queue pressure. If the queue
-	 * is mostly background writes, ease off to create larger contiguous
-	 * write windows and reduce wakeups.
+	 * Keep the scheduler latency-first, but avoid long sync-only runs on
+	 * mobile workloads where radio/tethering services can issue both sync
+	 * metadata and async log/cache writes.  Sustained mixed queues should
+	 * converge toward shorter foreground slices so the async side keeps
+	 * making progress.
 	 */
-	if (total_q > 24 && sync_q > bg_q)
-		batch = min_t(unsigned int, batch + 2, SING_DYN_FG_BATCH_MAX);
-	else if (bg_q > (sync_q << 1))
-		batch = max_t(unsigned int, batch - 2, SING_DYN_FG_BATCH_MIN);
-	else if (total_q < 8)
+	if (bg_q && sync_q) {
+		if (bg_q >= sync_q || total_q > 16)
+			batch = max_t(unsigned int, batch - 2,
+				      SING_DYN_FG_BATCH_MIN);
+		else
+			batch = max_t(unsigned int, batch - 1,
+				      SING_DYN_FG_BATCH_MIN);
+	} else if (total_q < 8) {
 		batch = max_t(unsigned int, batch - 1, SING_DYN_FG_BATCH_MIN);
+	}
 
 	return batch;
+}
+
+static void sing_remove_request(struct sing_data *sd, struct request *rq)
+{
+	unsigned int class = sing_class(rq);
+	unsigned int bucket = sing_bucket(rq);
+
+	if (list_empty(&rq->queuelist))
+		return;
+
+	list_del_init(&rq->queuelist);
+	if (sd->queued[class])
+		sd->queued[class]--;
+
+	if (class == SING_BG_CLASS && list_empty(&sd->q[class][bucket]))
+		sd->bg_head_jiffies[bucket] = 0;
 }
 
 static void sing_merged_requests(struct request_queue *q, struct request *rq,
 				 struct request *next)
 {
-	list_del_init(&next->queuelist);
+	struct sing_data *sd = q->elevator->elevator_data;
+
+	sing_remove_request(sd, next);
 }
 
 static int sing_dispatch_class(struct request_queue *q, struct sing_data *sd,
@@ -123,14 +153,11 @@ static int sing_dispatch_class(struct request_queue *q, struct sing_data *sd,
 		struct request *rq;
 
 		rq = list_first_entry_or_null(&sd->q[class][b], struct request,
-					     queuelist);
+					      queuelist);
 		if (!rq)
 			continue;
 
-		list_del_init(&rq->queuelist);
-		if (class == SING_BG_CLASS && list_empty(&sd->q[class][b]))
-			sd->bg_head_jiffies[b] = 0;
-		sd->queued[class]--;
+		sing_remove_request(sd, rq);
 		sd->rr[class] = (b + 1) & (SING_MAX_BUCKETS - 1);
 		elv_dispatch_sort(q, rq);
 		return 1;
