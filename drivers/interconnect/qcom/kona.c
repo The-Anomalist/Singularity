@@ -65,6 +65,8 @@ struct kona_icc_provider {
 	u64 *last_ib;
 	u64 *req_ab;
 	u64 *req_ib;
+	u64 *eff_ab;
+	u64 *eff_ib;
 	u64 *saved_ab;
 	u64 *saved_ib;
 	unsigned long resume_jiffies;
@@ -85,6 +87,7 @@ struct kona_icc_provider {
 	unsigned long gpu_oc_last_jiffies;
 	unsigned long npu_oc_last_jiffies;
 	unsigned long cpu_prime_oc_last_jiffies;
+	unsigned long ux_turbo_last_jiffies;
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
         bool gpu_llcc_turbo;
 #endif
@@ -179,8 +182,8 @@ MODULE_PARM_DESC(kona_display_topology_strict,
  * workloads (Antutu/gaming) fed. These are intentionally biased a bit high to
  * avoid under-voting critical CPU/GPU/NPU traffic.
  */
-#define KONA_CPU_DDR_AB_FLOOR_KB	(22000000ULL) /* ~22 GB/s */
-#define KONA_CPU_DDR_IB_FLOOR_KB	(38000000ULL) /* ~38 GB/s */
+#define KONA_CPU_DDR_AB_FLOOR_KB	(23000000ULL) /* ~23 GB/s */
+#define KONA_CPU_DDR_IB_FLOOR_KB	(40000000ULL) /* ~40 GB/s */
 #define KONA_CPU_LLCC_AB_FLOOR_KB	(15000000ULL) /* ~15 GB/s */
 #define KONA_CPU_LLCC_IB_FLOOR_KB	(23000000ULL) /* ~23 GB/s */
 /*
@@ -188,12 +191,12 @@ MODULE_PARM_DESC(kona_display_topology_strict,
  * 1.804 GHz in short bursts. Keep its baseline lower than generic CPU floors
  * to avoid over-voting memory, then apply a targeted uplift near that corner.
  */
-#define KONA_CPU0_DDR_AB_FLOOR_KB	(12000000ULL) /* ~12 GB/s */
-#define KONA_CPU0_DDR_IB_FLOOR_KB	(20000000ULL) /* ~20 GB/s */
+#define KONA_CPU0_DDR_AB_FLOOR_KB	(13000000ULL) /* ~13 GB/s */
+#define KONA_CPU0_DDR_IB_FLOOR_KB	(22000000ULL) /* ~22 GB/s */
 #define KONA_CPU0_LLCC_AB_FLOOR_KB	(9000000ULL)  /* ~9 GB/s */
 #define KONA_CPU0_LLCC_IB_FLOOR_KB	(15000000ULL) /* ~15 GB/s */
-#define KONA_CPU_PRIME_DDR_AB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
-#define KONA_CPU_PRIME_DDR_IB_FLOOR_KB	(40000000ULL) /* ~40 GB/s */
+#define KONA_CPU_PRIME_DDR_AB_FLOOR_KB	(26000000ULL) /* ~26 GB/s */
+#define KONA_CPU_PRIME_DDR_IB_FLOOR_KB	(42000000ULL) /* ~42 GB/s */
 #define KONA_CPU_PRIME_LLCC_AB_FLOOR_KB	(16000000ULL) /* ~16 GB/s */
 #define KONA_CPU_PRIME_LLCC_IB_FLOOR_KB	(25000000ULL) /* ~25 GB/s */
 #define KONA_GPU_DDR_AB_FLOOR_KB	(26000000ULL) /* ~26 GB/s */
@@ -211,15 +214,15 @@ MODULE_PARM_DESC(kona_display_topology_strict,
 #define KONA_GMU_LLCC_AB_FLOOR_KB	(17000000ULL) /* ~17 GB/s */
 #define KONA_GMU_LLCC_IB_FLOOR_KB	(27000000ULL) /* ~27 GB/s */
 #define KONA_NPU_DDR_AB_FLOOR_KB	(15000000ULL) /* ~15 GB/s */
-#define KONA_NPU_DDR_IB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
+#define KONA_NPU_DDR_IB_FLOOR_KB	(28000000ULL) /* ~28 GB/s */
 #define KONA_NPU_LLCC_AB_FLOOR_KB	(12000000ULL)  /* ~12 GB/s */
-#define KONA_NPU_LLCC_IB_FLOOR_KB	(19000000ULL) /* ~19 GB/s */
+#define KONA_NPU_LLCC_IB_FLOOR_KB	(22000000ULL) /* ~22 GB/s */
 #define KONA_MEDIA_DDR_AB_FLOOR_KB	(18000000ULL) /* ~18 GB/s */
-#define KONA_MEDIA_DDR_IB_FLOOR_KB	(30000000ULL) /* ~30 GB/s */
+#define KONA_MEDIA_DDR_IB_FLOOR_KB	(34000000ULL) /* ~34 GB/s */
 #define KONA_MEDIA_LLCC_AB_FLOOR_KB	(13000000ULL) /* ~13 GB/s */
-#define KONA_MEDIA_LLCC_IB_FLOOR_KB	(21000000ULL) /* ~21 GB/s */
-#define KONA_UX_DDR_AB_FLOOR_KB	(17000000ULL)  /* ~17 GB/s */
-#define KONA_UX_DDR_IB_FLOOR_KB	(36000000ULL) /* ~36 GB/s */
+#define KONA_MEDIA_LLCC_IB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
+#define KONA_UX_DDR_AB_FLOOR_KB	(12000000ULL)  /* ~12 GB/s */
+#define KONA_UX_DDR_IB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
 
 /*
  * Global minimum floors for any non-zero bandwidth vote. This protects
@@ -325,10 +328,10 @@ MODULE_PARM_DESC(kona_sleep_perf_floor_percent,
  * bursts do not collapse memory BW between frames.
  */
 static bool kona_active_floor_scaling_enable = true;
-static unsigned long kona_active_floor_low_kb = 1200000;   /* 1.2 GB/s */
-static unsigned long kona_active_floor_high_kb = 6000000;  /* 6.0 GB/s */
-static unsigned int kona_active_floor_low_percent = 90;
-static unsigned int kona_active_floor_mid_percent = 96;
+static unsigned long kona_active_floor_low_kb = 1500000;   /* 1.5 GB/s */
+static unsigned long kona_active_floor_high_kb = 8000000;  /* 8.0 GB/s */
+static unsigned int kona_active_floor_low_percent = 68;
+static unsigned int kona_active_floor_mid_percent = 84;
 module_param_named(kona_active_floor_scaling_enable, kona_active_floor_scaling_enable, bool, 0644);
 MODULE_PARM_DESC(kona_active_floor_scaling_enable,
 	"Enable display-on workload-aware downscaling of non-display performance floors");
@@ -351,14 +354,14 @@ static unsigned int kona_gpu_llcc_boost_percent = 155;
 static unsigned int kona_gpu_llcc_min_ratio_percent = 205;
 static unsigned int kona_npu_ib_boost_percent = 176;
 static unsigned int kona_npu_ib_min_ratio_percent = 230;
-static bool kona_npu_oc_mem_pinning_enable = false;
-static unsigned long kona_npu_oc_pin_threshold_kb = 21000000; /* 21 GB/s */
+static bool kona_npu_oc_mem_pinning_enable = true;
+static unsigned long kona_npu_oc_pin_threshold_kb = 8000000; /* 8 GB/s */
 static unsigned int kona_npu_oc_pin_exit_percent = 75;
 static unsigned int kona_npu_oc_pin_hold_ms = 200;
 static unsigned long kona_npu_oc_floor_ab_kb = 20000000;      /* 20 GB/s */
-static unsigned long kona_npu_oc_floor_ib_kb = 33000000;      /* 33 GB/s */
-static unsigned long kona_npu_oc_llcc_floor_ab_kb = 15000000; /* 15 GB/s */
-static unsigned long kona_npu_oc_llcc_floor_ib_kb = 25000000; /* 25 GB/s */
+static unsigned long kona_npu_oc_floor_ib_kb = 38000000;      /* 38 GB/s */
+static unsigned long kona_npu_oc_llcc_floor_ab_kb = 16000000; /* 16 GB/s */
+static unsigned long kona_npu_oc_llcc_floor_ib_kb = 28000000; /* 28 GB/s */
 static bool kona_gpu_bimc_pinning_enable = true;
 static bool kona_gpu_bimc_no_hyst_enable = false;
 static unsigned long kona_gpu_bimc_floor_ab_kb = 22000000; /* 22 GB/s */
@@ -381,10 +384,16 @@ static unsigned long kona_cpu_prime_oc_floor_ib_kb = 43000000;      /* 43 GB/s *
 static unsigned long kona_cpu_prime_oc_llcc_floor_ab_kb = 18000000; /* 18 GB/s */
 static unsigned long kona_cpu_prime_oc_llcc_floor_ib_kb = 28000000; /* 28 GB/s */
 static unsigned int kona_cpu_prime_oc_min_ratio_percent = 180;
-static bool kona_cpu0_1804_boost_enable = false;
+static bool kona_cpu0_1804_boost_enable = true;
 static unsigned long kona_cpu0_1804_trigger_kb = 1305600; /* 1.804 GHz corner */
 static unsigned int kona_cpu0_1804_boost_percent = 118;
 static unsigned int kona_cpu0_1804_min_ratio_percent = 160;
+static bool kona_ux_turbo_enable = true;
+static unsigned long kona_ux_turbo_threshold_kb = 900000;      /* 900 MB/s */
+static unsigned int kona_ux_turbo_exit_percent = 45;
+static unsigned int kona_ux_turbo_hold_ms = 180;
+static unsigned long kona_ux_turbo_ab_kb = 20000000;           /* 20 GB/s */
+static unsigned long kona_ux_turbo_ib_kb = 40000000;           /* 40 GB/s */
 module_param(kona_gpu_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_gpu_keepalive_enable,
         "Keep non-zero floor for gpu-ddr AB/IB between short idle gaps");
@@ -572,6 +581,24 @@ MODULE_PARM_DESC(kona_cpu0_1804_boost_percent,
 module_param(kona_cpu0_1804_min_ratio_percent, uint, 0644);
 MODULE_PARM_DESC(kona_cpu0_1804_min_ratio_percent,
 	"Minimum CPU0 IB as percent of AB once the 1.804 GHz trigger is reached");
+module_param(kona_ux_turbo_enable, bool, 0644);
+MODULE_PARM_DESC(kona_ux_turbo_enable,
+	"Enable automatic 40GB/s-class UX bandwidth floor for app/screen transitions");
+module_param(kona_ux_turbo_threshold_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_ux_turbo_threshold_kb,
+	"UX request threshold in KB/s that enables the transition turbo floor");
+module_param(kona_ux_turbo_exit_percent, uint, 0644);
+MODULE_PARM_DESC(kona_ux_turbo_exit_percent,
+	"Exit threshold as percent of enter threshold for UX turbo pinning");
+module_param(kona_ux_turbo_hold_ms, uint, 0644);
+MODULE_PARM_DESC(kona_ux_turbo_hold_ms,
+	"Hold UX turbo floor for N ms after a qualifying transition request");
+module_param(kona_ux_turbo_ab_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_ux_turbo_ab_kb,
+	"Pinned UX AB floor in KB/s while transition turbo is active");
+module_param(kona_ux_turbo_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_ux_turbo_ib_kb,
+	"Pinned UX IB floor in KB/s while transition turbo is active");
 
 static void kona_icc_update_gpu_llcc_turbo(struct kona_icc_provider *qp, u64 ib)
 {
@@ -895,6 +922,38 @@ static bool kona_icc_pin_latched(bool enabled, u64 req_max_kb,
 	return false;
 }
 
+static bool kona_icc_is_ux_path(const struct kona_icc_node_desc *desc)
+{
+	switch (desc->id) {
+	case KONA_ICC_DISP_CFG:
+	case KONA_ICC_DISP0_TO_MEM:
+	case KONA_ICC_DISP1_TO_MEM:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static void kona_icc_apply_ux_turbo(struct kona_icc_provider *qp,
+				   const struct kona_icc_node_desc *desc,
+				   u64 req_max, u64 *ab, u64 *ib)
+{
+	if (!kona_icc_is_ux_path(desc))
+		return;
+
+	if (!kona_icc_pin_latched(kona_ux_turbo_enable, req_max,
+				 kona_ux_turbo_threshold_kb,
+				 kona_ux_turbo_exit_percent,
+				 kona_ux_turbo_hold_ms,
+				 &qp->ux_turbo_last_jiffies))
+		return;
+
+	if (*ab < kona_ux_turbo_ab_kb)
+		*ab = kona_ux_turbo_ab_kb;
+	if (*ib < kona_ux_turbo_ib_kb)
+		*ib = kona_ux_turbo_ib_kb;
+}
+
 static void __maybe_unused
 kona_icc_apply_floor(struct kona_icc_provider *qp,
 		     const struct kona_icc_node_desc *desc,
@@ -952,7 +1011,7 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 			*ib = KONA_CPU0_DDR_IB_FLOOR_KB;
 
 		if (kona_cpu0_1804_boost_enable &&
-		    max(*ab, *ib) >= kona_cpu0_1804_trigger_kb) {
+		    req_max >= kona_cpu0_1804_trigger_kb) {
 			if (*ib)
 				*ib = kona_icc_add_headroom(*ib, kona_cpu0_1804_boost_percent);
 			if (*ab && *ib < mul_u64_u32_div(*ab,
@@ -968,7 +1027,7 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 			*ib = KONA_CPU0_LLCC_IB_FLOOR_KB;
 
 		if (kona_cpu0_1804_boost_enable &&
-		    max(*ab, *ib) >= kona_cpu0_1804_trigger_kb) {
+		    req_max >= kona_cpu0_1804_trigger_kb) {
 			if (*ib)
 				*ib = kona_icc_add_headroom(*ib, kona_cpu0_1804_boost_percent);
 			if (*ab && *ib < mul_u64_u32_div(*ab,
@@ -1209,10 +1268,12 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 		break;
 	}
 
+	kona_icc_apply_ux_turbo(qp, desc, req_max, ab, ib);
+
 	/*
 	 * Display-on active scaling for non-display paths:
-	 * - low request: reduce floors aggressively (default 70%)
-	 * - medium request: reduce floors moderately (default 85%)
+	 * - low request: reduce floors aggressively (default 68%)
+	 * - medium request: reduce floors moderately (default 84%)
 	 * - high request: keep full floors (100%)
 	 *
 	 * Classify on raw client request max(req_ab, req_ib), not post-floor vote.
@@ -2007,12 +2068,12 @@ static bool kona_icc_replay_req_votes(struct kona_icc_provider *qp)
 	bool need_retry = false;
 	unsigned long i;
 
-	if (!qp || !qp->req_ab || !qp->req_ib || !kona_icc_snapshot_dirty(qp))
+	if (!qp || !qp->eff_ab || !qp->eff_ib || !kona_icc_snapshot_dirty(qp))
 		return false;
 
 	for_each_set_bit(i, qp->replay_scan_nodes, qp->num_nodes) {
-		u64 ab = qp->req_ab[i];
-		u64 ib = qp->req_ib[i];
+		u64 ab = qp->eff_ab[i];
+		u64 ib = qp->eff_ib[i];
 		bool retry = false;
 
 		if (ab == U64_MAX || ib == U64_MAX) {
@@ -2055,10 +2116,12 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 	for (i = 0; i < qp->num_nodes; i++) {
 		bool retry = false;
 		int ret;
-		u64 ab = qp->req_ab[i];
-		u64 ib = qp->req_ib[i];
-		bool req_unset = (ab == U64_MAX && ib == U64_MAX);
-		bool req_zero = (!req_unset && !ab && !ib);
+		u64 req_ab = qp->req_ab[i];
+		u64 req_ib = qp->req_ib[i];
+		u64 ab = qp->eff_ab ? qp->eff_ab[i] : req_ab;
+		u64 ib = qp->eff_ib ? qp->eff_ib[i] : req_ib;
+		bool req_unset = (req_ab == U64_MAX && req_ib == U64_MAX);
+		bool req_zero = (!req_unset && !req_ab && !req_ib);
 
 		if (qp->nodes[i].role != role)
 			continue;
@@ -2212,7 +2275,7 @@ static void kona_icc_retry_workfn(struct work_struct *work)
 	bool need_retry = false;
 	const char *reason;
 
-	if (!qp->req_ab || !qp->req_ib)
+	if (!qp->eff_ab || !qp->eff_ib)
 		return;
 
 	/*
@@ -2240,6 +2303,7 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 {
 	struct kona_icc_provider *qp;
 	u64 prev_req_ab = U64_MAX, prev_req_ib = U64_MAX;
+	u64 prev_eff_ab = U64_MAX, prev_eff_ib = U64_MAX;
 	u64 ab, ib;
 	unsigned int index;
 
@@ -2353,18 +2417,30 @@ skip_perf_floor:
 	}
 
 	/*
-	 * Cache the client-requested AB/IB (pre-floor/keepalive adjustments).
-	 * Resume replay logic relies on detecting explicit 0/0 requests.
+	 * Cache both the raw client request and the final effective vote. Resume
+	 * policy still needs the raw 0/0 intent, but deferred/retry replay must use
+	 * the fully transformed vote (floors, keepalive, display fallback, turbo) so
+	 * transient RPMh busy windows do not replay under-sized bandwidth and cause
+	 * app-switch/scroll jank.
 	 */
 	if (qp->req_ab)
 		prev_req_ab = qp->req_ab[index];
 	if (qp->req_ib)
 		prev_req_ib = qp->req_ib[index];
+	if (qp->eff_ab)
+		prev_eff_ab = qp->eff_ab[index];
+	if (qp->eff_ib)
+		prev_eff_ib = qp->eff_ib[index];
 	if (qp->req_ab)
 		qp->req_ab[index] = (u64)avg_bw;
 	if (qp->req_ib)
 		qp->req_ib[index] = (u64)peak_bw;
-	if (prev_req_ab != avg_bw || prev_req_ib != peak_bw)
+	if (qp->eff_ab)
+		qp->eff_ab[index] = ab;
+	if (qp->eff_ib)
+		qp->eff_ib[index] = ib;
+	if (prev_req_ab != avg_bw || prev_req_ib != peak_bw ||
+	    prev_eff_ab != ab || prev_eff_ib != ib)
 		kona_icc_mark_dirty(qp, index);
 	if (qp->last_active_jiffies && (avg_bw || peak_bw))
 		qp->last_active_jiffies[index] = jiffies;
@@ -2783,6 +2859,16 @@ static int kona_icc_probe(struct platform_device *pdev)
 	if (!qp->req_ib)
 		return -ENOMEM;
 
+	qp->eff_ab = devm_kcalloc(&pdev->dev, qp->num_nodes, sizeof(u64),
+				  GFP_KERNEL);
+	if (!qp->eff_ab)
+		return -ENOMEM;
+
+	qp->eff_ib = devm_kcalloc(&pdev->dev, qp->num_nodes, sizeof(u64),
+				  GFP_KERNEL);
+	if (!qp->eff_ib)
+		return -ENOMEM;
+
 	qp->saved_ab = devm_kcalloc(&pdev->dev, qp->num_nodes, sizeof(u64),
 				  GFP_KERNEL);
 	if (!qp->saved_ab)
@@ -2812,6 +2898,8 @@ static int kona_icc_probe(struct platform_device *pdev)
 
 
 	INIT_DELAYED_WORK(&qp->retry_work, kona_icc_retry_workfn);
+	/* Use phased replay only after resume(); steady-state retries stay immediate. */
+	qp->resume_phase = 3;
 	atomic_set(&qp->deferred_votes, 0);
 	atomic_set(&qp->replay_runs, 0);
 	atomic_set(&qp->display_replay_skips, 0);
@@ -2824,6 +2912,8 @@ static int kona_icc_probe(struct platform_device *pdev)
 		qp->last_ib[i] = U64_MAX;
 		qp->req_ab[i] = U64_MAX;
 		qp->req_ib[i] = U64_MAX;
+		qp->eff_ab[i] = U64_MAX;
+		qp->eff_ib[i] = U64_MAX;
 		qp->saved_ab[i] = U64_MAX;
 		qp->saved_ib[i] = U64_MAX;
 	}
