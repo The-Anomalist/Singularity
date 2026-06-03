@@ -24,14 +24,9 @@ static bool kgsl_reclaim;
  * impact and the latency will be within acceptable limit.
  */
 #define KGSL_RECLAIM_DEFAULT_LIMIT_PAGES	(7680) /* 30 MB @ 4 KB pages */
-/*
- * Keep reclaim pressure more conservative on A650-family devices. Large
- * reclaim bursts increase refault churn during graphics-heavy foreground
- * workloads and have been observed to amplify transient rendering glitches.
- */
-#define KGSL_RECLAIM_A650_LIMIT_PAGES		(10240) /* 40 MB @ 4 KB pages */
+#define KGSL_RECLAIM_A650_LIMIT_PAGES		(12288) /* 48 MB @ 4 KB pages */
 #define KGSL_RECLAIM_DEFAULT_MIN_OBJ_PAGES	(128) /* 512 KB @ 4 KB pages */
-#define KGSL_RECLAIM_A650_MIN_OBJ_PAGES	(192) /* 768 KB @ 4 KB pages */
+#define KGSL_RECLAIM_A650_MIN_OBJ_PAGES	(256) /* 1 MB @ 4 KB pages */
 #define KGSL_RECLAIM_MAX_LIMIT_PAGES	((SZ_2G + SZ_512M) >> PAGE_SHIFT)
 
 static u32 kgsl_reclaim_max_page_limit = KGSL_RECLAIM_DEFAULT_LIMIT_PAGES;
