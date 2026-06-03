@@ -32,12 +32,7 @@
 
 #define KGSL_MAX_BUSLEVELS	20
 
-/*
- * Default average bandwidth vote.  Geometry-heavy benchmarks can be limited by
- * DDR/ICC latency even when shader clocks are high; keep a stronger baseline
- * RAM vote while preserving per-target IB caps and explicit userspace votes.
- */
-#define DEFAULT_BUS_P 35
+#define DEFAULT_BUS_P 25
 
 /* Order deeply matters here because reasons. New entries go on the end */
 static const char * const clocks[] = {

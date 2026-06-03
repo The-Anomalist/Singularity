@@ -1728,19 +1728,10 @@ unsigned int kgsl_gfp_mask(unsigned int page_order)
 	unsigned int gfp_mask = __GFP_HIGHMEM;
 
 	if (page_order > 0) {
-		/*
-		 * GPU workloads benefit heavily from larger pages because they reduce
-		 * SMMU map pressure and TLB churn.  Avoid direct reclaim stalls in the
-		 * submit path, but still wake kswapd so sustained benchmark/geometry
-		 * allocations have a better chance of finding contiguous system RAM
-		 * instead of immediately fragmenting into 4K pages.
-		 */
-		gfp_mask |= __GFP_COMP | __GFP_NORETRY | __GFP_NOWARN |
-			__GFP_KSWAPD_RECLAIM;
-		gfp_mask &= ~__GFP_DIRECT_RECLAIM;
-	} else {
+		gfp_mask |= __GFP_COMP | __GFP_NORETRY | __GFP_NOWARN;
+		gfp_mask &= ~__GFP_RECLAIM;
+	} else
 		gfp_mask |= GFP_KERNEL;
-	}
 
 	if (kgsl_sharedmem_get_noretry())
 		gfp_mask |= __GFP_NORETRY | __GFP_NOWARN;

@@ -59,14 +59,6 @@ unsigned int adreno_drawobj_timeout = 2000;
 static unsigned int _fault_timer_interval = 200;
 
 /*
- * Require repeated stagnant software-fault samples before recovery.  Some
- * synthetic geometry/mesh workloads can legitimately keep the sampled CP/RBBM
- * registers quiet for one polling window while the GPU is still making forward
- * progress, causing benchmark aborts even though normal games survive.
- */
-static unsigned int _soft_fault_miss_limit = 2;
-
-/*
  * Cap dynamically scaled timeout so genuine hangs still recover in a
  * predictable window even at very low benchmark frequencies.
  */
@@ -137,7 +129,6 @@ static void adreno_dispatcher_tune(struct adreno_device *adreno_dev)
 		_context_drawobj_burst, A650V2_CONTEXT_DRAWOBJ_BURST);
 	_fault_timer_interval = min_t(unsigned int,
 		_fault_timer_interval, A650V2_FAULT_TIMER_INTERVAL);
-	_soft_fault_miss_limit = max_t(unsigned int, _soft_fault_miss_limit, 3);
 }
 
 static void _adreno_count_active_contexts(struct adreno_device *adreno_dev,
@@ -675,7 +666,6 @@ static int sendcmd(struct adreno_device *adreno_dev,
 			/* Stop fault timer before reading fault registers */
 			del_timer_sync(&dispatcher->fault_timer);
 
-			dispatcher->soft_fault_misses = 0;
 			fault_detect_read(adreno_dev);
 
 			/* Start the fault timer on first submission */
@@ -2665,7 +2655,6 @@ static void _dispatcher_power_down(struct adreno_device *adreno_dev)
 	if (test_and_clear_bit(ADRENO_DISPATCHER_ACTIVE, &dispatcher->priv))
 		complete_all(&dispatcher->idle_gate);
 
-	dispatcher->soft_fault_misses = 0;
 	del_timer_sync(&dispatcher->fault_timer);
 
 	if (test_bit(ADRENO_DISPATCHER_POWER, &dispatcher->priv)) {
@@ -2786,16 +2775,9 @@ static void adreno_dispatcher_fault_timer(struct timer_list *t)
 	 */
 
 	if (!fault_detect_read_compare(adreno_dev)) {
-		dispatcher->soft_fault_misses++;
-
-		if (dispatcher->soft_fault_misses >= _soft_fault_miss_limit) {
-			adreno_set_gpu_fault(adreno_dev, ADRENO_SOFT_FAULT);
-			adreno_dispatcher_schedule(KGSL_DEVICE(adreno_dev));
-		} else if (dispatcher->inflight > 0) {
-			start_fault_timer(adreno_dev);
-		}
+		adreno_set_gpu_fault(adreno_dev, ADRENO_SOFT_FAULT);
+		adreno_dispatcher_schedule(KGSL_DEVICE(adreno_dev));
 	} else if (dispatcher->inflight > 0) {
-		dispatcher->soft_fault_misses = 0;
 		mod_timer(&dispatcher->fault_timer,
 			jiffies + msecs_to_jiffies(_fault_timer_interval));
 	}
@@ -2957,8 +2939,6 @@ static DISPATCHER_UINT_ATTR(drawobj_timeout, 0644, 0,
 static DISPATCHER_UINT_ATTR(context_queue_wait, 0644, 0, _context_queue_wait);
 static DISPATCHER_UINT_ATTR(fault_detect_interval, 0644, 0,
 	_fault_timer_interval);
-static DISPATCHER_UINT_ATTR(soft_fault_miss_limit, 0644, 1,
-	_soft_fault_miss_limit);
 static DISPATCHER_UINT_ATTR(fault_throttle_time, 0644, 0,
 	_fault_throttle_time);
 static DISPATCHER_UINT_ATTR(fault_throttle_burst, 0644, 0,
@@ -2972,7 +2952,6 @@ static struct attribute *dispatcher_attrs[] = {
 	&dispatcher_attr_drawobj_timeout.attr,
 	&dispatcher_attr_context_queue_wait.attr,
 	&dispatcher_attr_fault_detect_interval.attr,
-	&dispatcher_attr_soft_fault_miss_limit.attr,
 	&dispatcher_attr_fault_throttle_time.attr,
 	&dispatcher_attr_fault_throttle_burst.attr,
 	NULL,
