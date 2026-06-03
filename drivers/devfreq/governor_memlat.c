@@ -485,9 +485,10 @@ static struct memlat_node *register_common(struct device *dev,
 	node->ratio_ceil = 10;
 	node->wb_pct_thres = 100;
 	node->wb_filter_ratio = 25000;
-	node->boost_pct = 30;
-	node->boost_stall_floor = 28;
-	node->boost_wb_pct = 28;
+	/* React early to memory stalls and writeback-heavy sequential I/O. */
+	node->boost_pct = 40;
+	node->boost_stall_floor = 24;
+	node->boost_wb_pct = 22;
 	node->pressure_stall_floor = 20;
 	node->pressure_wb_floor = 20;
 	node->min_freq_persist_pct = 88;

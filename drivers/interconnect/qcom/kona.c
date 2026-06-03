@@ -42,6 +42,7 @@ enum kona_icc_role {
         KONA_ROLE_NPU,
         KONA_ROLE_DSP,
         KONA_ROLE_MEDIA,
+	KONA_ROLE_STORAGE,
         KONA_ROLE_DISPLAY,
         KONA_ROLE_GENERIC,
 };
@@ -223,6 +224,14 @@ MODULE_PARM_DESC(kona_display_topology_strict,
 #define KONA_MEDIA_LLCC_IB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
 #define KONA_UX_DDR_AB_FLOOR_KB	(12000000ULL)  /* ~12 GB/s */
 #define KONA_UX_DDR_IB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
+/*
+ * Storage paths need sustained AB for sequential transfers and enough IB to
+ * prevent command/data bursts from waiting on a low DDR or LLCC corner.
+ */
+#define KONA_STORAGE_DDR_AB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
+#define KONA_STORAGE_DDR_IB_FLOOR_KB	(42000000ULL) /* ~42 GB/s */
+#define KONA_STORAGE_LLCC_AB_FLOOR_KB	(16000000ULL) /* ~16 GB/s */
+#define KONA_STORAGE_LLCC_IB_FLOOR_KB	(26000000ULL) /* ~26 GB/s */
 
 /*
  * Global minimum floors for any non-zero bandwidth vote. This protects
@@ -330,8 +339,8 @@ MODULE_PARM_DESC(kona_sleep_perf_floor_percent,
 static bool kona_active_floor_scaling_enable = true;
 static unsigned long kona_active_floor_low_kb = 1500000;   /* 1.5 GB/s */
 static unsigned long kona_active_floor_high_kb = 8000000;  /* 8.0 GB/s */
-static unsigned int kona_active_floor_low_percent = 68;
-static unsigned int kona_active_floor_mid_percent = 84;
+static unsigned int kona_active_floor_low_percent = 74;
+static unsigned int kona_active_floor_mid_percent = 90;
 module_param_named(kona_active_floor_scaling_enable, kona_active_floor_scaling_enable, bool, 0644);
 MODULE_PARM_DESC(kona_active_floor_scaling_enable,
 	"Enable display-on workload-aware downscaling of non-display performance floors");
@@ -354,6 +363,9 @@ static unsigned int kona_gpu_llcc_boost_percent = 155;
 static unsigned int kona_gpu_llcc_min_ratio_percent = 205;
 static unsigned int kona_npu_ib_boost_percent = 176;
 static unsigned int kona_npu_ib_min_ratio_percent = 230;
+static unsigned int kona_storage_ab_boost_percent = 130;
+static unsigned int kona_storage_ib_boost_percent = 150;
+static unsigned int kona_storage_ib_min_ratio_percent = 180;
 static bool kona_npu_oc_mem_pinning_enable = true;
 static unsigned long kona_npu_oc_pin_threshold_kb = 8000000; /* 8 GB/s */
 static unsigned int kona_npu_oc_pin_exit_percent = 75;
@@ -479,6 +491,15 @@ MODULE_PARM_DESC(kona_npu_ib_boost_percent,
 module_param(kona_npu_ib_min_ratio_percent, uint, 0644);
 MODULE_PARM_DESC(kona_npu_ib_min_ratio_percent,
 	"Minimum npu-ddr/npu-llcc IB as percent of AB (default: 230)");
+module_param(kona_storage_ab_boost_percent, uint, 0644);
+MODULE_PARM_DESC(kona_storage_ab_boost_percent,
+		 "Percent boost applied to storage AB for sustained sequential throughput (default: 130)");
+module_param(kona_storage_ib_boost_percent, uint, 0644);
+MODULE_PARM_DESC(kona_storage_ib_boost_percent,
+		 "Percent boost applied to storage IB for read/write bursts (default: 150)");
+module_param(kona_storage_ib_min_ratio_percent, uint, 0644);
+MODULE_PARM_DESC(kona_storage_ib_min_ratio_percent,
+		 "Minimum storage IB as percent of AB (default: 180)");
 module_param(kona_npu_oc_mem_pinning_enable, bool, 0644);
 MODULE_PARM_DESC(kona_npu_oc_mem_pinning_enable,
 	"Pin elevated NPU AB/IB floors when sustained high NPU bandwidth suggests overclocked operation");
@@ -791,6 +812,7 @@ static unsigned int kona_icc_pick_bias(const struct kona_icc_node_desc *desc,
         case KONA_ROLE_NPU:
         case KONA_ROLE_DSP:
         case KONA_ROLE_MEDIA:
+	case KONA_ROLE_STORAGE:
         case KONA_ROLE_GENERIC:
                 if (vote >= kona_perf_turbo_kb)
                         bias = kona_perf_bias_turbo;
@@ -1038,7 +1060,6 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 		break;
 	case KONA_ICC_CPU_TO_MEM:
 	case KONA_ICC_CPU_TO_GPU_CFG:
-	case KONA_ICC_UFS_TO_MEM:
 	case KONA_ICC_QUP_TO_MEM:
 	case KONA_ICC_CRYPTO_TO_MEM:
 	case KONA_ICC_TSIF_TO_MEM:
@@ -1054,6 +1075,31 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 			*ab = KONA_CPU_DDR_AB_FLOOR_KB;
 		if (active && *ib < KONA_CPU_DDR_IB_FLOOR_KB)
 			*ib = KONA_CPU_DDR_IB_FLOOR_KB;
+		break;
+	case KONA_ICC_UFS_TO_MEM:
+	case KONA_ICC_SDHC2_TO_MEM:
+		if (active && *ab < KONA_STORAGE_DDR_AB_FLOOR_KB)
+			*ab = KONA_STORAGE_DDR_AB_FLOOR_KB;
+		if (active && *ib < KONA_STORAGE_DDR_IB_FLOOR_KB)
+			*ib = KONA_STORAGE_DDR_IB_FLOOR_KB;
+		if (*ab)
+			*ab = kona_icc_add_headroom(*ab, kona_storage_ab_boost_percent);
+		if (*ib)
+			*ib = kona_icc_add_headroom(*ib, kona_storage_ib_boost_percent);
+		if (*ab && *ib < mul_u64_u32_div(*ab, kona_storage_ib_min_ratio_percent, 100))
+			*ib = mul_u64_u32_div(*ab, kona_storage_ib_min_ratio_percent, 100);
+		break;
+	case KONA_ICC_UFS_TO_LLCC:
+		if (active && *ab < KONA_STORAGE_LLCC_AB_FLOOR_KB)
+			*ab = KONA_STORAGE_LLCC_AB_FLOOR_KB;
+		if (active && *ib < KONA_STORAGE_LLCC_IB_FLOOR_KB)
+			*ib = KONA_STORAGE_LLCC_IB_FLOOR_KB;
+		if (*ab)
+			*ab = kona_icc_add_headroom(*ab, kona_storage_ab_boost_percent);
+		if (*ib)
+			*ib = kona_icc_add_headroom(*ib, kona_storage_ib_boost_percent);
+		if (*ab && *ib < mul_u64_u32_div(*ab, kona_storage_ib_min_ratio_percent, 100))
+			*ib = mul_u64_u32_div(*ab, kona_storage_ib_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_VIDEO_CFG:
 		if (active && *ab < KONA_MEDIA_DDR_AB_FLOOR_KB)
@@ -1072,7 +1118,6 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 			*ib = KONA_UX_DDR_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_CPU_TO_LLCC:
-	case KONA_ICC_UFS_TO_LLCC:
 	case KONA_ICC_CPU1_TO_LLCC:
 	case KONA_ICC_CPU2_TO_LLCC:
 	case KONA_ICC_CPU3_TO_LLCC:
@@ -1272,8 +1317,8 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 
 	/*
 	 * Display-on active scaling for non-display paths:
-	 * - low request: reduce floors aggressively (default 68%)
-	 * - medium request: reduce floors moderately (default 84%)
+	 * - low request: retain a responsive floor (default 74%)
+	 * - medium request: retain most of the floor (default 90%)
 	 * - high request: keep full floors (100%)
 	 *
 	 * Classify on raw client request max(req_ab, req_ib), not post-floor vote.
@@ -1599,21 +1644,21 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.name = "sdhc2-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_STORAGE,
 	},
 	{
 		.id = KONA_ICC_UFS_TO_LLCC,
 		.name = "ufs-llcc",
 		.ab = "CPU_LLCC_AB",
 		.ib = "CPU_LLCC_IB",
-		.role = KONA_ROLE_CPU,
+		.role = KONA_ROLE_STORAGE,
 	},
 	{
 		.id = KONA_ICC_UFS_TO_MEM,
 		.name = "ufs-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_CPU,
+		.role = KONA_ROLE_STORAGE,
 	},
 	{
 		.id = KONA_ICC_CAM_CFG,
@@ -2250,6 +2295,7 @@ static bool kona_icc_replay_req_votes_phased(struct kona_icc_provider *qp)
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_NPU, false);
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_DSP, false);
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_MEDIA, false);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_STORAGE, false);
 		qp->resume_phase = 2;
 		schedule_delayed_work(&qp->retry_work,
 				      msecs_to_jiffies(KONA_RESUME_PHASE2_DELAY_MS));
