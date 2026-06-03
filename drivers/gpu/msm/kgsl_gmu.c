@@ -579,14 +579,8 @@ static int gmu_dcvs_set(struct kgsl_device *device,
 	if (gpu_pwrlevel < gmu->num_gpupwrlevels - 1)
 		req.freq = gmu->num_gpupwrlevels - gpu_pwrlevel - 1;
 
-	if (bus_level != INVALID_DCVS_IDX) {
-		if (bus_level < gmu->num_bwlevels && bus_level > 0)
-			req.bw = bus_level;
-		else if (bus_level >= gmu->num_bwlevels)
-			dev_warn_ratelimited(&gmu->pdev->dev,
-					     "Ignoring invalid GMU bw idx %u (levels %u)\n",
-					     bus_level, gmu->num_bwlevels);
-	}
+	if (bus_level < gmu->num_bwlevels && bus_level > 0)
+		req.bw = bus_level;
 
 	/* GMU will vote for slumber levels through the sleep sequence */
 	if ((req.freq == INVALID_DCVS_IDX) &&

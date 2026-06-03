@@ -561,8 +561,6 @@ clear_icc:
 	return 0;
 }
 
-static unsigned int kgsl_pwrctrl_active_buslevel(struct kgsl_device *device, bool on);
-
 /**
  * kgsl_clk_set_rate() - set GPU clock rate
  * @device: Pointer to the kgsl_device struct
@@ -576,26 +574,12 @@ int kgsl_clk_set_rate(struct kgsl_device *device,
 	int ret = 0;
 
 	/* GMU scales GPU freq */
-	if (gmu_core_gpmu_isenabled(device)) {
-		unsigned int buslevel = INVALID_DCVS_IDX;
-
-		/*
-		 * Newer GMU/DCVS flows vote GPU frequency and DDR bandwidth
-		 * together. Keep that coupling for GMU bandwidth targets so an
-		 * upclock cannot run on a stale or invalid bandwidth index after
-		 * busmon/devfreq changed pwr->bus_mod. If the AXI path is off,
-		 * leave bandwidth invalid and let the GMU sleep sequence own it.
-		 */
-		if (gmu_core_scales_bandwidth(device) &&
-		    test_bit(KGSL_PWRFLAGS_AXI_ON, &pwr->power_flags))
-			buslevel = kgsl_pwrctrl_active_buslevel(device, true);
-
-		ret = gmu_core_dcvs_set(device, pwrlevel, buslevel);
-	} else {
+	if (gmu_core_gpmu_isenabled(device))
+		ret = gmu_core_dcvs_set(device, pwrlevel, INVALID_DCVS_IDX);
+	else
 		/* Linux clock driver scales GPU freq */
 		ret = kgsl_pwrctrl_clk_set_rate(pwr->grp_clks[0],
 			pl->gpu_freq, clocks[0]);
-	}
 
 	if (ret)
 		dev_err(device->dev, "GPU clk freq set failure: %d\n",
@@ -604,12 +588,22 @@ int kgsl_clk_set_rate(struct kgsl_device *device,
 	return ret;
 }
 
-static unsigned int kgsl_pwrctrl_active_buslevel(struct kgsl_device *device, bool on)
+/**
+ * kgsl_pwrctrl_buslevel_update() - Recalculate the bus vote and send it
+ * @device: Pointer to the kgsl_device struct
+ * @on: true for setting and active bus vote, false to turn off the vote
+ */
+void kgsl_pwrctrl_buslevel_update(struct kgsl_device *device,
+			bool on)
 {
 	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
 	int cur = pwr->pwrlevels[pwr->active_pwrlevel].bus_freq;
 	int buslevel = 0;
+	unsigned long ab;
 
+	/* the bus should be ON to update the active frequency */
+	if (on && !(test_bit(KGSL_PWRFLAGS_AXI_ON, &pwr->power_flags)))
+		return;
 	/*
 	 * If the bus should remain on calculate our request and submit it,
 	 * otherwise request bus level 0, off.
@@ -624,27 +618,6 @@ static unsigned int kgsl_pwrctrl_active_buslevel(struct kgsl_device *device, boo
 		pwr->bus_percent_ab = 0;
 		pwr->bus_ab_mbytes = 0;
 	}
-
-	return buslevel;
-}
-
-/**
- * kgsl_pwrctrl_buslevel_update() - Recalculate the bus vote and send it
- * @device: Pointer to the kgsl_device struct
- * @on: true for setting and active bus vote, false to turn off the vote
- */
-void kgsl_pwrctrl_buslevel_update(struct kgsl_device *device, bool on)
-{
-	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
-	unsigned int buslevel;
-	unsigned long ab;
-
-	/* the bus should be ON to update the active frequency */
-	if (on && !(test_bit(KGSL_PWRFLAGS_AXI_ON, &pwr->power_flags)))
-		return;
-
-	buslevel = kgsl_pwrctrl_active_buslevel(device, on);
-
 	trace_kgsl_buslevel(device, pwr->active_pwrlevel, buslevel);
 	last_vote_buslevel = buslevel;
 
