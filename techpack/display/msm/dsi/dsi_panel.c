@@ -3240,6 +3240,16 @@ static int dsi_panel_parse_misc_features(struct dsi_panel *panel)
 	panel->ulps_suspend_enabled =
 		utils->read_bool(utils->data, "qcom,suspend-ulps-enabled");
 
+	/*
+	 * If a panel already opts into runtime ULPS, let the link enter ULPS
+	 * while the panel is suspended as well.  This saves screen-off display
+	 * PHY power without touching active-mode clocks or refresh rates, and it
+	 * avoids requiring a DTBO update for panels that already ship with
+	 * qcom,ulps-enabled.
+	 */
+	if (!panel->ulps_suspend_enabled && panel->ulps_feature_enabled)
+		panel->ulps_suspend_enabled = true;
+
 	DSI_DEBUG("%s: ulps during suspend feature %s\n", __func__,
 		(panel->ulps_suspend_enabled ? "enabled" : "disabled"));
 
