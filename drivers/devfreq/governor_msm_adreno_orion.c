@@ -1184,6 +1184,7 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	u32 upthreshold_pct, downthreshold_pct, transition_boost_pct;
 	u32 hispeed_load, boost_ms;
 	u32 mem_pressure_pct = 0, mem_contention_pct = 0;
+	u32 npu_util_pct = 0, npu_thermal_pct = 0;
 	unsigned int refresh_rate = dsi_panel_get_refresh_rate();
 	unsigned long block_until;
 	bool force_max_perf = false;
@@ -1278,6 +1279,12 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	orion_apply_atlas_cpu_sync(priv, &upthreshold_pct, &downthreshold_pct,
 				   &transition_boost_pct, NULL,
 				   predicted_busy_pct);
+	atlas_get_npu_telemetry(&npu_util_pct, NULL, &npu_thermal_pct);
+	if (npu_util_pct >= 60 && predicted_busy_pct < 50) {
+		upthreshold_pct = min_t(unsigned int, 100, upthreshold_pct + 5);
+		downthreshold_pct = min_t(unsigned int, 50, downthreshold_pct + 3);
+		transition_boost_pct = max_t(unsigned int, 0, transition_boost_pct - 5);
+	}
 
 	/*
 	 * If the decision is to move to a different level, make sure the GPU

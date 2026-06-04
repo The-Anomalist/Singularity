@@ -14,8 +14,10 @@
 #include <linux/moduleparam.h>
 #include <linux/of_device.h>
 #include <linux/kdev_t.h>
+#include <linux/kernel.h>
 #include <linux/math64.h>
 #include <linux/minmax.h>
+#include <linux/orion_atlas_link.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/sysfs.h>
@@ -371,6 +373,7 @@ static unsigned int kona_gpu_llcc_boost_percent = 155;
 static unsigned int kona_gpu_llcc_min_ratio_percent = 205;
 static unsigned int kona_npu_ib_boost_percent = 176;
 static unsigned int kona_npu_ib_min_ratio_percent = 230;
+static unsigned long kona_npu_telemetry_full_bw_kb = 38000000; /* 38 GB/s */
 static unsigned int kona_storage_ab_boost_percent = 130;
 static unsigned int kona_storage_ib_boost_percent = 150;
 static unsigned int kona_storage_ib_min_ratio_percent = 180;
@@ -499,6 +502,9 @@ MODULE_PARM_DESC(kona_npu_ib_boost_percent,
 module_param(kona_npu_ib_min_ratio_percent, uint, 0644);
 MODULE_PARM_DESC(kona_npu_ib_min_ratio_percent,
 	"Minimum npu-ddr/npu-llcc IB as percent of AB (default: 230)");
+module_param(kona_npu_telemetry_full_bw_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_npu_telemetry_full_bw_kb,
+		 "NPU bandwidth in KB/s treated as 100% Atlas pressure (default: 38000000)");
 module_param(kona_storage_ab_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_storage_ab_boost_percent,
 		 "Percent boost applied to storage AB for sustained sequential throughput (default: 130)");
@@ -952,6 +958,51 @@ static bool kona_icc_pin_latched(bool enabled, u64 req_max_kb,
 	return false;
 }
 
+static bool kona_icc_is_npu_coupled_path(const struct kona_icc_node_desc *desc)
+{
+	switch (desc->id) {
+	case KONA_ICC_NPU_TO_MEM:
+	case KONA_ICC_NPU_TO_LLCC:
+	case KONA_ICC_NPUDSP_TO_MEM:
+	case KONA_ICC_CVP_TO_MEM:
+	case KONA_ICC_PAS_TO_MEM:
+		return true;
+	default:
+		return desc->role == KONA_ROLE_NPU;
+	}
+}
+
+static void kona_update_npu_atlas(struct kona_icc_provider *qp, unsigned int index, u64 ab, u64 ib)
+{
+	u64 peak = max(ab, ib);
+	unsigned int i, util_pct;
+
+	if (!kona_npu_telemetry_full_bw_kb)
+		return;
+
+	for (i = 0; i < qp->num_nodes; i++) {
+		const struct kona_icc_node_desc *desc = &qp->nodes[i];
+		u64 node_peak;
+
+		if (i == index || !kona_icc_is_npu_coupled_path(desc))
+			continue;
+
+		if (!qp->eff_ab || !qp->eff_ib ||
+		    qp->eff_ab[i] == U64_MAX || qp->eff_ib[i] == U64_MAX)
+			continue;
+
+		node_peak = max(qp->eff_ab[i], qp->eff_ib[i]);
+		if (node_peak > peak)
+			peak = node_peak;
+	}
+
+	util_pct = min_t(unsigned int, 100,
+			 div64_u64(peak * 100, kona_npu_telemetry_full_bw_kb));
+
+	atlas_update_npu_telemetry(util_pct,
+				   (unsigned int)min_t(u64, peak, UINT_MAX), 0);
+}
+
 static bool kona_icc_is_ux_path(const struct kona_icc_node_desc *desc)
 {
 	switch (desc->id) {
@@ -1178,6 +1229,7 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 		break;
 	case KONA_ICC_NPU_TO_MEM:
 	case KONA_ICC_NPUDSP_TO_MEM:
+	case KONA_ICC_CVP_TO_MEM:
 		if (npu_pin_active) {
 			if (active && *ab < kona_npu_oc_floor_ab_kb)
 				*ab = kona_npu_oc_floor_ab_kb;
@@ -1196,12 +1248,6 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 						kona_npu_ib_min_ratio_percent, 100))
 			*ib = mul_u64_u32_div(*ab,
 				     kona_npu_ib_min_ratio_percent, 100);
-		break;
-	case KONA_ICC_CVP_TO_MEM:
-		if (active && *ab < KONA_MEDIA_DDR_AB_FLOOR_KB)
-			*ab = KONA_MEDIA_DDR_AB_FLOOR_KB;
-		if (active && *ib < KONA_MEDIA_DDR_IB_FLOOR_KB)
-			*ib = KONA_MEDIA_DDR_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_PAS_TO_MEM:
 		/* PAS/CDSP bring-up must not start from an effective 0/0 vote. */
@@ -1591,7 +1637,7 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.name = "npudsp-ddr",
 		.ab = "NPU_MEM_AB",
 		.ib = "NPU_MEM_IB",
-		.role = KONA_ROLE_DSP,
+		.role = KONA_ROLE_NPU,
 	},
 	{
 		.id = KONA_ICC_VIDEO_TO_LLCC,
@@ -1610,9 +1656,9 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 	{
 		.id = KONA_ICC_CVP_TO_MEM,
 		.name = "cvp-ddr",
-		.ab = "CPU_MEM_AB",
-		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
+		.ab = "NPU_MEM_AB",
+		.ib = "NPU_MEM_IB",
+		.role = KONA_ROLE_NPU,
 	},
 	{
 		.id = KONA_ICC_PAS_TO_MEM,
@@ -2463,6 +2509,9 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	}
 
 	kona_icc_apply_gpu_llcc_turbo(qp, &qp->nodes[index], &ab, &ib);
+
+	if (kona_icc_is_npu_coupled_path(&qp->nodes[index]))
+		kona_update_npu_atlas(qp, index, ab, ib);
 
 skip_perf_floor:
 #endif

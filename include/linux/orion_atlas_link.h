@@ -9,6 +9,10 @@ void atlas_update_gpu_telemetry(unsigned int util_pct, unsigned int freq_khz,
 				unsigned int thermal_pct);
 void atlas_get_gpu_telemetry(unsigned int *util_pct, unsigned int *freq_khz,
 			     unsigned int *thermal_pct);
+void atlas_update_npu_telemetry(unsigned int util_pct, unsigned int bw_kbps,
+				unsigned int thermal_pct);
+void atlas_get_npu_telemetry(unsigned int *util_pct, unsigned int *bw_kbps,
+			     unsigned int *thermal_pct);
 void atlas_update_cpu_telemetry(unsigned int util_pct, unsigned int freq_khz,
 				unsigned int thermal_pct);
 void atlas_get_cpu_telemetry(unsigned int *util_pct, unsigned int *freq_khz,
@@ -38,6 +42,24 @@ static inline void atlas_get_gpu_telemetry(unsigned int *util_pct,
 		*util_pct = 0;
 	if (freq_khz)
 		*freq_khz = 0;
+	if (thermal_pct)
+		*thermal_pct = 0;
+}
+
+static inline void atlas_update_npu_telemetry(unsigned int util_pct,
+					      unsigned int bw_kbps,
+					      unsigned int thermal_pct)
+{
+}
+
+static inline void atlas_get_npu_telemetry(unsigned int *util_pct,
+					   unsigned int *bw_kbps,
+					   unsigned int *thermal_pct)
+{
+	if (util_pct)
+		*util_pct = 0;
+	if (bw_kbps)
+		*bw_kbps = 0;
 	if (thermal_pct)
 		*thermal_pct = 0;
 }

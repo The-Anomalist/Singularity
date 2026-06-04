@@ -101,6 +101,7 @@ struct sugov_policy {
 	unsigned long		auto_boost_avg_util;
 	unsigned int		cpu_signal_ema;
 	unsigned int		gpu_signal_ema;
+	unsigned int		npu_signal_ema;
 	unsigned int		mem_signal_ema;
 	unsigned int		fusion_signal_ema;
 	bool			has_prime_cpu;
@@ -158,6 +159,9 @@ static DEFINE_PER_CPU(struct sugov_tunables *, cached_tunables);
 static atomic_t atlas_gpu_util_pct = ATOMIC_INIT(0);
 static atomic_t atlas_gpu_freq_khz = ATOMIC_INIT(0);
 static atomic_t atlas_gpu_thermal_pct = ATOMIC_INIT(0);
+static atomic_t atlas_npu_util_pct = ATOMIC_INIT(0);
+static atomic_t atlas_npu_bw_kbps = ATOMIC_INIT(0);
+static atomic_t atlas_npu_thermal_pct = ATOMIC_INIT(0);
 static atomic_t atlas_cpu_util_pct = ATOMIC_INIT(0);
 static atomic_t atlas_cpu_freq_khz = ATOMIC_INIT(0);
 static atomic_t atlas_cpu_thermal_pct = ATOMIC_INIT(0);
@@ -188,6 +192,27 @@ void atlas_get_gpu_telemetry(unsigned int *util_pct, unsigned int *freq_khz,
 		*thermal_pct = atomic_read(&atlas_gpu_thermal_pct);
 }
 EXPORT_SYMBOL_GPL(atlas_get_gpu_telemetry);
+
+void atlas_update_npu_telemetry(unsigned int util_pct, unsigned int bw_kbps,
+				unsigned int thermal_pct)
+{
+	atomic_set(&atlas_npu_util_pct, min_t(unsigned int, util_pct, 100));
+	atomic_set(&atlas_npu_bw_kbps, bw_kbps);
+	atomic_set(&atlas_npu_thermal_pct, min_t(unsigned int, thermal_pct, 100));
+}
+EXPORT_SYMBOL_GPL(atlas_update_npu_telemetry);
+
+void atlas_get_npu_telemetry(unsigned int *util_pct, unsigned int *bw_kbps,
+			     unsigned int *thermal_pct)
+{
+	if (util_pct)
+		*util_pct = atomic_read(&atlas_npu_util_pct);
+	if (bw_kbps)
+		*bw_kbps = atomic_read(&atlas_npu_bw_kbps);
+	if (thermal_pct)
+		*thermal_pct = atomic_read(&atlas_npu_thermal_pct);
+}
+EXPORT_SYMBOL_GPL(atlas_get_npu_telemetry);
 
 void atlas_update_cpu_telemetry(unsigned int util_pct, unsigned int freq_khz,
 				unsigned int thermal_pct)
@@ -354,6 +379,7 @@ static void sugov_clear_display_off_boosts(struct sugov_policy *sg_policy)
 	sg_policy->auto_boost_avg_util = 0;
 	sg_policy->cpu_signal_ema = 0;
 	sg_policy->gpu_signal_ema = 0;
+	sg_policy->npu_signal_ema = 0;
 	sg_policy->mem_signal_ema = 0;
 	sg_policy->fusion_signal_ema = 0;
 }
@@ -1099,11 +1125,12 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 {
 	struct sugov_auto_cfg *auto_cfg = &sg_policy->tunables->auto_cfg;
 	unsigned long avg_util, floor_util, cap_util;
-	unsigned int util_pct, cpu_signal, gpu_signal, mem_signal;
+	unsigned int util_pct, cpu_signal, gpu_signal, npu_signal, mem_signal;
 	unsigned int shared_mem_pressure_pct, shared_mem_contention_pct;
 	unsigned int shared_mem_reclaim_pct, shared_mem_swap_pct;
 	unsigned int shared_mem_refault_pct;
 	unsigned int gpu_util_pct, gpu_freq_khz, gpu_thermal_pct;
+	unsigned int npu_util_pct, npu_thermal_pct;
 	unsigned int cpu_freq_khz, cpu_thermal_pct;
 	unsigned int high_load, low_load;
 	unsigned int min_util, max_util;
@@ -1111,7 +1138,7 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	unsigned int heavy_util_thres, heavy_tasks_thres;
 	unsigned int efficiency_load, efficiency_util;
 	unsigned int heavy_floor_util;
-	unsigned int cpu_momentum, gpu_momentum, mem_momentum;
+	unsigned int cpu_momentum, gpu_momentum, npu_momentum, mem_momentum;
 	unsigned int fusion_signal, fusion_ema, fusion_sum;
 	u64 fusion_boost_until;
 	unsigned int thermal_penalty = 0;
@@ -1144,6 +1171,8 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	gpu_signal = transition ? 100 : 0;
 	atlas_get_gpu_telemetry(&gpu_util_pct, &gpu_freq_khz, &gpu_thermal_pct);
 	gpu_signal = max(gpu_signal, gpu_util_pct);
+	atlas_get_npu_telemetry(&npu_util_pct, NULL, &npu_thermal_pct);
+	npu_signal = npu_util_pct;
 	cpu_freq_khz = sg_policy->policy->cur;
 	cpu_thermal_pct =
 		atlas_cpu_thermal_pct_for_cpu(cpumask_first(sg_policy->policy->cpus));
@@ -1189,6 +1218,7 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	 * Lightweight online learning with a derivative term:
 	 * - cpu_signal follows utilization,
 	 * - gpu_signal follows transition bursts often seen in rendering,
+	 * - npu_signal follows NPU/CDSP/CVP interconnect pressure,
 	 * - mem_signal follows system memory pressure.
 	 *
 	 * The momentum terms are computed before EWMA update, so Atlas can
@@ -1199,6 +1229,8 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		cpu_signal - sg_policy->cpu_signal_ema : 0;
 	gpu_momentum = gpu_signal > sg_policy->gpu_signal_ema ?
 		gpu_signal - sg_policy->gpu_signal_ema : 0;
+	npu_momentum = npu_signal > sg_policy->npu_signal_ema ?
+		npu_signal - sg_policy->npu_signal_ema : 0;
 	mem_momentum = mem_signal > sg_policy->mem_signal_ema ?
 		mem_signal - sg_policy->mem_signal_ema : 0;
 
@@ -1206,12 +1238,15 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		((sg_policy->cpu_signal_ema * 7) + cpu_signal) >> 3;
 	sg_policy->gpu_signal_ema =
 		((sg_policy->gpu_signal_ema * 3) + gpu_signal) >> 2;
+	sg_policy->npu_signal_ema =
+		((sg_policy->npu_signal_ema * 3) + npu_signal) >> 2;
 	sg_policy->mem_signal_ema =
 		((sg_policy->mem_signal_ema * 7) + mem_signal) >> 3;
 
-	fusion_sum = cpu_signal * 3 + gpu_signal * 2 + mem_signal +
-		cpu_momentum * 2 + gpu_momentum * 2 + mem_momentum;
-	fusion_signal = min_t(unsigned int, 100, fusion_sum / 11);
+	fusion_sum = cpu_signal * 3 + gpu_signal * 2 + npu_signal * 2 +
+		mem_signal + cpu_momentum * 2 + gpu_momentum * 2 +
+		npu_momentum * 2 + mem_momentum;
+	fusion_signal = min_t(unsigned int, 100, fusion_sum / 15);
 	sg_policy->fusion_signal_ema =
 		((sg_policy->fusion_signal_ema * 5) + fusion_signal) / 6;
 	fusion_ema = sg_policy->fusion_signal_ema;
@@ -1227,7 +1262,7 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	efficiency_util = auto_cfg->auto_boost_efficiency_util;
 	heavy_floor_util = sg_policy->has_prime_cpu ?
 		auto_cfg->auto_boost_prime_util : auto_cfg->auto_boost_gold_util;
-	thermal_penalty = max(cpu_thermal_pct, gpu_thermal_pct);
+	thermal_penalty = max3(cpu_thermal_pct, gpu_thermal_pct, npu_thermal_pct);
 
 	/* Promote responsiveness when graphics bursts are detected. */
 	if (sg_policy->gpu_signal_ema >= 35 || gpu_util_pct >= 45) {
@@ -1235,6 +1270,14 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		low_load = max_t(unsigned int, 1, low_load - 6);
 		min_util = min_t(unsigned int, SCHED_CAPACITY_SCALE,
 				 min_util + 32);
+	}
+
+	/* NPU/CDSP/CVP bursts usually share memory and CPU feed work. */
+	if (sg_policy->npu_signal_ema >= 35 || npu_util_pct >= 45) {
+		high_load = max_t(unsigned int, 1, high_load - 5);
+		low_load = max_t(unsigned int, 1, low_load - 4);
+		min_util = min_t(unsigned int, SCHED_CAPACITY_SCALE,
+				 min_util + 24);
 	}
 
 	/*
@@ -1247,7 +1290,8 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		low_load = max_t(unsigned int, 1, low_load - 4);
 		min_util = min_t(unsigned int, SCHED_CAPACITY_SCALE,
 				 min_util + 40);
-		if (cpu_momentum >= 20 || gpu_momentum >= 25) {
+		if (cpu_momentum >= 20 || gpu_momentum >= 25 ||
+		    npu_momentum >= 25) {
 			fusion_boost_until = time +
 				(auto_cfg->auto_boost_decay_us * NSEC_PER_USEC);
 			sg_policy->auto_boost_until_ns =
@@ -1285,7 +1329,8 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 				 mult_frac(max_util, 17, 20));
 	}
 
-	if (shared_mem_contention_pct >= 65 && gpu_util_pct >= 50 &&
+	if (shared_mem_contention_pct >= 65 &&
+	    (gpu_util_pct >= 50 || npu_util_pct >= 50) &&
 	    thermal_penalty < 70) {
 		min_util = min_t(unsigned int, SCHED_CAPACITY_SCALE,
 				 min_util + 32);
@@ -1295,7 +1340,8 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	}
 
 	/* Atlas/Orion thermal and clock coupling. */
-	if (gpu_thermal_pct >= 75 || cpu_thermal_pct >= 75) {
+	if (gpu_thermal_pct >= 75 || npu_thermal_pct >= 75 ||
+	    cpu_thermal_pct >= 75) {
 		high_load = min_t(unsigned int, 100, high_load + 8);
 		low_load = min_t(unsigned int, high_load, low_load + 6);
 		max_util = max_t(unsigned int, min_util,
@@ -2697,6 +2743,7 @@ static int sugov_start(struct cpufreq_policy *policy)
 	sg_policy->auto_boost_avg_util		= 0;
 	sg_policy->cpu_signal_ema		= 0;
 	sg_policy->gpu_signal_ema		= 0;
+	sg_policy->npu_signal_ema		= 0;
 	sg_policy->mem_signal_ema		= 0;
 	sg_policy->has_prime_cpu		= sugov_policy_has_prime_cpu(sg_policy);
 #ifdef OPLUS_FEATURE_POWER_CPUFREQ
