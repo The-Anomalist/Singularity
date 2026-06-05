@@ -250,18 +250,19 @@ static ssize_t show_available_freqs(struct cpufreq_policy *policy, char *buf,
 
 	cpufreq_for_each_valid_entry(pos, table) {
 		/*
-		 * show_boost = true and driver_data = BOOST freq
-		 * display BOOST freqs
-		 *
-		 * show_boost = false and driver_data = BOOST freq
-		 * show_boost = true and driver_data != BOOST freq
-		 * continue - do not display anything
-		 *
-		 * show_boost = false and driver_data != BOOST freq
-		 * display NON BOOST freqs
+		 * Android kernel managers commonly build their selectable CPU
+		 * frequency lists from scaling_available_frequencies and never read
+		 * scaling_boost_frequencies. When boost is already enabled, include
+		 * tagged boost/OC entries in the normal view as selectable entries
+		 * while keeping scaling_boost_frequencies as the boost-only view.
 		 */
-		if (show_boost ^ (pos->flags & CPUFREQ_BOOST_FREQ))
+		if (show_boost) {
+			if (!(pos->flags & CPUFREQ_BOOST_FREQ))
+				continue;
+		} else if (!cpufreq_boost_enabled() &&
+			   (pos->flags & CPUFREQ_BOOST_FREQ)) {
 			continue;
+		}
 
 		count += sprintf(&buf[count], "%d ", pos->frequency);
 	}

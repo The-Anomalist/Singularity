@@ -1172,6 +1172,11 @@ static int qcom_cpufreq_hw_driver_probe(struct platform_device *pdev)
 		return rc;
 	}
 
+	rc = cpufreq_enable_boost_support();
+	if (rc)
+		dev_warn(&pdev->dev, "CPUFreq boost sysfs support unavailable: %d\n",
+			 rc);
+
 	for_each_possible_cpu(cpu)
 		spin_lock_init(&qcom_cpufreq_counter[cpu].lock);
 
