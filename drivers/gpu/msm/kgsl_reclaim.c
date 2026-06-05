@@ -11,6 +11,7 @@
 
 #include "kgsl_reclaim.h"
 #include "kgsl_sharedmem.h"
+#include "adreno.h"
 
 static struct notifier_block kgsl_reclaim_nb;
 static bool kgsl_reclaim;
@@ -23,9 +24,13 @@ static bool kgsl_reclaim;
  * impact and the latency will be within acceptable limit.
  */
 #define KGSL_RECLAIM_DEFAULT_LIMIT_PAGES	(7680) /* 30 MB @ 4 KB pages */
+#define KGSL_RECLAIM_A650_LIMIT_PAGES		(10240) /* 40 MB @ 4 KB pages */
+#define KGSL_RECLAIM_DEFAULT_MIN_OBJ_PAGES	(128) /* 512 KB @ 4 KB pages */
+#define KGSL_RECLAIM_A650_MIN_OBJ_PAGES		(192) /* 768 KB @ 4 KB pages */
 #define KGSL_RECLAIM_MAX_LIMIT_PAGES	((SZ_2G + SZ_512M) >> PAGE_SHIFT)
 
 static u32 kgsl_reclaim_max_page_limit = KGSL_RECLAIM_DEFAULT_LIMIT_PAGES;
+static u32 kgsl_reclaim_min_obj_pages = KGSL_RECLAIM_DEFAULT_MIN_OBJ_PAGES;
 
 static int kgsl_memdesc_get_reclaimed_pages(struct kgsl_mem_entry *entry)
 {
@@ -265,7 +270,8 @@ static int kgsl_reclaim_callback(struct notifier_block *nb,
 		if (!entry->pending_free &&
 				(memdesc->priv & KGSL_MEMDESC_CAN_RECLAIM) &&
 				!(memdesc->priv & KGSL_MEMDESC_RECLAIMED) &&
-				!(memdesc->priv & KGSL_MEMDESC_SKIP_RECLAIM))
+				!(memdesc->priv & KGSL_MEMDESC_SKIP_RECLAIM) &&
+				(memdesc->page_count >= kgsl_reclaim_min_obj_pages))
 			valid_entry = kgsl_mem_entry_get(entry);
 		spin_unlock(&process->mem_lock);
 
@@ -353,6 +359,11 @@ int kgsl_reclaim_init(struct kgsl_device *device)
 		return 0;
 
 	kgsl_reclaim = true;
+
+	if (adreno_is_a650_family(ADRENO_DEVICE(device))) {
+		kgsl_reclaim_max_page_limit = KGSL_RECLAIM_A650_LIMIT_PAGES;
+		kgsl_reclaim_min_obj_pages = KGSL_RECLAIM_A650_MIN_OBJ_PAGES;
+	}
 
 	kgsl_reclaim_nb.notifier_call = kgsl_reclaim_callback;
 	return proc_reclaim_notifier_register(&kgsl_reclaim_nb);

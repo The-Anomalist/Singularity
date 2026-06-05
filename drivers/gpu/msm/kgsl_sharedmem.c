@@ -12,6 +12,7 @@
 #include <linux/shmem_fs.h>
 #include <linux/bitfield.h>
 
+#include "kgsl_pool.h"
 #include "kgsl_reclaim.h"
 #include "kgsl_sharedmem.h"
 
@@ -1058,6 +1059,7 @@ kgsl_sharedmem_page_alloc_user(struct kgsl_memdesc *memdesc,
 	size_t len;
 	unsigned int align;
 	bool memwq_flush_done = false;
+	bool mempool_drain_done = false;
 
 	static DEFINE_RATELIMIT_STATE(_rs,
 					DEFAULT_RATELIMIT_INTERVAL,
@@ -1141,6 +1143,18 @@ kgsl_sharedmem_page_alloc_user(struct kgsl_memdesc *memdesc,
 			if (page_count == -ENOMEM && !memwq_flush_done) {
 				flush_workqueue(kgsl_driver.mem_workqueue);
 				memwq_flush_done = true;
+				continue;
+			}
+
+			/*
+			 * Large benchmarks can stall forward progress when reusable
+			 * pages are retained in KGSL pools while the buddy allocator is
+			 * already under pressure. Drain non-reserved pool pages once and
+			 * retry before surfacing ENOMEM to userspace.
+			 */
+			if (page_count == -ENOMEM && !mempool_drain_done) {
+				kgsl_pool_reduce_mempools(0);
+				mempool_drain_done = true;
 				continue;
 			}
 
