@@ -96,10 +96,89 @@
 };
 
 /*
- * Keep kebab idle-friendly: do not install static ICC/PM-QoS floors here.
- * Screen-off standby must be able to collapse CPU/GPU/storage/USB votes;
- * performance bursts are handled by runtime governors instead.
+ * Benchmark-oriented CPU memory path floors.
+ * Keep these scoped to kebab so generic kona boards are not affected.
  */
+&cpu_cpu_llcc_bw {
+	qcom,icc-min-avg-kbps = <6400000>;
+	qcom,icc-min-peak-kbps = <12800000>;
+	qcom,icc-boost-percent = <160>;
+	qcom,icc-upscale-percent = <260>;
+	qcom,polling-ms = <1>;
+};
+
+&cpu_llcc_ddr_bw {
+	qcom,icc-min-avg-kbps = <6400000>;
+	qcom,icc-min-peak-kbps = <12800000>;
+	qcom,icc-boost-percent = <165>;
+	qcom,icc-upscale-percent = <270>;
+	qcom,polling-ms = <1>;
+};
+
+&cpu4_cpu_ddr_latfloor {
+	qcom,icc-min-avg-kbps = <6400000>;
+	qcom,icc-min-peak-kbps = <12800000>;
+	qcom,icc-boost-percent = <165>;
+};
+
+/*
+ * Keep GPU memory/cfg paths more aggressively provisioned during bursty
+ * foreground workloads so Adreno 650 avoids undershooting right after idle.
+ */
+&gpubw {
+	qcom,icc-boost-percent = <220>;
+	qcom,icc-upscale-percent = <360>;
+	qcom,polling-ms = <2>;
+	qcom,icc-min-avg-kbps = <5625000>;
+	qcom,icc-min-peak-kbps = <22500000>;
+};
+
+&msm_gpu {
+	qcom,pm-qos-active-latency = <0>;
+	qcom,ca-busy-penalty = <12000>;
+	qcom,ca-target-pwrlevel = <0>;
+	qcom,tz-sample-floor = <3000>;
+	qcom,tz-min-busy = <600>;
+	qcom,tz-busy-ceiling = <30000>;
+	qcom,gpu-icc-bw-avg-kbps =
+		<1 390625 585937 878906 1113281 1406250 1757812
+		 2109375 2812500 3375000 4218750 4921875 5625000 6328125>;
+	qcom,gpu-icc-bw-peak-kbps =
+		<1 1562500 2343750 3515625 4453125 5625000 7031250
+		 8437500 11250000 13500000 16875000 19687500 22500000 25312500>;
+	qcom,gpu-cfg-icc-bw-avg-kbps = <1 64>;
+	qcom,gpu-cfg-icc-bw-peak-kbps = <1 256>;
+};
+
+/*
+ * Raise storage fabric floor so ROM I/O tests don't stall on brief
+ * under-votes while the DDR/LLCC paths ramp.
+ */
+&ufshc_mem {
+	qcom,icc-min-avg-kbps = <1200000>;
+	qcom,icc-min-peak-kbps = <6000000>;
+	qcom,icc-boost-percent = <150>;
+	qcom,icc-upscale-percent = <240>;
+	qcom,polling-ms = <2>;
+};
+
+/*
+ * Raise CPAS/CAMNOC baseline headroom for heavy camera pipelines.
+ * This reduces under-voting during fast mode switches and helps
+ * preserve frame quality under sustained multi-stream load.
+ */
+&{/soc/qcom,cam-cpas@ac40000} {
+	camnoc-axi-min-ib-bw = <3600000000>;
+	camnoc-axi-clk-bw-margin-perc = <28>;
+};
+
+/*
+ * Keep USB wake/interrupt response tighter for foreground interaction
+ * and mixed I/O benchmark runs.
+ */
+&usb0 {
+	qcom,pm-qos-latency = <41>;
+};
 
 &soc {
 	gpio_keys {
