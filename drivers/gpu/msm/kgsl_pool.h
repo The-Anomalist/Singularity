@@ -13,5 +13,5 @@ int kgsl_pool_alloc_page(int *page_size, struct page **pages,
 			struct kgsl_memdesc *memdesc);
 void kgsl_pool_free_page(struct page *p);
 bool kgsl_pool_avaialable(int size);
-unsigned long kgsl_pool_reduce_mempools(unsigned int target_pages);
 #endif /* __KGSL_POOL_H */
+

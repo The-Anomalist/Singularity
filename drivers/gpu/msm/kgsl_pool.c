@@ -214,11 +214,6 @@ kgsl_pool_reduce(unsigned int target_pages, bool exit)
 	return pcount;
 }
 
-unsigned long kgsl_pool_reduce_mempools(unsigned int target_pages)
-{
-	return kgsl_pool_reduce(target_pages, false);
-}
-
 /**
  * kgsl_pool_free_pages() - Free pages in the pages array
  * @pages: pointer of the pages array
