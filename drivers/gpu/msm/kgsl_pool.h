@@ -5,10 +5,6 @@
 #ifndef __KGSL_POOL_H
 #define __KGSL_POOL_H
 
-struct page;
-struct kgsl_device;
-struct kgsl_memdesc;
-
 void kgsl_init_page_pools(struct kgsl_device *device);
 void kgsl_exit_page_pools(void);
 void kgsl_pool_free_pages(struct page **pages, unsigned int page_count);
