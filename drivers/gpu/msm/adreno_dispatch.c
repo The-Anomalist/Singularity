@@ -5,6 +5,7 @@
  */
 
 #include <linux/slab.h>
+#include <linux/math64.h>
 
 #include "adreno.h"
 #include "adreno_trace.h"
@@ -41,9 +42,9 @@ static unsigned int _dispatcher_q_inflight_hi = 21;
  */
 static unsigned int _dispatcher_q_inflight_lo = 6;
 
-#define A650_DISPATCH_Q_INFLIGHT_HI	24
+#define A650_DISPATCH_Q_INFLIGHT_HI	21
 #define A650_DISPATCH_Q_INFLIGHT_LO	6
-#define A650_CONTEXT_DRAWOBJ_BURST	8
+#define A650_CONTEXT_DRAWOBJ_BURST	7
 #define A650_SOFT_FAULT_GRACE_SAMPLES	2
 
 /* Command batch timeout (in milliseconds) */
@@ -56,7 +57,10 @@ static unsigned int _fault_timer_interval = 200;
  * Cap dynamically scaled timeout so genuine hangs still recover in a
  * predictable window even at very low benchmark frequencies.
  */
-#define ADRENO_DRAWOBJ_TIMEOUT_MAX_MS 20000
+#define ADRENO_DRAWOBJ_TIMEOUT_MAX_MS 12000
+#define A650_DRAWOBJ_TIMEOUT_FLOOR_MS 3500
+#define A650_DRAWOBJ_TIMEOUT_MAX_MS 30000
+#define A650_SOFT_FAULT_STALL_SAMPLES 3
 
 #define DRAWQUEUE_RB(_drawqueue) \
 	((struct adreno_ringbuffer *) \
@@ -67,6 +71,7 @@ static unsigned int _fault_timer_interval = 200;
 
 static int adreno_dispatch_retire_drawqueue(struct adreno_device *adreno_dev,
 		struct adreno_dispatcher_drawqueue *drawqueue);
+static unsigned int _adreno_drawobj_timeout_ms(struct kgsl_device *device);
 
 static inline bool drawqueue_is_current(
 		struct adreno_dispatcher_drawqueue *drawqueue)
@@ -173,18 +178,7 @@ static inline unsigned int _drawqueue_depth(
 static inline unsigned int
 _drawqueue_burst(struct adreno_dispatcher_drawqueue *drawqueue, int inflight)
 {
-	unsigned int burst = _context_drawobj_burst;
-	unsigned int depth = _drawqueue_depth(drawqueue);
-
-	/*
-	 * If a single context has built up backlog, let it submit a slightly
-	 * larger chunk in one pass to reduce idle bubbles between dispatcher
-	 * wakes.
-	 */
-	if (drawqueue->active_context_count <= 1 && depth > burst)
-		burst = min_t(unsigned int, burst + 2, inflight);
-
-	return burst;
+	return min_t(unsigned int, _context_drawobj_burst, inflight);
 }
 
 static void fault_detect_read(struct adreno_device *adreno_dev)
@@ -703,7 +697,7 @@ static int sendcmd(struct adreno_device *adreno_dev,
 
 	if (dispatch_q->inflight == 1)
 		dispatch_q->expires = jiffies +
-			msecs_to_jiffies(adreno_drawobj_timeout);
+			msecs_to_jiffies(_adreno_drawobj_timeout_ms(device));
 
 	trace_adreno_cmdbatch_submitted(drawobj, (int) dispatcher->inflight,
 		time.ticks, (unsigned long) secs, nsecs / 1000, drawctxt->rb,
@@ -2528,7 +2522,43 @@ static void _adreno_dispatch_check_timeout(struct adreno_device *adreno_dev,
 	 * This makes sure dispatcher doesn't run endlessly in cases where
 	 * we couldn't run recovery
 	 */
-	drawqueue->expires = jiffies + msecs_to_jiffies(adreno_drawobj_timeout);
+	drawqueue->expires = jiffies +
+		msecs_to_jiffies(_adreno_drawobj_timeout_ms(device));
+}
+
+/*
+ * Scale the timeout to match the active GPU frequency and add a conservative
+ * A650-family floor. Sustained benchmark scenes can submit very long command
+ * buffers while thermal/DCVS is between corners; a fixed 2s timeout can then
+ * trip recovery even though retired timestamps are still capable of advancing.
+ */
+static unsigned int _adreno_drawobj_timeout_ms(struct kgsl_device *device)
+{
+	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
+	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
+	unsigned int base = adreno_drawobj_timeout;
+	unsigned int timeout_max = ADRENO_DRAWOBJ_TIMEOUT_MAX_MS;
+	unsigned int cur_freq, max_freq;
+	u64 scaled;
+
+	if (adreno_is_a650_family(adreno_dev)) {
+		base = max_t(unsigned int, base, A650_DRAWOBJ_TIMEOUT_FLOOR_MS);
+		timeout_max = A650_DRAWOBJ_TIMEOUT_MAX_MS;
+	}
+
+	if (!pwr->num_pwrlevels || pwr->active_pwrlevel >= pwr->num_pwrlevels)
+		return base;
+
+	cur_freq = pwr->pwrlevels[pwr->active_pwrlevel].gpu_freq;
+	max_freq = pwr->pwrlevels[0].gpu_freq;
+
+	if (!cur_freq || !max_freq || cur_freq >= max_freq)
+		return base;
+
+	scaled = div_u64((u64)base * max_freq, cur_freq);
+	scaled = min_t(u64, scaled, timeout_max);
+
+	return max_t(unsigned int, base, (unsigned int)scaled);
 }
 
 static int adreno_dispatch_process_drawqueue(struct adreno_device *adreno_dev,
@@ -2551,7 +2581,7 @@ static int adreno_dispatch_process_drawqueue(struct adreno_device *adreno_dev,
 
 	if (count) {
 		drawqueue->expires = jiffies +
-			msecs_to_jiffies(adreno_drawobj_timeout);
+			msecs_to_jiffies(_adreno_drawobj_timeout_ms(device));
 		return count;
 	}
 

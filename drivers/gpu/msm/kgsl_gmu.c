@@ -1200,6 +1200,8 @@ static int gmu_icc_probe(struct gmu_device *gmu)
 	}
 
 	if (of_find_property(dev->of_node, "interconnect-names", NULL)) {
+		unsigned int path_count = 0;
+
 		for (i = 0; i < num_icc_paths; i++) {
 			ret = of_property_read_string_index(dev->of_node,
 							    "interconnect-names",
@@ -1207,13 +1209,36 @@ static int gmu_icc_probe(struct gmu_device *gmu)
 			if (ret)
 				goto clear_icc;
 
-			gmu->icc_paths[i] = devm_of_icc_get(dev, icc_name);
-			if (IS_ERR(gmu->icc_paths[i])) {
-				ret = PTR_ERR(gmu->icc_paths[i]);
-				gmu->icc_paths[i] = NULL;
+			/*
+			 * GMU bandwidth votes should only target GMU/GPU data paths.
+			 * Skip CPU-to-GPU config paths when present in shared lists.
+			 */
+			if (!strcmp(icc_name, "cpu-gpu-cfg"))
+				continue;
+
+			if (path_count >= ARRAY_SIZE(gmu->icc_paths)) {
+				dev_warn(dev,
+					"Ignoring extra GMU ICC data path '%s' beyond %zu supported entries\n",
+					icc_name, ARRAY_SIZE(gmu->icc_paths));
+				continue;
+			}
+
+			gmu->icc_paths[path_count] = devm_of_icc_get(dev, icc_name);
+			if (IS_ERR(gmu->icc_paths[path_count])) {
+				ret = PTR_ERR(gmu->icc_paths[path_count]);
+				gmu->icc_paths[path_count] = NULL;
 				goto clear_icc;
 			}
+
+			path_count++;
 		}
+
+		if (!path_count) {
+			dev_warn(dev, "No GMU ICC data paths found, disabling GMU ICC votes\n");
+			return 0;
+		}
+
+		gmu->num_icc_paths = path_count;
 	} else if (num_icc_paths == 1) {
 		gmu->icc_paths[0] = devm_of_icc_get(dev, NULL);
 		if (IS_ERR(gmu->icc_paths[0])) {
@@ -1221,6 +1246,7 @@ static int gmu_icc_probe(struct gmu_device *gmu)
 			gmu->icc_paths[0] = NULL;
 			goto clear_icc;
 		}
+		gmu->num_icc_paths = 1;
 	} else {
 		dev_warn(dev,
 			"Missing interconnect-names for %d paths, disabling GMU ICC votes\n",
@@ -1228,7 +1254,6 @@ static int gmu_icc_probe(struct gmu_device *gmu)
 		return 0;
 	}
 
-	gmu->num_icc_paths = num_icc_paths;
 	dev_info(dev, "Enabled %u GMU ICC path(s)\n", gmu->num_icc_paths);
 	return 0;
 
