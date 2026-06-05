@@ -5,7 +5,6 @@
  */
 
 #include <linux/slab.h>
-#include <linux/math64.h>
 
 #include "adreno.h"
 #include "adreno_trace.h"
@@ -56,10 +55,7 @@ static unsigned int _fault_timer_interval = 200;
  * Cap dynamically scaled timeout so genuine hangs still recover in a
  * predictable window even at very low benchmark frequencies.
  */
-#define ADRENO_DRAWOBJ_TIMEOUT_MAX_MS 12000
-#define A650_DRAWOBJ_TIMEOUT_FLOOR_MS 3500
-#define A650_DRAWOBJ_TIMEOUT_MAX_MS 30000
-#define A650_SOFT_FAULT_STALL_SAMPLES 3
+#define ADRENO_DRAWOBJ_TIMEOUT_MAX_MS 20000
 
 #define DRAWQUEUE_RB(_drawqueue) \
 	((struct adreno_ringbuffer *) \
@@ -70,7 +66,6 @@ static unsigned int _fault_timer_interval = 200;
 
 static int adreno_dispatch_retire_drawqueue(struct adreno_device *adreno_dev,
 		struct adreno_dispatcher_drawqueue *drawqueue);
-static unsigned int _adreno_drawobj_timeout_ms(struct kgsl_device *device);
 
 static inline bool drawqueue_is_current(
 		struct adreno_dispatcher_drawqueue *drawqueue)
@@ -705,7 +700,7 @@ static int sendcmd(struct adreno_device *adreno_dev,
 
 	if (dispatch_q->inflight == 1)
 		dispatch_q->expires = jiffies +
-			msecs_to_jiffies(_adreno_drawobj_timeout_ms(device));
+			msecs_to_jiffies(adreno_drawobj_timeout);
 
 	trace_adreno_cmdbatch_submitted(drawobj, (int) dispatcher->inflight,
 		time.ticks, (unsigned long) secs, nsecs / 1000, drawctxt->rb,
@@ -2529,43 +2524,7 @@ static void _adreno_dispatch_check_timeout(struct adreno_device *adreno_dev,
 	 * This makes sure dispatcher doesn't run endlessly in cases where
 	 * we couldn't run recovery
 	 */
-	drawqueue->expires = jiffies +
-		msecs_to_jiffies(_adreno_drawobj_timeout_ms(device));
-}
-
-/*
- * Scale the timeout to match the active GPU frequency and add a conservative
- * A650-family floor. Sustained benchmark scenes can submit very long command
- * buffers while thermal/DCVS is between corners; a fixed 2s timeout can then
- * trip recovery even though retired timestamps are still capable of advancing.
- */
-static unsigned int _adreno_drawobj_timeout_ms(struct kgsl_device *device)
-{
-	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
-	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
-	unsigned int base = adreno_drawobj_timeout;
-	unsigned int timeout_max = ADRENO_DRAWOBJ_TIMEOUT_MAX_MS;
-	unsigned int cur_freq, max_freq;
-	u64 scaled;
-
-	if (adreno_is_a650_family(adreno_dev)) {
-		base = max_t(unsigned int, base, A650_DRAWOBJ_TIMEOUT_FLOOR_MS);
-		timeout_max = A650_DRAWOBJ_TIMEOUT_MAX_MS;
-	}
-
-	if (!pwr->num_pwrlevels || pwr->active_pwrlevel >= pwr->num_pwrlevels)
-		return base;
-
-	cur_freq = pwr->pwrlevels[pwr->active_pwrlevel].gpu_freq;
-	max_freq = pwr->pwrlevels[0].gpu_freq;
-
-	if (!cur_freq || !max_freq || cur_freq >= max_freq)
-		return base;
-
-	scaled = div_u64((u64)base * max_freq, cur_freq);
-	scaled = min_t(u64, scaled, timeout_max);
-
-	return max_t(unsigned int, base, (unsigned int)scaled);
+	drawqueue->expires = jiffies + msecs_to_jiffies(adreno_drawobj_timeout);
 }
 
 static int adreno_dispatch_process_drawqueue(struct adreno_device *adreno_dev,
@@ -2588,7 +2547,7 @@ static int adreno_dispatch_process_drawqueue(struct adreno_device *adreno_dev,
 
 	if (count) {
 		drawqueue->expires = jiffies +
-			msecs_to_jiffies(_adreno_drawobj_timeout_ms(device));
+			msecs_to_jiffies(adreno_drawobj_timeout);
 		return count;
 	}
 
@@ -2755,23 +2714,11 @@ static void adreno_dispatcher_fault_timer(struct timer_list *t)
 	 */
 
 	if (!fault_detect_read_compare(adreno_dev)) {
-		if (adreno_is_a650_family(adreno_dev) &&
-		    ++dispatcher->soft_fault_stalls <
-		    A650_SOFT_FAULT_STALL_SAMPLES) {
-			mod_timer(&dispatcher->fault_timer, jiffies +
-				msecs_to_jiffies(_fault_timer_interval));
-			return;
-		}
-
-		dispatcher->soft_fault_stalls = 0;
 		adreno_set_gpu_fault(adreno_dev, ADRENO_SOFT_FAULT);
 		adreno_dispatcher_schedule(KGSL_DEVICE(adreno_dev));
 	} else if (dispatcher->inflight > 0) {
-		dispatcher->soft_fault_stalls = 0;
 		mod_timer(&dispatcher->fault_timer,
 			jiffies + msecs_to_jiffies(_fault_timer_interval));
-	} else {
-		dispatcher->soft_fault_stalls = 0;
 	}
 }
 

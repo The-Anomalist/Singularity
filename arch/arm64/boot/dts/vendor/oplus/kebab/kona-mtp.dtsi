@@ -122,12 +122,33 @@
 };
 
 /*
- * Keep GPU votes on the common Kona defaults for stability. The previous kebab
- * overlay forced tighter PM-QoS, top context-aware jumps, short TZ sampling, and
- * larger GPU ICC tables. Those benchmark-oriented overrides can make 3DMark and
- * Antutu run closer to rail/interconnect margins, so leave GPU scaling to the
- * shared Kona tables and runtime governors here.
+ * Keep GPU memory/cfg paths more aggressively provisioned during bursty
+ * foreground workloads so Adreno 650 avoids undershooting right after idle.
  */
+&gpubw {
+	qcom,icc-boost-percent = <220>;
+	qcom,icc-upscale-percent = <360>;
+	qcom,polling-ms = <2>;
+	qcom,icc-min-avg-kbps = <5625000>;
+	qcom,icc-min-peak-kbps = <22500000>;
+};
+
+&msm_gpu {
+	qcom,pm-qos-active-latency = <0>;
+	qcom,ca-busy-penalty = <12000>;
+	qcom,ca-target-pwrlevel = <0>;
+	qcom,tz-sample-floor = <3000>;
+	qcom,tz-min-busy = <600>;
+	qcom,tz-busy-ceiling = <30000>;
+	qcom,gpu-icc-bw-avg-kbps =
+		<1 390625 585937 878906 1113281 1406250 1757812
+		 2109375 2812500 3375000 4218750 4921875 5625000 6328125>;
+	qcom,gpu-icc-bw-peak-kbps =
+		<1 1562500 2343750 3515625 4453125 5625000 7031250
+		 8437500 11250000 13500000 16875000 19687500 22500000 25312500>;
+	qcom,gpu-cfg-icc-bw-avg-kbps = <1 64>;
+	qcom,gpu-cfg-icc-bw-peak-kbps = <1 256>;
+};
 
 /*
  * Raise storage fabric floor so ROM I/O tests don't stall on brief
