@@ -66,7 +66,7 @@
 			next-level-cache = <&L2_0>;
 			qcom,freq-domain = <&cpufreq_hw 0 4>;
 			capacity-dmips-mhz = <1024>;
-			dynamic-power-coefficient = <100>;
+			dynamic-power-coefficient = <105>;
 			#cooling-cells = <2>;
 			L2_0: l2-cache {
 			      compatible = "arm,arch-cache";
@@ -97,7 +97,7 @@
 			next-level-cache = <&L2_1>;
 			qcom,freq-domain = <&cpufreq_hw 0 4>;
 			capacity-dmips-mhz = <1024>;
-			dynamic-power-coefficient = <100>;
+			dynamic-power-coefficient = <105>;
 			L2_1: l2-cache {
 			      compatible = "arm,arch-cache";
 			      cache-level = <2>;
@@ -122,7 +122,7 @@
 			next-level-cache = <&L2_2>;
 			qcom,freq-domain = <&cpufreq_hw 0 4>;
 			capacity-dmips-mhz = <1024>;
-			dynamic-power-coefficient = <100>;
+			dynamic-power-coefficient = <105>;
 			L2_2: l2-cache {
 			      compatible = "arm,arch-cache";
 			      cache-level = <2>;
@@ -147,7 +147,7 @@
 			next-level-cache = <&L2_3>;
 			qcom,freq-domain = <&cpufreq_hw 0 4>;
 			capacity-dmips-mhz = <1024>;
-			dynamic-power-coefficient = <100>;
+			dynamic-power-coefficient = <105>;
 			L2_3: l2-cache {
 			      compatible = "arm,arch-cache";
 			      cache-level = <2>;
@@ -172,7 +172,7 @@
 			next-level-cache = <&L2_4>;
 			qcom,freq-domain = <&cpufreq_hw 1 4>;
 			capacity-dmips-mhz = <1894>;
-			dynamic-power-coefficient = <514>;
+			dynamic-power-coefficient = <537>;
 			#cooling-cells = <2>;
 			L2_4: l2-cache {
 			      compatible = "arm,arch-cache";
@@ -198,7 +198,7 @@
 			next-level-cache = <&L2_5>;
 			qcom,freq-domain = <&cpufreq_hw 1 4>;
 			capacity-dmips-mhz = <1894>;
-			dynamic-power-coefficient = <514>;
+			dynamic-power-coefficient = <537>;
 			L2_5: l2-cache {
 			      compatible = "arm,arch-cache";
 			      cache-level = <2>;
@@ -223,7 +223,7 @@
 			next-level-cache = <&L2_6>;
 			qcom,freq-domain = <&cpufreq_hw 1 4>;
 			capacity-dmips-mhz = <1894>;
-			dynamic-power-coefficient = <514>;
+			dynamic-power-coefficient = <537>;
 			L2_6: l2-cache {
 			      compatible = "arm,arch-cache";
 			      cache-level = <2>;
@@ -248,7 +248,7 @@
 			next-level-cache = <&L2_7>;
 			qcom,freq-domain = <&cpufreq_hw 2 4>;
 			capacity-dmips-mhz = <1894>;
-			dynamic-power-coefficient = <598>;
+			dynamic-power-coefficient = <616>;
 			#cooling-cells = <2>;
 			L2_7: l2-cache {
 			      compatible = "arm,arch-cache";
@@ -335,7 +335,7 @@
 			interconnect-names = "cpu-llcc", "cpu-ddr";
 
 			qcom,lut-row-size = <4>;
-			qcom,max-frequency-offset-khz = <65000 65000 65000>;
+			qcom,max-frequency-khz = <1900000 2525000 2925000>;
 			qcom,max-voltage-offset-uv = <65000 65000 65000>;
 			qcom,skip-enable-check;
 
@@ -1285,7 +1285,7 @@
 				< 1401600 1228800000 >,
 				< 1497600 1305600000 >,
 				< 1670400 1382400000 >,
-				< 1770400 1382400000 >;
+				< 1900000 1382400000 >;
 		};
 
 		cpu0_cpu_llcc_latmon: qcom,cpu0-cpu-llcc-latmon {
@@ -1300,7 +1300,7 @@
 				< 1228800 MHZ_TO_MBPS( 680, 16) >,
 				< 1497600 MHZ_TO_MBPS( 806, 16) >,
 				< 1670400 MHZ_TO_MBPS( 933, 16) >,
-				< 1770400 MHZ_TO_MBPS(1000, 16) >;
+				< 1900000 MHZ_TO_MBPS(1000, 16) >;
 			};
 
 		cpu0_llcc_ddr_latmon: qcom,cpu0-llcc-ddr-latmon {
@@ -1317,7 +1317,7 @@
 					< 1228800 MHZ_TO_MBPS( 1017, 4) >,
 					< 1497600 MHZ_TO_MBPS( 1353, 4) >,
 					< 1670400 MHZ_TO_MBPS( 1555, 4) >,
-					< 1770400 MHZ_TO_MBPS( 1804, 4) >;
+					< 1900000 MHZ_TO_MBPS( 1804, 4) >;
 				};
 
 				ddr5-map {
@@ -1329,7 +1329,7 @@
 						< 1228800 MHZ_TO_MBPS( 1017, 4) >,
 						< 1497600 MHZ_TO_MBPS( 1353, 4) >,
 						< 1670400 MHZ_TO_MBPS( 1555, 4) >,
-						< 1770400 MHZ_TO_MBPS( 1804, 4) >;
+						< 1900000 MHZ_TO_MBPS( 1804, 4) >;
 					};
 			};
 
@@ -1352,7 +1352,7 @@
 				< 1689600 1228800000 >,
 				< 1804800 1305600000 >,
 				< 2227200 1382400000 >,
-				< 2327200 1382400000 >;
+				< 2525000 1382400000 >;
 		};
 
 		cpu7_cpu_l3_latmon: qcom,cpu7-cpu-l3-latmon {
@@ -1368,7 +1368,7 @@
 				< 1689600 1228800000 >,
 				< 1804800 1305600000 >,
 				< 2227200 1382400000 >,
-				< 2327200 1382400000 >;
+				< 2925000 1382400000 >;
 		};
 
 		cpu4_cpu_llcc_latmon: qcom,cpu4-cpu-llcc-latmon {
@@ -1384,7 +1384,7 @@
 				< 1804800 MHZ_TO_MBPS(  806, 16) >,
 				< 2227200 MHZ_TO_MBPS(  933, 16) >,
 				< 2476800 MHZ_TO_MBPS( 1100, 16) >,
-				< 2576800 MHZ_TO_MBPS( 1200, 16) >;
+				< 2925000 MHZ_TO_MBPS( 1200, 16) >;
 		};
 
 		cpu4_llcc_ddr_latmon: qcom,cpu4-llcc-ddr-latmon {

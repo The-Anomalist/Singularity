@@ -81,6 +81,7 @@ struct cpufreq_qcom {
 	unsigned long xo_rate;
 	unsigned long cpu_hw_rate;
 	unsigned long dcvsh_freq_limit;
+	u32 max_freq_khz;
 	u32 max_freq_offset_khz;
 	u32 max_volt_offset_uv;
 	struct delayed_work freq_poll_work;
@@ -538,7 +539,6 @@ static int qcom_cpufreq_hw_cpu_init(struct cpufreq_policy *policy)
 
 static struct freq_attr *qcom_cpufreq_hw_attr[] = {
 	&cpufreq_freq_attr_scaling_available_freqs,
-	&cpufreq_freq_attr_scaling_boost_freqs,
 	NULL
 };
 
@@ -581,7 +581,6 @@ static struct cpufreq_driver cpufreq_qcom_hw_driver = {
 	.fast_switch    = qcom_cpufreq_hw_fast_switch,
 	.name		= "qcom-cpufreq-hw",
 	.attr		= qcom_cpufreq_hw_attr,
-	.boost_enabled	= true,
 	.ready		= qcom_cpufreq_ready,
 };
 
@@ -685,12 +684,11 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 	c->lut_max_entries = i;
 
 	/*
-	 * If there is room in the HW LUT, materialize the offset clock as a real
-	 * LUT row so it behaves like a factory bin (residency + perf-state
-	 * programming). If we cannot back it with HW, skip exposing the offset
-	 * OPP entirely.
+	 * If there is room in the HW LUT, materialize the requested max clock as a
+	 * real LUT row so it behaves like a factory bin (residency + perf-state
+	 * programming). If we cannot back it with HW, skip exposing the OPP entirely.
 	 */
-	if (c->max_freq_offset_khz && c->lut_max_entries) {
+	if ((c->max_freq_khz || c->max_freq_offset_khz) && c->lut_max_entries) {
 		unsigned int max_index = c->lut_max_entries - 1;
 		unsigned int offset_index = c->lut_max_entries;
 		unsigned int target_index;
@@ -699,7 +697,7 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		u32 programmed_src, programmed_lval;
 		u32 new_lval, new_mv, min_lval;
 		u32 original_target_freq_data, original_target_volt_data;
-		u64 new_freq_khz;
+		u64 target_freq_khz, target_freq_hz;
 		unsigned int materialized_freq_khz = 0;
 		unsigned int old_max_freq_khz;
 		bool append_row;
@@ -717,15 +715,20 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		 * represents fixed-rate entries where an offset cannot be applied.
 		 */
 		if (max_src) {
-			new_freq_khz = c->table[max_index].frequency +
-				       c->max_freq_offset_khz;
+			target_freq_khz = c->max_freq_khz;
+			if (!target_freq_khz)
+				target_freq_khz = c->table[max_index].frequency +
+						  c->max_freq_offset_khz;
+			target_freq_hz = target_freq_khz * 1000;
 			/*
-			 * Round up when translating the requested OC frequency
-			 * into an L value so small offsets do not quantize back
-			 * to the same top-row point and silently disappear.
+			 * Explicit max frequencies should be programmed as closely as the
+			 * LUT granularity permits. Offset-only OPPs still round up so small
+			 * offsets do not quantize back to the same top-row point.
 			 */
-			new_lval = DIV_ROUND_UP_ULL(new_freq_khz * 1000,
-						    c->xo_rate);
+			if (c->max_freq_khz)
+				new_lval = DIV_ROUND_CLOSEST_ULL(target_freq_hz, c->xo_rate);
+			else
+				new_lval = DIV_ROUND_UP_ULL(target_freq_hz, c->xo_rate);
 			min_lval = max_lval + 1;
 			if (new_lval < min_lval)
 				new_lval = min_lval;
@@ -794,27 +797,38 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		}
 
 		if (hw_backed) {
-			c->table[target_index].frequency = materialized_freq_khz;
+			c->table[target_index].frequency = c->max_freq_khz ?
+				target_freq_khz : materialized_freq_khz;
+			/*
+			 * The max OPP must be a normal selectable frequency, not a
+			 * boost-only entry.  When we append into the first unused LUT slot,
+			 * that table entry may still carry flags copied from the duplicate
+			 * terminator row parsed above; clear them before exposing the new
+			 * top frequency through scaling_available_frequencies.
+			 */
+			c->table[target_index].flags = 0;
 			c->freqs[target_index] = c->table[target_index].frequency;
 			c->voltages[target_index] = new_mv * 1000;
 			if (append_row) {
 				c->lut_max_entries++;
 				dev_info(dev,
-					 "offset OPP materialized in HW LUT for domain cpus%*pbl: %u kHz @ %u uV (appended row)\n",
+					 "max OPP materialized in HW LUT for domain cpus%*pbl: %u kHz @ %u uV (appended row, HW %u kHz)\n",
 					 cpumask_pr_args(&c->related_cpus),
 					 c->table[target_index].frequency,
-					 c->voltages[target_index]);
+					 c->voltages[target_index],
+					 materialized_freq_khz);
 			} else {
 				dev_info(dev,
-					 "offset OPP materialized by retuning top LUT row for domain cpus%*pbl: %u -> %u kHz @ %u uV\n",
+					 "max OPP materialized by retuning top LUT row for domain cpus%*pbl: %u -> %u kHz @ %u uV (HW %u kHz)\n",
 					 cpumask_pr_args(&c->related_cpus),
 					 old_max_freq_khz,
 					 c->table[target_index].frequency,
-					 c->voltages[target_index]);
+					 c->voltages[target_index],
+					 materialized_freq_khz);
 			}
 		} else {
 			dev_warn(dev,
-				 "offset OPP skipped for domain cpus%*pbl: HW LUT rejected freq/volt programming or no programmable headroom\n",
+				 "max OPP skipped for domain cpus%*pbl: HW LUT rejected freq/volt programming or no programmable headroom\n",
 				 cpumask_pr_args(&c->related_cpus));
 		}
 	}
@@ -925,6 +939,9 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 	if (!c->max_cores)
 		return -ENOENT;
 
+	of_property_read_u32_index(dev->of_node,
+				   "qcom,max-frequency-khz", index,
+				   &c->max_freq_khz);
 	of_property_read_u32_index(dev->of_node,
 				   "qcom,max-frequency-offset-khz",
 				   index, &c->max_freq_offset_khz);

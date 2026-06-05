@@ -55,19 +55,28 @@ Properties:
 			cpufreq-hw which uses the "qcom,cpufreq-hw"
 			compatible.
 
+- qcom,max-frequency-khz
+	Usage:		Optional
+	Value type:	<u32 array>
+	Definition:	Per-domain maximum CPU frequency in KHz. When present,
+			the driver materializes this as a normal top OPP for each
+			frequency domain instead of exposing it as a boost OPP.
+
 - qcom,max-frequency-offset-khz
 	Usage:		Optional
 	Value type:	<u32 array>
 	Definition:	Per-domain frequency offset in KHz. When present, one
-			extra OPP is appended on top of each domain's HW max
-			frequency by adding this offset.
+			extra normal OPP is appended on top of each domain's HW max
+			frequency by adding this offset. Ignored when
+			qcom,max-frequency-khz is supplied for the domain.
 
 - qcom,max-voltage-offset-uv
 	Usage:		Optional
 	Value type:	<u32 array>
 	Definition:	Per-domain voltage offset in uV applied to the extra
-			offset OPP appended via qcom,max-frequency-offset-khz.
-			If omitted, the appended OPP reuses the HW max voltage.
+			normal OPP appended via qcom,max-frequency-khz or
+			qcom,max-frequency-offset-khz. If omitted, the appended OPP
+			reuses the HW max voltage.
 
 * Property qcom,freq-domain
 Devices supporting freq-domain must set their "qcom,freq-domain" property with
