@@ -288,7 +288,6 @@ static struct device_attribute dev_attr_max_reclaim_limit = {
 	.store = kgsl_proc_max_reclaim_limit_store,
 };
 
-
 void
 kgsl_process_uninit_sysfs(struct kgsl_process_private *private)
 {
