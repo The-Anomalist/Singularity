@@ -425,8 +425,8 @@ qcom_cpufreq_hw_target_index(struct cpufreq_policy *policy,
 		spin_unlock_irqrestore(&c->skip_data.lock, flags);
 		programmed_index = c->skip_data.final_index;
 	} else {
-		writel_relaxed(index, c->reg_bases[REG_PERF_STATE]);
-		programmed_index = index;
+		programmed_index = policy->freq_table[index].driver_data;
+		writel_relaxed(programmed_index, c->reg_bases[REG_PERF_STATE]);
 	}
 
 	spin_lock_irqsave(&c->transition_lock, flags);
@@ -631,6 +631,7 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		else
 			c->table[i].frequency = c->cpu_hw_rate / 1000;
 
+		c->table[i].driver_data = i;
 		c->freqs[i] = c->table[i].frequency;
 		cur_freq = c->table[i].frequency;
 
@@ -684,9 +685,10 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 	c->lut_max_entries = i;
 
 	/*
-	 * If there is room in the HW LUT, materialize the requested max clock as a
-	 * real LUT row so it behaves like a factory bin (residency + perf-state
-	 * programming). If we cannot back it with HW, skip exposing the OPP entirely.
+	 * Prefer materializing the requested max clock as a real LUT row so it
+	 * behaves like a factory bin (residency + perf-state programming). If the
+	 * hardware table cannot be changed, still expose the configured top clock as
+	 * a normal CPUFreq entry and map it to the highest accepted PERF_STATE row.
 	 */
 	if ((c->max_freq_khz || c->max_freq_offset_khz) && c->lut_max_entries) {
 		unsigned int max_index = c->lut_max_entries - 1;
@@ -698,9 +700,11 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		u32 new_lval, new_mv, min_lval;
 		u32 original_target_freq_data, original_target_volt_data;
 		u64 target_freq_khz, target_freq_hz;
+		unsigned int exposed_freq_khz;
 		unsigned int materialized_freq_khz = 0;
 		unsigned int old_max_freq_khz;
 		bool append_row;
+		bool expose_logical = false;
 		bool hw_backed = false;
 
 		max_freq_data = readl_relaxed(base_freq + max_index * lut_row_size);
@@ -708,6 +712,9 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		max_src = (max_freq_data & GENMASK(31, 30)) >> 30;
 		max_lval = max_freq_data & GENMASK(7, 0);
 		old_max_freq_khz = c->table[max_index].frequency;
+		target_freq_khz = c->max_freq_khz;
+		if (!target_freq_khz)
+			target_freq_khz = old_max_freq_khz + c->max_freq_offset_khz;
 		append_row = offset_index < lut_max_entries;
 		target_index = append_row ? offset_index : max_index;
 		/*
@@ -715,10 +722,6 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		 * represents fixed-rate entries where an offset cannot be applied.
 		 */
 		if (max_src) {
-			target_freq_khz = c->max_freq_khz;
-			if (!target_freq_khz)
-				target_freq_khz = c->table[max_index].frequency +
-						  c->max_freq_offset_khz;
 			target_freq_hz = target_freq_khz * 1000;
 			/*
 			 * Explicit max frequencies should be programmed as closely as the
@@ -796,9 +799,27 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 			}
 		}
 
-		if (hw_backed) {
-			c->table[target_index].frequency = c->max_freq_khz ?
-				target_freq_khz : materialized_freq_khz;
+		if (!hw_backed) {
+			/*
+			 * Some EPSS LUTs ignore AP writes after firmware has populated
+			 * the table, and some tables are already full. Do not leave
+			 * Android managers blind in those cases: expose the requested top
+			 * point as a normal policy entry, but map it back to the highest
+			 * accepted PERF_STATE row instead of writing an unaccepted or
+			 * duplicate terminator slot. This keeps sysfs max lists and policy
+			 * verification aware of the configured top bin while the hardware
+			 * still receives a safe, valid index.
+			 */
+			expose_logical = target_freq_khz > old_max_freq_khz;
+		}
+
+		if (hw_backed || expose_logical) {
+			if (expose_logical || c->max_freq_khz)
+				exposed_freq_khz = target_freq_khz;
+			else
+				exposed_freq_khz = materialized_freq_khz;
+
+			c->table[target_index].frequency = exposed_freq_khz;
 			/*
 			 * The max OPP must be a normal selectable frequency, not a
 			 * boost-only entry.  When we append into the first unused LUT slot,
@@ -808,23 +829,39 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 			 */
 			c->table[target_index].flags = 0;
 			c->freqs[target_index] = c->table[target_index].frequency;
-			c->voltages[target_index] = new_mv * 1000;
+			c->voltages[target_index] = hw_backed ? new_mv * 1000 :
+				c->voltages[max_index];
+			c->table[target_index].driver_data = hw_backed ? target_index :
+				max_index;
 			if (append_row) {
 				c->lut_max_entries++;
+				if (hw_backed)
+					dev_info(dev,
+						 "max OPP materialized in HW LUT for domain cpus%*pbl: %u kHz @ %u uV (appended row, HW %u kHz)\n",
+						 cpumask_pr_args(&c->related_cpus),
+						 c->table[target_index].frequency,
+						 c->voltages[target_index],
+						 materialized_freq_khz);
+				else
+					dev_warn(dev,
+						 "max OPP exposed logically for domain cpus%*pbl: %u kHz maps to HW row %u (%u kHz); LUT rejected programming\n",
+						 cpumask_pr_args(&c->related_cpus),
+						 c->table[target_index].frequency,
+						 max_index, old_max_freq_khz);
+			} else if (hw_backed) {
 				dev_info(dev,
-					 "max OPP materialized in HW LUT for domain cpus%*pbl: %u kHz @ %u uV (appended row, HW %u kHz)\n",
-					 cpumask_pr_args(&c->related_cpus),
-					 c->table[target_index].frequency,
-					 c->voltages[target_index],
-					 materialized_freq_khz);
+						 "max OPP materialized by retuning top LUT row for domain cpus%*pbl: %u -> %u kHz @ %u uV (HW %u kHz)\n",
+						 cpumask_pr_args(&c->related_cpus),
+						 old_max_freq_khz,
+						 c->table[target_index].frequency,
+						 c->voltages[target_index],
+						 materialized_freq_khz);
 			} else {
-				dev_info(dev,
-					 "max OPP materialized by retuning top LUT row for domain cpus%*pbl: %u -> %u kHz @ %u uV (HW %u kHz)\n",
+				dev_warn(dev,
+					 "max OPP exposed logically for domain cpus%*pbl: %u kHz replaces table row %u (%u kHz); LUT rejected programming or is full\n",
 					 cpumask_pr_args(&c->related_cpus),
-					 old_max_freq_khz,
 					 c->table[target_index].frequency,
-					 c->voltages[target_index],
-					 materialized_freq_khz);
+					 max_index, old_max_freq_khz);
 			}
 		} else {
 			dev_warn(dev,
