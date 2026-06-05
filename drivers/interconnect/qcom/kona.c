@@ -343,8 +343,6 @@ static unsigned long kona_active_floor_low_kb = 1500000;   /* 1.5 GB/s */
 static unsigned long kona_active_floor_high_kb = 8000000;  /* 8.0 GB/s */
 static unsigned int kona_active_floor_low_percent = 74;
 static unsigned int kona_active_floor_mid_percent = 90;
-static bool kona_gpu_active_floor_scaling_bypass = true;
-static bool kona_gpu_replay_raw_req_enable = true;
 module_param_named(kona_active_floor_scaling_enable, kona_active_floor_scaling_enable, bool, 0644);
 MODULE_PARM_DESC(kona_active_floor_scaling_enable,
 	"Enable display-on workload-aware downscaling of non-display performance floors");
@@ -360,12 +358,6 @@ MODULE_PARM_DESC(kona_active_floor_low_percent,
 module_param_named(kona_active_floor_mid_percent, kona_active_floor_mid_percent, uint, 0644);
 MODULE_PARM_DESC(kona_active_floor_mid_percent,
 	"Percent of post-path floor kept for medium display-on non-display workload votes");
-module_param(kona_gpu_active_floor_scaling_bypass, bool, 0644);
-MODULE_PARM_DESC(kona_gpu_active_floor_scaling_bypass,
-		 "Bypass active floor downscaling for GPU/GMU paths (default: on)");
-module_param(kona_gpu_replay_raw_req_enable, bool, 0644);
-MODULE_PARM_DESC(kona_gpu_replay_raw_req_enable,
-		 "Recompute GPU/GMU replay votes from raw requests before applying floors");
 
 static unsigned int kona_gpu_ib_boost_percent = 205;
 static unsigned int kona_gpu_ib_min_ratio_percent = 255;
@@ -1380,9 +1372,7 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 	 */
 	if (kona_active_floor_scaling_enable &&
 	    !kona_icc_sleep_mode_active(qp, desc) &&
-	    desc->role != KONA_ROLE_DISPLAY &&
-	    !(kona_gpu_active_floor_scaling_bypass &&
-	      desc->role == KONA_ROLE_GPU)) {
+	    desc->role != KONA_ROLE_DISPLAY) {
 		unsigned long low_kb = kona_active_floor_low_kb;
 		unsigned long high_kb = max(kona_active_floor_high_kb, low_kb);
 		unsigned int low_pct = clamp_val(kona_active_floor_low_percent, 0, 100);
@@ -2164,47 +2154,6 @@ static void kona_icc_queue_replay(struct kona_icc_provider *qp, unsigned int del
 }
 
 
-static void kona_icc_prepare_gpu_replay_vote(struct kona_icc_provider *qp,
-					     unsigned int index, u64 *ab, u64 *ib)
-{
-#ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
-	const struct kona_icc_node_desc *desc = &qp->nodes[index];
-	u64 req_ab, req_ib;
-
-	if (!kona_gpu_replay_raw_req_enable || desc->role != KONA_ROLE_GPU ||
-	    !qp->req_ab || !qp->req_ib || READ_ONCE(qp->system_suspended))
-		return;
-
-	req_ab = qp->req_ab[index];
-	req_ib = qp->req_ib[index];
-	if (req_ab == U64_MAX || req_ib == U64_MAX || (!req_ab && !req_ib))
-		return;
-
-	/*
-	 * GPU/GMU replay must follow the current raw KGSL request instead of
-	 * blindly reusing a cached transformed vote. Re-apply the same floor,
-	 * hysteresis and turbo policy used by normal icc_set_bw() so a retry after
-	 * an RPMh busy window cannot replay an under-sized or stale bandwidth vote
-	 * during sustained Vulkan load.
-	 */
-	*ab = req_ab;
-	*ib = req_ib;
-	kona_icc_apply_floor(qp, desc, req_ab, req_ib, ab, ib);
-	kona_icc_apply_hysteresis(qp, desc, index, ab, ib);
-
-	if (desc->id == KONA_ICC_GPU_TO_MEM) {
-		kona_icc_update_gpu_llcc_turbo(qp, *ib);
-	} else if (qp->last_ib) {
-		unsigned int gpu_mem_index = 0;
-
-		if (kona_find_desc(qp, KONA_ICC_GPU_TO_MEM, &gpu_mem_index))
-			kona_icc_update_gpu_llcc_turbo(qp, qp->last_ib[gpu_mem_index]);
-	}
-
-	kona_icc_apply_gpu_llcc_turbo(qp, desc, ab, ib);
-#endif
-}
-
 static bool kona_icc_replay_req_votes(struct kona_icc_provider *qp)
 {
 	bool need_retry = false;
@@ -2217,8 +2166,6 @@ static bool kona_icc_replay_req_votes(struct kona_icc_provider *qp)
 		u64 ab = qp->eff_ab[i];
 		u64 ib = qp->eff_ib[i];
 		bool retry = false;
-
-		kona_icc_prepare_gpu_replay_vote(qp, i, &ab, &ib);
 
 		if (ab == U64_MAX || ib == U64_MAX) {
 			kona_icc_clear_dirty(qp, i);
@@ -2266,8 +2213,6 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 		u64 ib = qp->eff_ib ? qp->eff_ib[i] : req_ib;
 		bool req_unset = (req_ab == U64_MAX && req_ib == U64_MAX);
 		bool req_zero = (!req_unset && !req_ab && !req_ib);
-
-		kona_icc_prepare_gpu_replay_vote(qp, i, &ab, &ib);
 
 		if (qp->nodes[i].role != role)
 			continue;

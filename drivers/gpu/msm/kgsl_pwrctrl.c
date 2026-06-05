@@ -9,7 +9,6 @@
 #include <linux/msm_kgsl.h>
 #include <linux/of_device.h>
 #include <linux/interconnect.h>
-#include <linux/moduleparam.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
@@ -60,27 +59,6 @@ static const char * const clocks[] = {
 static unsigned long ib_votes[KGSL_MAX_BUSLEVELS];
 static int last_vote_buslevel;
 static int max_vote_buslevel;
-static bool top_bus_hold_enable = true;
-module_param(top_bus_hold_enable, bool, 0644);
-MODULE_PARM_DESC(top_bus_hold_enable, "Hold stronger KGSL bus votes while running top GPU bins");
-
-static uint top_bus_hold_pwrlevel = 2;
-module_param(top_bus_hold_pwrlevel, uint, 0644);
-MODULE_PARM_DESC(top_bus_hold_pwrlevel,
-		 "Highest KGSL pwrlevel index covered by top-bin bus hold");
-
-static uint top_bus_hold_boost = 2;
-module_param(top_bus_hold_boost, uint, 0644);
-MODULE_PARM_DESC(top_bus_hold_boost,
-		 "Minimum extra bus levels while top-bin bus hold is active");
-
-static uint top_bus_hold_ms = 250;
-module_param(top_bus_hold_ms, uint, 0644);
-MODULE_PARM_DESC(top_bus_hold_ms,
-		 "Time to keep top-bin bus hold after leaving top GPU bins");
-
-static unsigned long top_bus_hold_until;
-
 static unsigned long last_ab;
 
 static void kgsl_pwrctrl_clk(struct kgsl_device *device, int state,
@@ -626,30 +604,11 @@ void kgsl_pwrctrl_buslevel_update(struct kgsl_device *device,
 	 * otherwise request bus level 0, off.
 	 */
 	if (on) {
-		int bus_mod = pwr->bus_mod;
-
-		/*
-		 * Sustained Vulkan workloads can run the top shader bins with busmon
-		 * only one step above the table default. Keep a bounded, time-limited
-		 * bus vote while those bins are active so GMU bandwidth changes are not
-		 * starved, then allow the normal governor path to drain at idle.
-		 */
-		if (top_bus_hold_enable) {
-			if (pwr->active_pwrlevel <= top_bus_hold_pwrlevel)
-				top_bus_hold_until = jiffies +
-					msecs_to_jiffies(top_bus_hold_ms);
-
-			if (pwr->active_pwrlevel <= top_bus_hold_pwrlevel ||
-			    time_before(jiffies, top_bus_hold_until))
-				bus_mod = max_t(int, bus_mod, (int)top_bus_hold_boost);
-		}
-
 		buslevel = min_t(int, pwr->pwrlevels[0].bus_max,
-				cur + bus_mod);
+				cur + pwr->bus_mod);
 		buslevel = max_t(int, buslevel, 1);
 	} else {
 		/* If the bus is being turned off, reset to default level */
-		top_bus_hold_until = 0;
 		pwr->bus_mod = 0;
 		pwr->bus_percent_ab = 0;
 		pwr->bus_ab_mbytes = 0;
