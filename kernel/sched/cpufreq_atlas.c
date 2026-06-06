@@ -1124,7 +1124,7 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 				   unsigned long max)
 {
 	struct sugov_auto_cfg *auto_cfg = &sg_policy->tunables->auto_cfg;
-	unsigned long avg_util, floor_util, cap_util;
+	unsigned long avg_util, floor_util, cap_util, min_cap_util;
 	unsigned int util_pct, cpu_signal, gpu_signal, npu_signal, mem_signal;
 	unsigned int shared_mem_pressure_pct, shared_mem_contention_pct;
 	unsigned int shared_mem_reclaim_pct, shared_mem_swap_pct;
@@ -1138,6 +1138,8 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	unsigned int heavy_util_thres, heavy_tasks_thres;
 	unsigned int efficiency_load, efficiency_util;
 	unsigned int heavy_floor_util;
+	unsigned int fairness_floor_util = 0;
+	unsigned int pressure_cap_relief = 0;
 	unsigned int cpu_momentum, gpu_momentum, npu_momentum, mem_momentum;
 	unsigned int fusion_signal, fusion_ema, fusion_sum;
 	u64 fusion_boost_until;
@@ -1272,6 +1274,19 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 				 min_util + 32);
 	}
 
+	/*
+	 * GPU starvation guard: when Orion reports heavy GPU work, keep enough
+	 * CPU capacity available for userspace submission, irq work, and driver
+	 * housekeeping. The floor is deliberately modest unless CPU demand also
+	 * rises, so Atlas helps the GPU without stealing the entire budget.
+	 */
+	if (gpu_util_pct >= 85)
+		fairness_floor_util = max_t(unsigned int, fairness_floor_util, 160);
+	else if (gpu_util_pct >= 70 || sg_policy->gpu_signal_ema >= 55)
+		fairness_floor_util = max_t(unsigned int, fairness_floor_util, 112);
+	if (fairness_floor_util && (cpu_signal >= 45 || cpu_momentum >= 18))
+		fairness_floor_util = max_t(unsigned int, fairness_floor_util, 208);
+
 	/* NPU/CDSP/CVP bursts usually share memory and CPU feed work. */
 	if (sg_policy->npu_signal_ema >= 35 || npu_util_pct >= 45) {
 		high_load = max_t(unsigned int, 1, high_load - 5);
@@ -1327,6 +1342,9 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		low_load = min_t(unsigned int, high_load, low_load + 3);
 		max_util = max_t(unsigned int, min_util,
 				 mult_frac(max_util, 17, 20));
+		/* Reclaim needs CPU time too; keep a small non-GPU floor alive. */
+		fairness_floor_util = max_t(unsigned int, fairness_floor_util, 128);
+		pressure_cap_relief = max_t(unsigned int, pressure_cap_relief, 64);
 	}
 
 	if (shared_mem_contention_pct >= 65 &&
@@ -1334,9 +1352,11 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	    thermal_penalty < 70) {
 		min_util = min_t(unsigned int, SCHED_CAPACITY_SCALE,
 				 min_util + 32);
+		fairness_floor_util = max_t(unsigned int, fairness_floor_util, 160);
+		pressure_cap_relief = max_t(unsigned int, pressure_cap_relief, 96);
 		sg_policy->auto_boost_until_ns = max_t(u64,
-							       sg_policy->auto_boost_until_ns,
-							       time + (decay_us * NSEC_PER_USEC));
+						       sg_policy->auto_boost_until_ns,
+						       time + (decay_us * NSEC_PER_USEC));
 	}
 
 	/* Atlas/Orion thermal and clock coupling. */
@@ -1350,6 +1370,13 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		if (gpu_freq_khz > cpu_freq_khz)
 			min_util = min_t(unsigned int, SCHED_CAPACITY_SCALE,
 					 min_util + 48);
+	}
+
+	if (fairness_floor_util) {
+		min_util = max_t(unsigned int, min_util, fairness_floor_util);
+		if (pressure_cap_relief)
+			max_util = min_t(unsigned int, SCHED_CAPACITY_SCALE,
+					 max_util + pressure_cap_relief);
 	}
 
 	low_load = min(low_load, high_load);
@@ -1402,6 +1429,9 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		cap_util = min_t(unsigned long, cap_util,
 			mult_frac(max, efficiency_util,
 				  SCHED_CAPACITY_SCALE));
+	min_cap_util = mult_frac(max, 256, SCHED_CAPACITY_SCALE);
+	min_cap_util = min_t(unsigned long, floor_util, min_cap_util);
+	cap_util = max(cap_util, min_cap_util);
 
 	*util = max(*util, min(floor_util, cap_util));
 }

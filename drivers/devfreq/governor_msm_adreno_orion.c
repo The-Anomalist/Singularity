@@ -1185,6 +1185,8 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	u32 hispeed_load, boost_ms;
 	u32 mem_pressure_pct = 0, mem_contention_pct = 0;
 	u32 npu_util_pct = 0, npu_thermal_pct = 0;
+	u32 cpu_util_pct = 0, cpu_thermal_pct = 0;
+	u32 mem_reclaim_pct = 0, mem_swap_pct = 0, mem_refault_pct = 0;
 	unsigned int refresh_rate = dsi_panel_get_refresh_rate();
 	unsigned long block_until;
 	bool force_max_perf = false;
@@ -1206,15 +1208,36 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	/* Update the GPU load statistics */
 	compute_work_load(stats, priv, devfreq);
 	/*
-	 * Do not waste CPU cycles running this algorithm if
-	 * the GPU just started, or if less than FLOOR time
-	 * has passed since the last run or the gpu hasn't been
-	 * busier than MIN_BUSY.
+	 * Do not waste CPU cycles running this algorithm if the GPU just
+	 * started, but shrink the sampling gate for active/high-refresh scenes.
+	 * Benchmarks and games often submit short bursts; waiting for the full
+	 * legacy 5 ms window lets the GPU and the CPU feeder starve each other.
 	 */
-	if ((stats->total_time == 0) ||
-		(priv->bin.total_time < orion_sample_floor(priv)) ||
-		(unsigned int) priv->bin.busy_time < orion_min_busy(priv)) {
-		return 0;
+	{
+		u32 sample_floor = orion_sample_floor(priv);
+		u32 min_busy = orion_min_busy(priv);
+
+		if (context_count > 0) {
+			sample_floor = min_t(u32, sample_floor, FLOOR >> 1);
+			min_busy = min_t(u32, min_busy, MIN_BUSY >> 1);
+		}
+		if (refresh_rate > 60) {
+			sample_floor = min_t(u32, sample_floor, (FLOOR * 2) / 5);
+			min_busy = min_t(u32, min_busy, MIN_BUSY >> 1);
+		}
+
+		if (stats->total_time == 0 ||
+		    priv->bin.total_time < sample_floor ||
+		    (unsigned int)priv->bin.busy_time < min_busy) {
+			if (priv->bin.total_time) {
+				adjusted_busy = (u64)priv->bin.busy_time * 100;
+				busy_pct = div_u64(adjusted_busy, priv->bin.total_time);
+				orion_update_atlas_telemetry(devfreq, busy_pct,
+							     stats->current_frequency,
+							     context_count);
+			}
+			return 0;
+		}
 	}
 
 	level = devfreq_get_freq_level(devfreq, stats->current_frequency);
@@ -1280,10 +1303,31 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 				   &transition_boost_pct, NULL,
 				   predicted_busy_pct);
 	atlas_get_npu_telemetry(&npu_util_pct, NULL, &npu_thermal_pct);
+	atlas_get_cpu_telemetry(&cpu_util_pct, NULL, &cpu_thermal_pct);
+	atlas_get_mem_stats(&mem_reclaim_pct, &mem_swap_pct, &mem_refault_pct);
 	if (npu_util_pct >= 60 && predicted_busy_pct < 50) {
 		upthreshold_pct = min_t(unsigned int, 100, upthreshold_pct + 5);
 		downthreshold_pct = min_t(unsigned int, 50, downthreshold_pct + 3);
 		transition_boost_pct = max_t(unsigned int, 0, transition_boost_pct - 5);
+	}
+
+	/*
+	 * Fairness guard: do not let an automatic scene boost pin the GPU at
+	 * maximum while CPU, NPU, or reclaim pressure is the likely bottleneck.
+	 * Keeping Orion dynamic here avoids starving the CPU feeder and memory
+	 * reclaim paths that the GPU needs to make forward progress.
+	 */
+	if (force_max_perf &&
+	    (cpu_thermal_pct >= 70 || npu_thermal_pct >= 70 ||
+	     mem_pressure_pct >= 88 || mem_reclaim_pct >= 45 ||
+	     mem_swap_pct >= 30 || mem_refault_pct >= 40) &&
+	    predicted_busy_pct < 90)
+		force_max_perf = false;
+
+	if (cpu_util_pct >= 85 && predicted_busy_pct < 70) {
+		upthreshold_pct = min_t(unsigned int, 100, upthreshold_pct + 4);
+		downthreshold_pct = min_t(unsigned int, 50, downthreshold_pct + 2);
+		transition_boost_pct = max_t(unsigned int, 0, transition_boost_pct - 4);
 	}
 
 	/*
@@ -1308,6 +1352,10 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 
 	if (val > 0 && priv->orion_downscale_delay_ms &&
 		time_before(jiffies, priv->orion_downscale_blocked_till))
+		val = 0;
+
+	/* Never step down while there is meaningful predicted GPU work queued. */
+	if (val > 0 && predicted_busy_pct >= max_t(u32, 40, downthreshold_pct + 10))
 		val = 0;
 
 	if (val) {
