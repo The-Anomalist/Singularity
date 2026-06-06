@@ -126,10 +126,10 @@
 };
 
 /*
- * Rebalance CPU memory QoS for better battery life while keeping burst
- * responsiveness:
- * - lower sustained floors reduce idle/light-load drain
- * - higher upscale + tighter polling preserves fast ramp under load
+ * Singularity memory QoS follows the real CPU/DDR ceilings:
+ * - CPU-to-LLCC keeps a moderate burst floor for fast cache refills
+ * - CPU-to-DDR stays at LPDDR4X-safe bandwidth to avoid bad bins
+ * - latency monitors can still climb into the LPDDR5 table on demand
  */
 &cpu_cpu_llcc_bw {
 	qcom,icc-min-avg-kbps = <5200000>;
@@ -140,16 +140,16 @@
 };
 
 &cpu_llcc_ddr_bw {
-	qcom,icc-min-avg-kbps = <4587000>;
-	qcom,icc-min-peak-kbps = <9160000>;
+	qcom,icc-min-avg-kbps = <4184000>;
+	qcom,icc-min-peak-kbps = <8368000>;
 	qcom,icc-boost-percent = <125>;
 	qcom,icc-upscale-percent = <185>;
 	qcom,polling-ms = <4>;
 };
 
 &cpu4_cpu_ddr_latfloor {
-	qcom,icc-min-avg-kbps = <4587000>;
-	qcom,icc-min-peak-kbps = <9160000>;
+	qcom,icc-min-avg-kbps = <4184000>;
+	qcom,icc-min-peak-kbps = <8368000>;
 	qcom,icc-boost-percent = <125>;
 };
 
