@@ -56,6 +56,7 @@ static DEFINE_SPINLOCK(boost_lock);
 #define TZ_V2_UPDATE_WITH_CA_ID_64 0xD
 
 #define TAG "orion: "
+#define ORION_ATLAS_MEM_SAMPLE_MS	20
 
 static void orion_build_auto_policy(struct devfreq_msm_adreno_tz_data *priv,
 				    unsigned int busy_pct,
@@ -801,6 +802,7 @@ static void orion_update_atlas_telemetry(struct devfreq *devfreq,
 	static unsigned long prev_pgscan;
 	static unsigned long prev_pswpout;
 	static unsigned long prev_refault;
+	static unsigned long next_mem_sample;
 	unsigned long pgscan_now, pswpout_now, refault_now;
 
 	if (!devfreq || !devfreq->profile || !devfreq->profile->freq_table)
@@ -820,6 +822,17 @@ static void orion_update_atlas_telemetry(struct devfreq *devfreq,
 	atlas_update_gpu_telemetry(min_t(unsigned int, busy_pct, 100),
 				   (unsigned int)(current_freq / 1000),
 				   thermal_pct);
+
+	/*
+	 * Keep the cheap GPU feed per sample, but avoid walking VM counters on
+	 * every devfreq poll. Those counters are global and comparatively costly
+	 * in this hot path; a 20ms cadence is enough for Atlas policy decisions
+	 * while avoiding avoidable scheduler/devfreq overhead.
+	 */
+	if (time_before(jiffies, READ_ONCE(next_mem_sample)))
+		return;
+	WRITE_ONCE(next_mem_sample,
+		   jiffies + msecs_to_jiffies(ORION_ATLAS_MEM_SAMPLE_MS));
 
 	mem_total = totalram_pages;
 	mem_avail = si_mem_available();
