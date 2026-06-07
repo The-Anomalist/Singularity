@@ -104,6 +104,9 @@ struct sugov_policy {
 	unsigned int		npu_signal_ema;
 	unsigned int		mem_signal_ema;
 	unsigned int		fusion_signal_ema;
+	unsigned long		prev_pgscan;
+	unsigned long		prev_pswpout;
+	unsigned long		prev_refault;
 	bool			has_prime_cpu;
 
 	/* The next fields are only needed if fast switch cannot be used: */
@@ -945,12 +948,12 @@ static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #define DEFAULT_AUTO_BOOST_LOW_LOAD_WALT 58
 #define DEFAULT_AUTO_BOOST_MIN_UTIL_WALT 96
 #define DEFAULT_AUTO_BOOST_MAX_UTIL_WALT 224
-#define DEFAULT_AUTO_BOOST_DECAY_US_WALT 12000
+#define DEFAULT_AUTO_BOOST_DECAY_US_WALT 8000
 #define DEFAULT_AUTO_BOOST_HIGH_LOAD_PELT 90
 #define DEFAULT_AUTO_BOOST_LOW_LOAD_PELT 65
 #define DEFAULT_AUTO_BOOST_MIN_UTIL_PELT 64
 #define DEFAULT_AUTO_BOOST_MAX_UTIL_PELT 192
-#define DEFAULT_AUTO_BOOST_DECAY_US_PELT 10000
+#define DEFAULT_AUTO_BOOST_DECAY_US_PELT 8000
 #define DEFAULT_AUTO_BOOST_HEAVY_TASKS 4
 #define DEFAULT_AUTO_BOOST_HEAVY_UTIL 92
 #define DEFAULT_AUTO_BOOST_PRIME_UTIL 300
@@ -1148,9 +1151,6 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	bool transition = sugov_is_transition_event(flags);
 	bool heavy_load;
 	long mem_avail, mem_total;
-	static unsigned long prev_pgscan;
-	static unsigned long prev_pswpout;
-	static unsigned long prev_refault;
 	unsigned long pgscan_now, pswpout_now, refault_now;
 	unsigned int reclaim_signal, swap_signal, refault_signal;
 
@@ -1198,17 +1198,17 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	}
 	refault_now = global_node_page_state(WORKINGSET_REFAULT);
 	reclaim_signal = min_t(unsigned int, 100,
-		(pgscan_now > prev_pgscan) ?
-		(pgscan_now - prev_pgscan) >> 7 : 0);
+		(pgscan_now > sg_policy->prev_pgscan) ?
+		(pgscan_now - sg_policy->prev_pgscan) >> 7 : 0);
 	swap_signal = min_t(unsigned int, 100,
-		(pswpout_now > prev_pswpout) ?
-		(pswpout_now - prev_pswpout) >> 4 : 0);
+		(pswpout_now > sg_policy->prev_pswpout) ?
+		(pswpout_now - sg_policy->prev_pswpout) >> 4 : 0);
 	refault_signal = min_t(unsigned int, 100,
-		(refault_now > prev_refault) ?
-		(refault_now - prev_refault) >> 5 : 0);
-	prev_pgscan = pgscan_now;
-	prev_pswpout = pswpout_now;
-	prev_refault = refault_now;
+		(refault_now > sg_policy->prev_refault) ?
+		(refault_now - sg_policy->prev_refault) >> 5 : 0);
+	sg_policy->prev_pgscan = pgscan_now;
+	sg_policy->prev_pswpout = pswpout_now;
+	sg_policy->prev_refault = refault_now;
 	reclaim_signal = max(reclaim_signal, shared_mem_reclaim_pct);
 	swap_signal = max(swap_signal, shared_mem_swap_pct);
 	refault_signal = max(refault_signal, shared_mem_refault_pct);
@@ -2655,12 +2655,14 @@ static int sugov_init(struct cpufreq_policy *policy)
 	}
 
 	/*
-	 * Keep default response snappy for bursty foreground benchmarks/tasks.
-	 * Policies can still override these tunables at runtime via sysfs.
+	 * Keep upscaling snappy for bursty foreground benchmarks/tasks,
+	 * but give downscaling a short guard window. Unbounded downscale
+	 * bypassing made Atlas chase every Orion sample and could produce
+	 * CPU/GPU oscillation under long benchmark loops.
 	 */
 	tunables->auto_cfg.up_rate_limit_us = 0;
-	tunables->auto_cfg.down_rate_limit_us = 0;
-	tunables->auto_cfg.down_hysteresis_us = 3000;
+	tunables->auto_cfg.down_rate_limit_us = 1000;
+	tunables->auto_cfg.down_hysteresis_us = 1500;
 	tunables->auto_cfg.hispeed_load = DEFAULT_HISPEED_LOAD;
 	tunables->auto_cfg.hispeed_freq = 0;
 	tunables->auto_cfg.auto_profile = SUGOV_AUTO_PROFILE_BALANCED;
@@ -2775,6 +2777,9 @@ static int sugov_start(struct cpufreq_policy *policy)
 	sg_policy->gpu_signal_ema		= 0;
 	sg_policy->npu_signal_ema		= 0;
 	sg_policy->mem_signal_ema		= 0;
+	sg_policy->prev_pgscan			= 0;
+	sg_policy->prev_pswpout			= 0;
+	sg_policy->prev_refault			= 0;
 	sg_policy->has_prime_cpu		= sugov_policy_has_prime_cpu(sg_policy);
 #ifdef OPLUS_FEATURE_POWER_CPUFREQ
 	sg_policy->hispeed_validate_time	= 0;

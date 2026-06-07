@@ -269,16 +269,19 @@ static void orion_apply_perf_boost_level(
 		u32 load_filter_pct;
 		u32 downscale_delay_ms;
 	} profile[] = {
-		{ 200, 82, 12, 90, 1, 140, 240, 30, 68, 85 },
-		{ 205, 78, 10, 86, 0, 180, 280, 34, 74, 95 },
-		{ 210, 74,  8, 82, 0, 220, 320, 38, 80, 110 },
-		{ 215, 70,  6, 76, 0, 260, 360, 42, 84, 125 },
+		{ 200, 82, 12, 90, 1, 120, 200, 28, 68, 70 },
+		{ 205, 79, 10, 86, 1, 150, 240, 32, 74, 80 },
+		{ 210, 76,  8, 82, 0, 180, 280, 36, 80, 95 },
+		{ 215, 72,  6, 78, 0, 220, 320, 40, 84, 110 },
 	};
 	const unsigned int idx = min_t(unsigned int, level, ARRAY_SIZE(profile) - 1);
 
 	switch (level) {
 	case 0:
 	case 1:
+		priv->orion_boost_enable = true;
+		priv->orion_boost_level = 1;
+		break;
 	case 2:
 	default:
 		priv->orion_boost_enable = true;
@@ -1395,10 +1398,15 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 
 		if (boost_active) {
 			int boost_level = priv->orion_boost_level;
+			bool meaningful_work = predicted_busy_pct >=
+				max_t(u32, 35, downthreshold_pct + 10) ||
+				context_count >=
+				max_t(int, 1, priv->orion_transition_contexts);
 
 			boost_level = clamp_t(int, boost_level, 0,
 				devfreq->profile->max_state - 1);
-			level = min(level, boost_level);
+			if (meaningful_work)
+				level = min(level, boost_level);
 			if (transition_boost_pct &&
 				predicted_busy_pct >= (100 -
 					transition_boost_pct))
@@ -1459,12 +1467,23 @@ static int tz_notify(struct notifier_block *nb, unsigned long type, void *devp)
 						&hispeed_load, &boost_ms,
 						&force_max_perf);
 
-			spin_lock(&boost_lock);
-			priv->orion_boost_end =
-				jiffies + msecs_to_jiffies(boost_ms);
-			spin_unlock(&boost_lock);
+			if (demand_pct >= max_t(unsigned int, 25,
+					downthreshold_pct + 8) ||
+			    context_count >= max_t(unsigned int, 1,
+					priv->orion_transition_contexts)) {
+				if (demand_pct < upthreshold_pct)
+					boost_ms = min_t(unsigned int, boost_ms,
+						max_t(unsigned int, 1,
+						      priv->orion_boost_ms >> 1));
+				spin_lock(&boost_lock);
+				priv->orion_boost_end = max_t(unsigned long,
+					priv->orion_boost_end,
+					jiffies + msecs_to_jiffies(boost_ms));
+				spin_unlock(&boost_lock);
+			}
 		}
-		if (priv->orion_downscale_delay_ms)
+		if (priv->orion_downscale_delay_ms &&
+		    priv->orion_predicted_busy_pct >= priv->orion_downthreshold_pct + 10)
 			priv->orion_downscale_blocked_till =
 				jiffies + msecs_to_jiffies(
 					priv->orion_downscale_delay_ms);
