@@ -76,6 +76,7 @@ struct kgsl_pwr_history {
  * @devfreq_suspend_ws - Pass device suspension to devfreq
  * @devfreq_resume_ws - Pass device resume to devfreq
  * @devfreq_notify_ws - Notify devfreq to update sampling
+ * @devfreq_submit_ws - Notify devfreq when a new busy period starts
  * @next_governor_call - Timestamp after which the governor may be notified of
  * a new sample
  * @history - History of power events with timestamps and durations
@@ -104,6 +105,7 @@ struct kgsl_pwrscale {
 	struct work_struct devfreq_suspend_ws;
 	struct work_struct devfreq_resume_ws;
 	struct work_struct devfreq_notify_ws;
+	struct work_struct devfreq_submit_ws;
 	ktime_t next_governor_call;
 	struct kgsl_pwr_history history[KGSL_PWREVENT_MAX];
 	int popp_level;

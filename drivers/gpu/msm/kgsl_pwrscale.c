@@ -46,6 +46,7 @@ static struct kgsl_midframe_info {
 static void do_devfreq_suspend(struct work_struct *work);
 static void do_devfreq_resume(struct work_struct *work);
 static void do_devfreq_notify(struct work_struct *work);
+static void do_devfreq_submit(struct work_struct *work);
 
 /*
  * These variables are used to keep the latest data
@@ -148,8 +149,20 @@ void kgsl_pwrscale_busy(struct kgsl_device *device)
 {
 	if (!device->pwrscale.enabled)
 		return;
-	if (device->pwrscale.on_time == 0)
+	if (device->pwrscale.on_time == 0) {
 		device->pwrscale.on_time = ktime_to_us(ktime_get());
+
+		/*
+		 * Backport submit-edge devfreq notification support so governors
+		 * with scene/start boost logic can react as soon as new GPU work is
+		 * queued instead of waiting for the next retire/idle sample.  The
+		 * notifier can update devfreq and take its own locks, so dispatch it
+		 * through the pwrscale workqueue while the device mutex is held here.
+		 */
+		if (device->pwrscale.devfreq_wq && device->pwrscale.devfreqptr)
+			queue_work(device->pwrscale.devfreq_wq,
+				   &device->pwrscale.devfreq_submit_ws);
+	}
 }
 EXPORT_SYMBOL(kgsl_pwrscale_busy);
 
@@ -1170,6 +1183,7 @@ int kgsl_pwrscale_init(struct device *dev, const char *governor)
 	INIT_WORK(&pwrscale->devfreq_suspend_ws, do_devfreq_suspend);
 	INIT_WORK(&pwrscale->devfreq_resume_ws, do_devfreq_resume);
 	INIT_WORK(&pwrscale->devfreq_notify_ws, do_devfreq_notify);
+	INIT_WORK(&pwrscale->devfreq_submit_ws, do_devfreq_submit);
 	if (kgsl_midframe)
 		INIT_WORK(&kgsl_midframe->timer_check_ws,
 				kgsl_pwrscale_midframe_timer_check);
@@ -1261,5 +1275,16 @@ static void do_devfreq_notify(struct work_struct *work)
 
 	srcu_notifier_call_chain(&pwrscale->nh,
 				 ADRENO_DEVFREQ_NOTIFY_RETIRE,
+				 devfreq);
+}
+
+static void do_devfreq_submit(struct work_struct *work)
+{
+	struct kgsl_pwrscale *pwrscale = container_of(work,
+			struct kgsl_pwrscale, devfreq_submit_ws);
+	struct devfreq *devfreq = pwrscale->devfreqptr;
+
+	srcu_notifier_call_chain(&pwrscale->nh,
+				 ADRENO_DEVFREQ_NOTIFY_SUBMIT,
 				 devfreq);
 }
