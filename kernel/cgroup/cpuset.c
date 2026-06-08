@@ -958,7 +958,7 @@ static void update_cpumasks_hier(struct cpuset *cs, struct cpumask *new_cpus)
 		 * If the effective cpumask of any non-empty cpuset is changed,
 		 * we need to rebuild sched domains.
 		 */
-		if (!cpumask_empty(cp->cpus_allowed) &&
+		if (!cpumask_empty(cp->effective_cpus) &&
 		    is_sched_load_balance(cp))
 			need_rebuild_sched_domains = true;
 

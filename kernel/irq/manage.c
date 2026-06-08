@@ -469,6 +469,16 @@ int irq_setup_affinity(struct irq_desc *desc)
 	if (cpumask_empty(&mask))
 		cpumask_copy(&mask, cpu_online_mask);
 
+	/*
+	 * Keep automatically placed interrupts away from isolated CPUs when
+	 * possible.  Explicit affinity changes still honor the requested mask,
+	 * but the default spread should not add housekeeping noise to CPUs that
+	 * were isolated for latency or power efficiency.
+	 */
+	cpumask_andnot(&mask, &mask, cpu_isolated_mask);
+	if (cpumask_empty(&mask))
+		cpumask_copy(&mask, cpu_online_mask);
+
 	if (node != NUMA_NO_NODE) {
 		const struct cpumask *nodemask = cpumask_of_node(node);
 
