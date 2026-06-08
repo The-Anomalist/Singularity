@@ -443,6 +443,8 @@ static long i2cdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case I2C_RDWR: {
 		struct i2c_rdwr_ioctl_data rdwr_arg;
 		struct i2c_msg *rdwr_pa;
+		size_t msgsz;
+		size_t nmsgs;
 
 		if (copy_from_user(&rdwr_arg,
 				   (struct i2c_rdwr_ioctl_data __user *)arg,
@@ -459,8 +461,9 @@ static long i2cdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		if (rdwr_arg.nmsgs > I2C_RDWR_IOCTL_MAX_MSGS)
 			return -EINVAL;
 
-		rdwr_pa = memdup_user(rdwr_arg.msgs,
-				      rdwr_arg.nmsgs * sizeof(struct i2c_msg));
+		nmsgs = rdwr_arg.nmsgs;
+		msgsz = sizeof(*rdwr_pa);
+		rdwr_pa = memdup_array_user(rdwr_arg.msgs, nmsgs, msgsz);
 		if (IS_ERR(rdwr_pa))
 			return PTR_ERR(rdwr_pa);
 

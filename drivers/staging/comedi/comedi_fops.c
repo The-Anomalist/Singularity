@@ -1624,11 +1624,11 @@ static int __comedi_get_user_chanlist(struct comedi_device *dev,
 				      struct comedi_cmd *cmd)
 {
 	unsigned int *chanlist;
+	const size_t chansz = sizeof(*chanlist);
 	int ret;
 
 	cmd->chanlist = NULL;
-	chanlist = memdup_user(user_chanlist,
-			       cmd->chanlist_len * sizeof(unsigned int));
+	chanlist = memdup_array_user(user_chanlist, cmd->chanlist_len, chansz);
 	if (IS_ERR(chanlist))
 		return PTR_ERR(chanlist);
 
