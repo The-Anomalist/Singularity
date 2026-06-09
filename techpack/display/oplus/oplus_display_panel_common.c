@@ -675,9 +675,9 @@ int oplus_display_panel_get_serial_number(void *buf)
 	if (serial_number0 != 0) {
 		ret = scnprintf(panel_rnum->serial_number, PAGE_SIZE,
 				"Get panel serial number: %llx\n",
-				serial_number0);
-		pr_info("%s read serial_number0 0x%x\n", __func__,
-			serial_number0);
+				(unsigned long long)serial_number0);
+		pr_info("%s read serial_number0 0x%llx\n", __func__,
+			(unsigned long long)serial_number0);
 		return ret;
 	}
 
@@ -783,14 +783,14 @@ int oplus_display_panel_get_serial_number(void *buf)
 		panel_serial_info.reserved[1] =
 			read[panel_serial_info.reg_index + 6];
 
-		serial_number = (panel_serial_info.year << 56) +
-				(panel_serial_info.month << 48) +
-				(panel_serial_info.day << 40) +
-				(panel_serial_info.hour << 32) +
-				(panel_serial_info.minute << 24) +
-				(panel_serial_info.second << 16) +
-				(panel_serial_info.reserved[0] << 8) +
-				(panel_serial_info.reserved[1]);
+		serial_number = ((uint64_t)panel_serial_info.year << 56) |
+				((uint64_t)panel_serial_info.month << 48) |
+				((uint64_t)panel_serial_info.day << 40) |
+				((uint64_t)panel_serial_info.hour << 32) |
+				((uint64_t)panel_serial_info.minute << 24) |
+				((uint64_t)panel_serial_info.second << 16) |
+				((uint64_t)panel_serial_info.reserved[0] << 8) |
+				((uint64_t)panel_serial_info.reserved[1]);
 		if (!panel_serial_info.year) {
 			/*
 			 * the panel we use always large than 2011, so
@@ -802,7 +802,7 @@ int oplus_display_panel_get_serial_number(void *buf)
 
 		ret = scnprintf(panel_rnum->serial_number, PAGE_SIZE,
 				"Get panel serial number: %llx\n",
-				serial_number);
+				(unsigned long long)serial_number);
 		/*Save serial_number value.*/
 		serial_number0 = serial_number;
 		break;

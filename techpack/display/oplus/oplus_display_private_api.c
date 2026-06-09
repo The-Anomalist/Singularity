@@ -741,9 +741,9 @@ oplus_display_get_panel_serial_number(struct kobject *obj,
 	if (serial_number_fir != 0) {
 		ret = scnprintf(buf, PAGE_SIZE,
 				"Get panel0 serial number: %llx\n",
-				serial_number_fir);
-		pr_info("%s read serial_number_fir 0x%x\n", __func__,
-			serial_number_fir);
+				(unsigned long long)serial_number_fir);
+		pr_info("%s read serial_number_fir 0x%llx\n", __func__,
+			(unsigned long long)serial_number_fir);
 		return ret;
 	}
 
@@ -847,14 +847,14 @@ oplus_display_get_panel_serial_number(struct kobject *obj,
 		panel_serial_info.reserved[1] =
 			read[panel_serial_info.reg_index + 6];
 
-		serial_number = (panel_serial_info.year << 56) +
-				(panel_serial_info.month << 48) +
-				(panel_serial_info.day << 40) +
-				(panel_serial_info.hour << 32) +
-				(panel_serial_info.minute << 24) +
-				(panel_serial_info.second << 16) +
-				(panel_serial_info.reserved[0] << 8) +
-				(panel_serial_info.reserved[1]);
+		serial_number = ((uint64_t)panel_serial_info.year << 56) |
+				((uint64_t)panel_serial_info.month << 48) |
+				((uint64_t)panel_serial_info.day << 40) |
+				((uint64_t)panel_serial_info.hour << 32) |
+				((uint64_t)panel_serial_info.minute << 24) |
+				((uint64_t)panel_serial_info.second << 16) |
+				((uint64_t)panel_serial_info.reserved[0] << 8) |
+				((uint64_t)panel_serial_info.reserved[1]);
 		if (!panel_serial_info.year) {
 			/*
 			 * the panel we use always large than 2011, so
@@ -866,7 +866,7 @@ oplus_display_get_panel_serial_number(struct kobject *obj,
 
 		ret = scnprintf(buf, PAGE_SIZE,
 				"Get panel serial number: %llx\n",
-				serial_number);
+				(unsigned long long)serial_number);
 		/*Save serial_number value.*/
 		serial_number_fir = serial_number;
 		break;
@@ -3979,6 +3979,36 @@ static ssize_t oplus_display_get_mipi_clk_rate_hz(struct kobject *obj,
 	return sprintf(buf, "%llu\n", clk_rate_hz);
 }
 
+static ssize_t oplus_display_get_brightness_info(struct kobject *obj,
+						 struct kobj_attribute *attr,
+						 char *buf)
+{
+	struct dsi_display *display = get_main_display();
+	struct dsi_backlight_config bl_config;
+
+	if (!display || !display->panel) {
+		pr_err("failed to get display brightness info\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&display->display_lock);
+	bl_config = display->panel->bl_config;
+	mutex_unlock(&display->display_lock);
+
+	return scnprintf(buf, PAGE_SIZE,
+			 "level=%u\n"
+			 "raw_level=%u\n"
+			 "min_level=%u\n"
+			 "max_level=%u\n"
+			 "normal_max_level=%u\n"
+			 "default_level=%u\n"
+			 "dc_real_level=%u\n",
+			 bl_config.bl_level, bl_config.oplus_raw_bl,
+			 bl_config.bl_min_level, bl_config.bl_max_level,
+			 bl_config.brightness_normal_max_level,
+			 bl_config.brightness_default_level, bl_config.bl_dc_real);
+}
+
 static ssize_t oplus_display_get_fp_state(struct kobject *obj,
 					  struct kobj_attribute *attr,
 					  char *buf)
@@ -4064,6 +4094,8 @@ static OPLUS_ATTR(failsafe, S_IRUGO | S_IWUSR, NULL,
 		   oplus_display_set_failsafe);
 static OPLUS_ATTR(mipi_clk_rate_hz, S_IRUGO | S_IWUSR,
 		   oplus_display_get_mipi_clk_rate_hz, NULL);
+static OPLUS_ATTR(brightness_info, 0444,
+		   oplus_display_get_brightness_info, NULL);
 #ifdef OPLUS_FEATURE_AOD_RAMLESS
 static OPLUS_ATTR(aod_area, S_IRUGO | S_IWUSR, oplus_display_get_aod_area,
 		   oplus_display_set_aod_area);
@@ -4115,7 +4147,7 @@ static struct attribute *oplus_display_attrs[] = {
 	&oplus_attr_max_brightness.attr, &oplus_attr_ccd_check.attr,
 	&oplus_attr_iris_rm_check.attr, &oplus_attr_panel_pwr.attr,
 	&oplus_attr_mca_state.attr, &oplus_attr_failsafe.attr,
-	&oplus_attr_mipi_clk_rate_hz.attr,
+	&oplus_attr_mipi_clk_rate_hz.attr, &oplus_attr_brightness_info.attr,
 #ifdef OPLUS_FEATURE_AOD_RAMLESS
 	&oplus_attr_aod_area.attr, &oplus_attr_video.attr,
 #endif /* OPLUS_FEATURE_AOD_RAMLESS */
