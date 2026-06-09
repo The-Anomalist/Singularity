@@ -2345,61 +2345,37 @@ static ssize_t above_hispeed_delay_show(struct gov_attr_set *attr_set,
 }
 #endif
 
-static struct governor_attr hispeed_load = __ATTR_RW(hispeed_load);
-static struct governor_attr hispeed_freq = __ATTR_RW(hispeed_freq);
-static struct governor_attr rtg_boost_freq = __ATTR_RW(rtg_boost_freq);
-static struct governor_attr pl = __ATTR_RW(pl);
-static struct governor_attr mem_boost_util = __ATTR_RW(mem_boost_util);
-static struct governor_attr mem_boost_hyst_us = __ATTR_RW(mem_boost_hyst_us);
-static struct governor_attr auto_boost = __ATTR_RW(auto_boost);
-static struct governor_attr auto_profile = __ATTR_RW(auto_profile);
-static struct governor_attr auto_boost_high_load = __ATTR_RW(auto_boost_high_load);
-static struct governor_attr auto_boost_low_load = __ATTR_RW(auto_boost_low_load);
-static struct governor_attr auto_boost_min_util = __ATTR_RW(auto_boost_min_util);
-static struct governor_attr auto_boost_max_util = __ATTR_RW(auto_boost_max_util);
-static struct governor_attr auto_boost_decay_us = __ATTR_RW(auto_boost_decay_us);
-static struct governor_attr auto_boost_heavy_util = __ATTR_RW(auto_boost_heavy_util);
-static struct governor_attr auto_boost_heavy_tasks = __ATTR_RW(auto_boost_heavy_tasks);
-static struct governor_attr auto_boost_prime_util = __ATTR_RW(auto_boost_prime_util);
-static struct governor_attr auto_boost_gold_util = __ATTR_RW(auto_boost_gold_util);
-static struct governor_attr auto_boost_efficiency_load = __ATTR_RW(auto_boost_efficiency_load);
-static struct governor_attr auto_boost_efficiency_util = __ATTR_RW(auto_boost_efficiency_util);
-static struct governor_attr uclamp_helper = __ATTR_RW(uclamp_helper);
+static struct governor_attr hispeed_load __maybe_unused = __ATTR_RW(hispeed_load);
+static struct governor_attr hispeed_freq __maybe_unused = __ATTR_RW(hispeed_freq);
+static struct governor_attr rtg_boost_freq __maybe_unused = __ATTR_RW(rtg_boost_freq);
+static struct governor_attr pl __maybe_unused = __ATTR_RW(pl);
+static struct governor_attr mem_boost_util __maybe_unused = __ATTR_RW(mem_boost_util);
+static struct governor_attr mem_boost_hyst_us __maybe_unused = __ATTR_RW(mem_boost_hyst_us);
+static struct governor_attr auto_boost __maybe_unused = __ATTR_RW(auto_boost);
+static struct governor_attr auto_profile __maybe_unused = __ATTR_RW(auto_profile);
+static struct governor_attr auto_boost_high_load __maybe_unused = __ATTR_RW(auto_boost_high_load);
+static struct governor_attr auto_boost_low_load __maybe_unused = __ATTR_RW(auto_boost_low_load);
+static struct governor_attr auto_boost_min_util __maybe_unused = __ATTR_RW(auto_boost_min_util);
+static struct governor_attr auto_boost_max_util __maybe_unused = __ATTR_RW(auto_boost_max_util);
+static struct governor_attr auto_boost_decay_us __maybe_unused = __ATTR_RW(auto_boost_decay_us);
+static struct governor_attr auto_boost_heavy_util __maybe_unused = __ATTR_RW(auto_boost_heavy_util);
+static struct governor_attr auto_boost_heavy_tasks __maybe_unused =
+	__ATTR_RW(auto_boost_heavy_tasks);
+static struct governor_attr auto_boost_prime_util __maybe_unused = __ATTR_RW(auto_boost_prime_util);
+static struct governor_attr auto_boost_gold_util __maybe_unused = __ATTR_RW(auto_boost_gold_util);
+static struct governor_attr auto_boost_efficiency_load __maybe_unused =
+	__ATTR_RW(auto_boost_efficiency_load);
+static struct governor_attr auto_boost_efficiency_util __maybe_unused =
+	__ATTR_RW(auto_boost_efficiency_util);
+static struct governor_attr uclamp_helper __maybe_unused = __ATTR_RW(uclamp_helper);
 #ifdef OPLUS_FEATURE_POWER_CPUFREQ
-static struct governor_attr target_loads =
+static struct governor_attr target_loads __maybe_unused =
 	__ATTR(target_loads, 0664, target_loads_show, target_loads_store);
-static struct governor_attr above_hispeed_delay =
+static struct governor_attr above_hispeed_delay __maybe_unused =
 				__ATTR_RW(above_hispeed_delay);
 #endif
 
 static struct attribute *sugov_attributes[] = {
-	&up_rate_limit_us.attr,
-	&down_rate_limit_us.attr,
-	&down_hysteresis_us.attr,
-	&hispeed_load.attr,
-	&hispeed_freq.attr,
-	&rtg_boost_freq.attr,
-	&pl.attr,
-	&mem_boost_util.attr,
-	&mem_boost_hyst_us.attr,
-	&auto_boost.attr,
-	&auto_profile.attr,
-	&auto_boost_high_load.attr,
-	&auto_boost_low_load.attr,
-	&auto_boost_min_util.attr,
-	&auto_boost_max_util.attr,
-	&auto_boost_decay_us.attr,
-	&auto_boost_heavy_util.attr,
-	&auto_boost_heavy_tasks.attr,
-	&auto_boost_prime_util.attr,
-	&auto_boost_gold_util.attr,
-	&auto_boost_efficiency_load.attr,
-	&auto_boost_efficiency_util.attr,
-	&uclamp_helper.attr,
-#ifdef OPLUS_FEATURE_POWER_CPUFREQ
-	&target_loads.attr,
-	&above_hispeed_delay.attr,
-#endif
 	NULL
 };
 

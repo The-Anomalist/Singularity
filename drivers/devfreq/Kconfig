@@ -144,9 +144,10 @@ config DEVFREQ_GOV_QCOM_ADRENO_ORION
 	tristate "Orion Adreno Trustzone governor"
 	depends on QCOM_KGSL
 	help
-	  Orion Trustzone governor for the Adreno GPU.
-	  It replaces the previous Singularity profile and
-	  provides CPU/GPU coordination hooks for Atlas.
+	  Orion Trustzone governor for the Adreno GPU. It runs as a
+	  telemetry-driven policy with no runtime tuning surface, shares
+	  realtime GPU and memory pressure with Atlas, and allows the GPU
+	  to collapse to the lowest power level while the display is off.
 
 config DEVFREQ_GOV_QCOM_GPUBW_MON
 	tristate "GPU BW voting governor"
