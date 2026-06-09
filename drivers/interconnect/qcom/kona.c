@@ -84,6 +84,7 @@ struct kona_icc_provider {
 	unsigned long *replay_scan_nodes;
 	spinlock_t dirty_lock;
 	bool display_active;
+	unsigned long display_off_jiffies;
 	struct notifier_block display_nb;
 	struct device **sysfs_nodes;
 	struct class *icc_class;
@@ -331,12 +332,24 @@ static unsigned int kona_keepalive_decay_min_percent = 25;
 static unsigned int kona_sleep_keepalive_percent = 18;
 static unsigned int kona_sleep_perf_floor_percent = 35;
 static unsigned long kona_sleep_perf_floor_trigger_kb = 2500000; /* 2.5 GB/s */
+static bool kona_sleep_floor_decay_enable = true;
+static unsigned int kona_sleep_floor_decay_delay_ms = 30000;
+static unsigned int kona_sleep_floor_decay_percent = 15;
 module_param_named(kona_sleep_perf_floor_percent, kona_sleep_perf_floor_percent, uint, 0644);
 MODULE_PARM_DESC(kona_sleep_perf_floor_percent,
 	"Percent of performance floors kept for substantial display-inactive requests (default: 35)");
 module_param_named(kona_sleep_perf_floor_trigger_kb, kona_sleep_perf_floor_trigger_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_sleep_perf_floor_trigger_kb,
 	"Minimum display-inactive request KB/s before applying scaled performance floors");
+module_param_named(kona_sleep_floor_decay_enable, kona_sleep_floor_decay_enable, bool, 0644);
+MODULE_PARM_DESC(kona_sleep_floor_decay_enable,
+		 "Enable deeper screen-off Kona ICC floor decay after the grace window (default: on)");
+module_param_named(kona_sleep_floor_decay_delay_ms, kona_sleep_floor_decay_delay_ms, uint, 0644);
+MODULE_PARM_DESC(kona_sleep_floor_decay_delay_ms,
+		 "Screen-off grace period in ms before using the decayed ICC floor percent");
+module_param_named(kona_sleep_floor_decay_percent, kona_sleep_floor_decay_percent, uint, 0644);
+MODULE_PARM_DESC(kona_sleep_floor_decay_percent,
+		 "Percent of non-display floors kept after screen-off decay (default: 15)");
 
 /*
  * Keep active scaling enabled, but preserve most of the floor so short UX/GPU
@@ -720,6 +733,24 @@ static inline bool kona_icc_sleep_mode_active(struct kona_icc_provider *qp,
 		return false;
 
 	return !READ_ONCE(qp->display_active);
+}
+
+static unsigned int kona_icc_sleep_floor_percent(struct kona_icc_provider *qp)
+{
+	unsigned int floor_percent;
+
+	floor_percent = min_t(unsigned int, kona_sleep_perf_floor_percent, 100);
+	if (!kona_sleep_floor_decay_enable ||
+	    !kona_sleep_floor_decay_delay_ms ||
+	    !READ_ONCE(qp->display_off_jiffies))
+		return floor_percent;
+
+	if (time_before(jiffies, READ_ONCE(qp->display_off_jiffies) +
+			msecs_to_jiffies(kona_sleep_floor_decay_delay_ms)))
+		return floor_percent;
+
+	return min(floor_percent,
+		   min_t(unsigned int, kona_sleep_floor_decay_percent, 100));
 }
 
 static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
@@ -1454,8 +1485,7 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 	if (sleep_mode && sleep_floor_active) {
 		unsigned int sleep_floor_percent;
 
-		sleep_floor_percent = min_t(unsigned int,
-					kona_sleep_perf_floor_percent, 100);
+		sleep_floor_percent = kona_icc_sleep_floor_percent(qp);
 		if (!sleep_floor_percent) {
 			*ab = req_ab;
 			*ib = req_ib;
@@ -2847,9 +2877,11 @@ static int kona_icc_display_notifier_cb(struct notifier_block *nb,
 	switch (*blank) {
 	case MSM_DRM_BLANK_UNBLANK:
 		qp->display_active = true;
+		qp->display_off_jiffies = 0;
 		break;
 	case MSM_DRM_BLANK_POWERDOWN:
 		qp->display_active = false;
+		qp->display_off_jiffies = jiffies;
 		for (i = 0; i < qp->num_nodes; i++) {
 			if (qp->nodes[i].role != KONA_ROLE_DISPLAY)
 				continue;
@@ -3062,6 +3094,7 @@ static int kona_icc_probe(struct platform_device *pdev)
 	atomic_set(&qp->display_replay_skips, 0);
 	atomic_set(&qp->replay_queue_skips, 0);
 	qp->display_active = true;
+	qp->display_off_jiffies = 0;
 	qp->display_nb.notifier_call = kona_icc_display_notifier_cb;
 
 	for (i = 0; i < qp->num_nodes; i++) {
