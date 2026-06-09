@@ -49,6 +49,8 @@ static int madvise_need_mmap_write(int behavior)
 	case MADV_COLD:
 	case MADV_PAGEOUT:
 	case MADV_FREE:
+	case MADV_POPULATE_READ:
+	case MADV_POPULATE_WRITE:
 		return 0;
 	default:
 		/* be safe, default to 1. list exceptions explicitly */
@@ -947,6 +949,66 @@ static int madvise_inject_error(int behavior,
 }
 #endif
 
+static long madvise_populate(struct vm_area_struct *vma,
+			     struct vm_area_struct **prev,
+			     unsigned long start, unsigned long end,
+			     int behavior)
+{
+	const bool write = behavior == MADV_POPULATE_WRITE;
+	struct mm_struct *mm = vma->vm_mm;
+	unsigned int gup_flags = write ? FOLL_WRITE : 0;
+	int locked = 1;
+	long pages;
+
+	*prev = vma;
+	while (start < end) {
+		unsigned long nr_pages = (end - start) / PAGE_SIZE;
+
+		/*
+		 * Prefault without pinning: get_user_pages_remote() accepts
+		 * a NULL pages array when callers only need page tables
+		 * populated.
+		 */
+		pages = get_user_pages_remote(current, mm, start, nr_pages,
+					      gup_flags, NULL, NULL, &locked);
+		if (!locked) {
+			mmap_read_lock(mm);
+			locked = 1;
+			*prev = NULL;
+			vma = find_vma(mm, start);
+			if (!vma || start < vma->vm_start)
+				return -ENOMEM;
+			end = min(end, vma->vm_end);
+			if (!pages)
+				continue;
+		}
+
+		if (pages < 0) {
+			switch (pages) {
+			case -EINTR:
+				return -EINTR;
+			case -EFAULT:
+				/* Incompatible mappings or permissions. */
+				return -EINVAL;
+			case -EHWPOISON:
+				return -EHWPOISON;
+			case -ENOMEM:
+				return -ENOMEM;
+			default:
+				pr_warn_once("%s: unhandled return value: %ld\n",
+					     __func__, pages);
+				return -ENOMEM;
+			}
+		}
+
+		if (!pages)
+			return -ENOMEM;
+		start += pages * PAGE_SIZE;
+	}
+
+	return 0;
+}
+
 static long
 madvise_vma(struct vm_area_struct *vma, struct vm_area_struct **prev,
 		unsigned long start, unsigned long end, int behavior)
@@ -963,6 +1025,9 @@ madvise_vma(struct vm_area_struct *vma, struct vm_area_struct **prev,
 	case MADV_FREE:
 	case MADV_DONTNEED:
 		return madvise_dontneed_free(vma, prev, start, end, behavior);
+	case MADV_POPULATE_READ:
+	case MADV_POPULATE_WRITE:
+		return madvise_populate(vma, prev, start, end, behavior);
 	default:
 		return madvise_behavior(vma, prev, start, end, behavior);
 	}
@@ -983,6 +1048,8 @@ madvise_behavior_valid(int behavior)
 	case MADV_FREE:
 	case MADV_COLD:
 	case MADV_PAGEOUT:
+	case MADV_POPULATE_READ:
+	case MADV_POPULATE_WRITE:
 #ifdef CONFIG_KSM
 	case MADV_MERGEABLE:
 	case MADV_UNMERGEABLE:
@@ -1034,6 +1101,10 @@ madvise_behavior_valid(int behavior)
  *		so the kernel may deactivate them to accelerate later reclaim.
  *  MADV_PAGEOUT - the application is not expected to use these pages soon,
  *		so the kernel may reclaim them immediately.
+ *  MADV_POPULATE_READ - populate page tables readable by triggering read
+ *		faults if required.
+ *  MADV_POPULATE_WRITE - populate page tables writable by triggering write
+ *		faults if required.
  *  MADV_REMOVE - the application wants to free up the given range of
  *		pages and associated backing store.
  *  MADV_DONTFORK - omit this area from child's address space when forking:
