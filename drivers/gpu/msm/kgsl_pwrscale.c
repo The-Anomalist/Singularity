@@ -85,6 +85,16 @@ module_param(upclock_bus_boost, uint, 0644);
 MODULE_PARM_DESC(upclock_bus_boost,
 	"Additional bus vote steps to apply while ramping GPU clocks up");
 
+static bool enable_midframe_timer = true;
+module_param_named(midframe_timer, enable_midframe_timer, bool, 0644);
+MODULE_PARM_DESC(midframe_timer,
+		 "Enable KGSL mid-frame devfreq sampling for faster active-workload DCVS");
+
+static uint midframe_timer_us = KGSL_GOVERNOR_CALL_INTERVAL;
+module_param(midframe_timer_us, uint, 0644);
+MODULE_PARM_DESC(midframe_timer_us,
+		 "KGSL mid-frame devfreq sampling interval in microseconds");
+
 /*
  * kgsl_pwrscale_sleep - notify governor that device is going off
  * @device: The device
@@ -243,6 +253,8 @@ EXPORT_SYMBOL(kgsl_pwrscale_update);
 
 void kgsl_pwrscale_midframe_timer_restart(struct kgsl_device *device)
 {
+	uint interval_us;
+
 	if (kgsl_midframe) {
 		WARN_ON(!mutex_is_locked(&device->mutex));
 
@@ -251,9 +263,20 @@ void kgsl_pwrscale_midframe_timer_restart(struct kgsl_device *device)
 			hrtimer_cancel(
 				&kgsl_midframe->timer);
 
+		/*
+		 * Only keep the sampler armed while useful work can still be
+		 * accounted. This preserves the fast mid-frame DVFS response for
+		 * long draws without continuing to wake the CPU after the GPU has
+		 * already moved toward idle.
+		 */
+		if (device->state != KGSL_STATE_ACTIVE ||
+		    device->active_context_count == 0)
+			return;
+
+		interval_us = clamp_t(uint, midframe_timer_us, 1000, 20000);
 		hrtimer_start(&kgsl_midframe->timer,
-				ns_to_ktime(KGSL_GOVERNOR_CALL_INTERVAL
-					* NSEC_PER_USEC), HRTIMER_MODE_REL);
+				ns_to_ktime(interval_us * NSEC_PER_USEC),
+				HRTIMER_MODE_REL);
 	}
 }
 EXPORT_SYMBOL(kgsl_pwrscale_midframe_timer_restart);
@@ -1031,6 +1054,8 @@ int kgsl_pwrscale_init(struct device *dev, const char *governor)
 	struct msm_adreno_extended_profile *gpu_profile;
 	struct devfreq_dev_profile *profile;
 	struct devfreq_msm_adreno_tz_data *data;
+	struct device_node *node;
+	bool use_midframe_timer;
 	int i, out = 0;
 	int ret;
 
@@ -1038,6 +1063,7 @@ int kgsl_pwrscale_init(struct device *dev, const char *governor)
 	if (device == NULL)
 		return -ENODEV;
 
+	node = device->pdev->dev.of_node;
 	pwrscale = &device->pwrscale;
 	pwr = &device->pwrctrl;
 	gpu_profile = &pwrscale->gpu_profile;
@@ -1090,8 +1116,10 @@ int kgsl_pwrscale_init(struct device *dev, const char *governor)
 			pwrscale->ctxt_aware_busy_penalty;
 	}
 
-	if (of_property_read_bool(device->pdev->dev.of_node,
-			"qcom,enable-midframe-timer")) {
+	use_midframe_timer = enable_midframe_timer ||
+		of_property_read_bool(node, "qcom,enable-midframe-timer");
+
+	if (use_midframe_timer) {
 		kgsl_midframe = kzalloc(
 				sizeof(struct kgsl_midframe_info), GFP_KERNEL);
 		if (kgsl_midframe) {
@@ -1102,7 +1130,7 @@ int kgsl_pwrscale_init(struct device *dev, const char *governor)
 			kgsl_midframe->device = device;
 		} else
 			dev_err(device->dev,
-				     "Failed to enable-midframe-timer feature\n");
+				     "Failed to enable midframe timer feature\n");
 	}
 
 	/*
