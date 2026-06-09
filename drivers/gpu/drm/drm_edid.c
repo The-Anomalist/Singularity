@@ -2939,28 +2939,34 @@ add_detailed_modes(struct drm_connector *connector, struct edid *edid,
 #define EDID_CEA_VCDB_QS	(1 << 6)
 
 /*
- * Search EDID for CEA extension block.
+ * Search EDID for an extension block, starting at *ext_index.
  */
-static u8 *drm_find_edid_extension(const struct edid *edid, int ext_id)
+static u8 *drm_find_edid_extension_after(const struct edid *edid,
+					 int ext_id, int *ext_index)
 {
-	u8 *edid_ext = NULL;
+	u8 *edid_ext;
 	int i;
 
 	/* No EDID or EDID extensions */
 	if (edid == NULL || edid->extensions == 0)
 		return NULL;
 
-	/* Find CEA extension */
-	for (i = 0; i < edid->extensions; i++) {
+	for (i = *ext_index; i < edid->extensions; i++) {
 		edid_ext = (u8 *)edid + EDID_LENGTH * (i + 1);
-		if (edid_ext[0] == ext_id)
-			break;
+		if (edid_ext[0] == ext_id) {
+			*ext_index = i + 1;
+			return edid_ext;
+		}
 	}
 
-	if (i == edid->extensions)
-		return NULL;
+	return NULL;
+}
 
-	return edid_ext;
+static u8 *drm_find_edid_extension(const struct edid *edid, int ext_id)
+{
+	int ext_index = 0;
+
+	return drm_find_edid_extension_after(edid, ext_id, &ext_index);
 }
 
 
@@ -3863,9 +3869,8 @@ static void drm_parse_y420cmdb_bitmap(struct drm_connector *connector,
 }
 
 static int
-add_cea_modes(struct drm_connector *connector, struct edid *edid)
+add_cea_modes_from_cea(struct drm_connector *connector, const u8 *cea)
 {
-	const u8 *cea = drm_find_cea_extension(edid);
 	const u8 *db, *hdmi = NULL, *video = NULL;
 	u8 dbl, hdmi_len, video_len = 0;
 	int modes = 0;
@@ -3905,6 +3910,29 @@ add_cea_modes(struct drm_connector *connector, struct edid *edid)
 	if (hdmi)
 		modes += do_hdmi_vsdb_modes(connector, hdmi, hdmi_len, video,
 					    video_len);
+
+	return modes;
+}
+
+static int
+add_cea_modes(struct drm_connector *connector, struct edid *edid)
+{
+	const u8 *cea;
+	int ext_index = 0;
+	int modes = 0;
+	bool found_cea = false;
+
+	while ((cea = drm_find_edid_extension_after(edid, CEA_EXT, &ext_index))) {
+		found_cea = true;
+		modes += add_cea_modes_from_cea(connector, cea);
+	}
+
+	/* Fall back to a CTA block embedded inside DisplayID. */
+	if (!found_cea) {
+		cea = drm_find_cea_extension(edid);
+		if (cea)
+			modes += add_cea_modes_from_cea(connector, cea);
+	}
 
 	return modes;
 }
@@ -4142,10 +4170,9 @@ drm_extract_hdr_db(struct drm_connector *connector, const u8 *db)
  * Parses the all extended tag blocks extract sink info for @connector.
  */
 static void
-drm_hdmi_extract_extended_blk_info(struct drm_connector *connector,
-		const struct edid *edid)
+drm_hdmi_extract_extended_blk_info_from_cea(struct drm_connector *connector,
+					    const u8 *cea)
 {
-	const u8 *cea = drm_find_cea_extension(edid);
 	const u8 *db = NULL;
 
 	if (cea && cea_revision(cea) >= 3) {
@@ -4179,6 +4206,26 @@ drm_hdmi_extract_extended_blk_info(struct drm_connector *connector,
 				}
 			}
 		}
+	}
+}
+
+static void
+drm_hdmi_extract_extended_blk_info(struct drm_connector *connector,
+				   const struct edid *edid)
+{
+	const u8 *cea;
+	int ext_index = 0;
+	bool found_cea = false;
+
+	while ((cea = drm_find_edid_extension_after(edid, CEA_EXT, &ext_index))) {
+		found_cea = true;
+		drm_hdmi_extract_extended_blk_info_from_cea(connector, cea);
+	}
+
+	/* Fall back to a CTA block embedded inside DisplayID. */
+	if (!found_cea) {
+		cea = drm_find_cea_extension(edid);
+		drm_hdmi_extract_extended_blk_info_from_cea(connector, cea);
 	}
 }
 
@@ -4794,21 +4841,19 @@ drm_parse_hdmi_vsdb_video(struct drm_connector *connector, const u8 *db)
 	drm_parse_hdmi_deep_color_info(connector, db);
 }
 
-static void drm_parse_cea_ext(struct drm_connector *connector,
-			      const struct edid *edid)
+static void drm_parse_cea_ext_block(struct drm_connector *connector,
+				    const u8 *edid_ext)
 {
 	struct drm_display_info *info = &connector->display_info;
-	const u8 *edid_ext;
 	int i, start, end;
 
-	edid_ext = drm_find_cea_extension(edid);
 	if (!edid_ext)
 		return;
 
-	info->cea_rev = edid_ext[1];
+	info->cea_rev = max_t(u8, info->cea_rev, edid_ext[1]);
 
 	/* The existence of a CEA block should imply RGB support */
-	info->color_formats = DRM_COLOR_FORMAT_RGB444;
+	info->color_formats |= DRM_COLOR_FORMAT_RGB444;
 	if (edid_ext[3] & EDID_CEA_YCRCB444)
 		info->color_formats |= DRM_COLOR_FORMAT_YCRCB444;
 	if (edid_ext[3] & EDID_CEA_YCRCB422)
@@ -4827,6 +4872,23 @@ static void drm_parse_cea_ext(struct drm_connector *connector,
 		if (cea_db_is_y420cmdb(db))
 			drm_parse_y420cmdb_bitmap(connector, db);
 	}
+}
+
+static void drm_parse_cea_ext(struct drm_connector *connector,
+			      const struct edid *edid)
+{
+	const u8 *edid_ext;
+	int ext_index = 0;
+	bool found_cea = false;
+
+	while ((edid_ext = drm_find_edid_extension_after(edid, CEA_EXT, &ext_index))) {
+		found_cea = true;
+		drm_parse_cea_ext_block(connector, edid_ext);
+	}
+
+	/* Fall back to a CTA block embedded inside DisplayID. */
+	if (!found_cea)
+		drm_parse_cea_ext_block(connector, drm_find_cea_extension(edid));
 }
 
 /* A connector has no EDID information, so we've got no EDID to compute quirks from. Reset
@@ -4852,10 +4914,9 @@ drm_reset_display_info(struct drm_connector *connector)
 }
 
 static void
-drm_hdmi_extract_vsdbs_info(struct drm_connector *connector,
-		const struct edid *edid)
+drm_hdmi_extract_vsdbs_info_from_cea(struct drm_connector *connector,
+				     const u8 *cea)
 {
-	const u8 *cea = drm_find_cea_extension(edid);
 	const u8 *db = NULL;
 
 	if (cea && cea_revision(cea) >= 3) {
@@ -4881,6 +4942,26 @@ drm_hdmi_extract_vsdbs_info(struct drm_connector *connector,
 								  db);
 			}
 		}
+	}
+}
+
+static void
+drm_hdmi_extract_vsdbs_info(struct drm_connector *connector,
+			    const struct edid *edid)
+{
+	const u8 *cea;
+	int ext_index = 0;
+	bool found_cea = false;
+
+	while ((cea = drm_find_edid_extension_after(edid, CEA_EXT, &ext_index))) {
+		found_cea = true;
+		drm_hdmi_extract_vsdbs_info_from_cea(connector, cea);
+	}
+
+	/* Fall back to a CTA block embedded inside DisplayID. */
+	if (!found_cea) {
+		cea = drm_find_cea_extension(edid);
+		drm_hdmi_extract_vsdbs_info_from_cea(connector, cea);
 	}
 }
 
