@@ -737,7 +737,20 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 
 #ifdef OPLUS_FEATURE_POWER_CPUFREQ
 	unsigned int prev_freq = freq;
-	unsigned int prev_laf = prev_freq * util * 100 / max;
+	unsigned int prev_laf;
+	u64 loadadjfreq;
+
+	/*
+	 * Keep the interactive-style target-load calculation in 64-bit
+	 * arithmetic. Modern and overclocked CPU OPPs can be several MHz in
+	 * kHz units, so prev_freq * util * 100 easily overflows 32 bits before
+	 * choose_freq() gets a chance to resolve the request against the full
+	 * cpufreq table. An overflow here wraps the raw target back down and
+	 * prevents Atlas from ever asking for the newly exposed top OPPs.
+	 */
+	loadadjfreq = (u64)prev_freq * util * 100;
+	loadadjfreq = div64_u64(loadadjfreq, max);
+	prev_laf = min_t(u64, loadadjfreq, UINT_MAX);
 
 	freq = choose_freq(sg_policy, prev_laf);
 	trace_sugov_next_freq_tl(policy->cpu, util, max, freq, prev_laf, prev_freq);
