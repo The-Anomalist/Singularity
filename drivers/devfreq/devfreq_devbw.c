@@ -135,6 +135,8 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 		/*
 		 * Ramp-up assist: on upward transitions apply an optional temporary
 		 * uplift so short bursts can reach sustainable DDR corners faster.
+		 * DT should keep this modest; over-large uplifts are expensive on
+		 * battery-powered devices because every client vote is multiplied.
 		 */
 		if (d->icc_upscale_percent > 100 && new_ib > d->cur_ib) {
 			u64 boosted;
@@ -185,10 +187,11 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 		    peak_bw < d->icc_min_peak_kbps)
 			peak_bw = d->icc_min_peak_kbps;
 
-		dev_info_ratelimited(dev,
-			"ICC vote: dev=%s freq=%d avg=%u peak=%u paths=%d split_ab=%d split_peak=%d\n",
-			dev_name(dev), new_ib, avg_bw, peak_bw, d->num_icc_paths,
-			d->icc_share_ab, d->icc_share_peak);
+		dev_dbg_ratelimited(dev,
+				    "ICC vote: dev=%s freq=%d avg=%u peak=%u paths=%d split_ab=%d split_peak=%d\n",
+				    dev_name(dev), new_ib, avg_bw, peak_bw,
+				    d->num_icc_paths, d->icc_share_ab,
+				    d->icc_share_peak);
 
 		for (i = 0; i < d->num_icc_paths; i++) {
 			ret = icc_set_bw(d->icc_paths[i], avg_bw, peak_bw);
@@ -255,14 +258,15 @@ static int devbw_target(struct device *dev, unsigned long *freq, u32 flags)
 	 * can starve paths where AB is treated as the sustaining vote.
 	 *
 	 * When no governor-provided AB is available, start from the requested IB
-	 * and add modest headroom on non-decreasing transitions so short GPU bursts
-	 * do not spend their whole frame waiting for sustained bandwidth to catch up.
+	 * and add a small amount of headroom only while ramping upward.  This keeps
+	 * animation/app-launch bursts responsive without inflating steady-state AB
+	 * votes after the device has already reached the requested corner.
 	 */
 	gov_ab = d->gov_ab;
 	if (!gov_ab) {
 		gov_ab = *freq;
-		if (*freq >= d->cur_ib)
-			gov_ab = mult_frac(*freq, 5, 4);
+		if (*freq > d->cur_ib)
+			gov_ab = mult_frac(*freq, 9, 8);
 	}
 
 	return set_bw(dev, *freq, gov_ab);
