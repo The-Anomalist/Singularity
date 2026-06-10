@@ -356,13 +356,16 @@ MODULE_PARM_DESC(kona_sleep_floor_decay_percent,
  * bursts do not collapse memory BW between frames.
  */
 static bool kona_active_floor_scaling_enable = true;
+static unsigned long kona_active_floor_trigger_kb = 1000000; /* 1.0 GB/s */
 static unsigned long kona_active_floor_low_kb = 1500000;   /* 1.5 GB/s */
 static unsigned long kona_active_floor_high_kb = 8000000;  /* 8.0 GB/s */
-static unsigned int kona_active_floor_low_percent = 68;
-static unsigned int kona_active_floor_mid_percent = 88;
+static unsigned int kona_active_floor_low_percent = 60;
+static unsigned int kona_active_floor_mid_percent = 82;
 module_param_named(kona_active_floor_scaling_enable, kona_active_floor_scaling_enable, bool, 0644);
 MODULE_PARM_DESC(kona_active_floor_scaling_enable,
 	"Enable display-on workload-aware downscaling of non-display performance floors");
+module_param_named(kona_active_floor_trigger_kb, kona_active_floor_trigger_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_active_floor_trigger_kb, "Minimum non-display request for active floors");
 module_param_named(kona_active_floor_low_kb, kona_active_floor_low_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_active_floor_low_kb,
 	"Display-on request threshold KB/s for low floor scaling bucket");
@@ -1111,6 +1114,7 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 	bool active;
 	bool sleep_mode;
 	bool sleep_floor_active;
+	bool active_floor_active;
 	bool gpu_pin_active;
 	bool npu_pin_active;
 	bool cpu_prime_pin_active;
@@ -1138,7 +1142,11 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 	sleep_mode = kona_icc_sleep_mode_active(qp, desc);
 	sleep_floor_active = sleep_mode && kona_sleep_perf_floor_trigger_kb &&
 			     req_max >= kona_sleep_perf_floor_trigger_kb;
-	active = (*ab || *ib) && (!sleep_mode || sleep_floor_active);
+	active_floor_active = !kona_active_floor_trigger_kb ||
+			      desc->role == KONA_ROLE_DISPLAY ||
+			      req_max >= kona_active_floor_trigger_kb;
+	active = (*ab || *ib) && (!sleep_mode || sleep_floor_active) &&
+		 active_floor_active;
 
 	/*
 	 * Only pin GPU/GMU BIMC floors for heavy GPU load. This avoids paying
@@ -1456,14 +1464,15 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 
 	/*
 	 * Display-on active scaling for non-display paths:
-	 * - low request: retain a responsive floor (default 68%)
-	 * - medium request: retain most of the floor (default 88%)
+	 * - sub-trigger request: skip large performance floors entirely
+	 * - low request: retain a responsive floor (default 60%)
+	 * - medium request: retain most of the floor (default 82%)
 	 * - high request: keep full floors (100%)
 	 *
 	 * Classify on raw client request max(req_ab, req_ib), not post-floor vote.
 	 * Apply after path-specific floors and before minimum clamps/bias.
 	 */
-	if (kona_active_floor_scaling_enable &&
+	if (kona_active_floor_scaling_enable && active_floor_active &&
 	    !kona_icc_sleep_mode_active(qp, desc) &&
 	    desc->role != KONA_ROLE_DISPLAY) {
 		unsigned long low_kb = kona_active_floor_low_kb;
@@ -1507,7 +1516,8 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 	 * performance when the SoC is under heavy load. Display paths stay closer
 	 * to the requested vote to keep power sane.
 	 */
-	if (desc->role != KONA_ROLE_DISPLAY && (!sleep_mode || sleep_floor_active)) {
+	if (desc->role != KONA_ROLE_DISPLAY && (!sleep_mode || sleep_floor_active) &&
+	    active_floor_active) {
 		unsigned int bias = kona_icc_pick_bias(desc, *ab, *ib);
 
 		if (*ab)

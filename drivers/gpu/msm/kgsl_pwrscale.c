@@ -85,15 +85,15 @@ module_param(upclock_bus_boost, uint, 0644);
 MODULE_PARM_DESC(upclock_bus_boost,
 	"Additional bus vote steps to apply while ramping GPU clocks up");
 
-static bool enable_midframe_timer = true;
+static bool enable_midframe_timer;
 module_param_named(midframe_timer, enable_midframe_timer, bool, 0644);
 MODULE_PARM_DESC(midframe_timer,
-		 "Enable KGSL mid-frame devfreq sampling for faster active-workload DCVS");
+		 "Enable KGSL mid-frame devfreq sampling for faster active-workload DCVS (default: off)");
 
-static uint midframe_timer_us = KGSL_GOVERNOR_CALL_INTERVAL;
+static uint midframe_timer_us = 16000;
 module_param(midframe_timer_us, uint, 0644);
 MODULE_PARM_DESC(midframe_timer_us,
-		 "KGSL mid-frame devfreq sampling interval in microseconds");
+		 "KGSL mid-frame devfreq sampling interval in microseconds (default: 16000)");
 
 /*
  * kgsl_pwrscale_sleep - notify governor that device is going off
