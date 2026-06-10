@@ -84,6 +84,14 @@ choice
 	  This option sets which thermal governor shall be loaded at
 	  startup. If in doubt, select 'step_wise'.
 
+config THERMAL_DEFAULT_GOV_SMOOTH_STEP
+	bool "smooth_step"
+	select THERMAL_GOV_SMOOTH_STEP
+	help
+	  Use the smooth_step governor as default. This throttles the
+	  devices proportionally to thermal overshoot while still using
+	  trip hysteresis to release cooling gradually.
+
 config THERMAL_DEFAULT_GOV_STEP_WISE
 	bool "step_wise"
 	select THERMAL_GOV_STEP_WISE
@@ -126,6 +134,14 @@ config THERMAL_GOV_STEP_WISE
 	help
 	  Enable this to manage platform thermals using a simple linear
 	  governor.
+
+config THERMAL_GOV_SMOOTH_STEP
+	bool "Smooth_step thermal governor"
+	help
+	  Enable this to manage platform thermals using an adaptive step
+	  governor. It requests cooling in proportion to trip overshoot,
+	  ramps up at least one state while temperatures continue rising,
+	  and releases cooling gradually below hysteresis.
 
 config THERMAL_GOV_BANG_BANG
 	bool "Bang Bang thermal governor"

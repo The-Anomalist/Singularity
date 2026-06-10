@@ -131,7 +131,7 @@
         polling-delay-passive = <10>;
         polling-delay = <0>;
         thermal-sensors = <&tsens0 7>;
-        thermal-governor = "step_wise";
+        thermal-governor = "smooth_step";
         trips {
             cg00_config: cg00-config {
                 temperature = <85000>;
@@ -153,7 +153,7 @@
         polling-delay-passive = <10>;
         polling-delay = <0>;
         thermal-sensors = <&tsens0 8>;
-        thermal-governor = "step_wise";
+        thermal-governor = "smooth_step";
         trips {
             cg01_config: cg01-config {
                 temperature = <85000>;
@@ -175,7 +175,7 @@
         polling-delay-passive = <10>;
         polling-delay = <0>;
         thermal-sensors = <&tsens0 9>;
-        thermal-governor = "step_wise";
+        thermal-governor = "smooth_step";
         trips {
             cg10_config: cg10-config {
                 temperature = <85000>;
@@ -197,7 +197,7 @@
         polling-delay-passive = <10>;
         polling-delay = <0>;
         thermal-sensors = <&tsens0 10>;
-        thermal-governor = "step_wise";
+        thermal-governor = "smooth_step";
         trips {
             cg11_config: cg11-config {
                 temperature = <85000>;
@@ -219,7 +219,7 @@
         polling-delay-passive = <10>;
         polling-delay = <0>;
         thermal-sensors = <&tsens0 11>;
-        thermal-governor = "step_wise";
+        thermal-governor = "smooth_step";
         trips {
             cg20_config: cg20-config {
                 temperature = <85000>;
@@ -241,7 +241,7 @@
         polling-delay-passive = <10>;
         polling-delay = <0>;
         thermal-sensors = <&tsens0 12>;
-        thermal-governor = "step_wise";
+        thermal-governor = "smooth_step";
         trips {
             cg21_config: cg21-config {
                 temperature = <85000>;
@@ -263,7 +263,7 @@
         polling-delay-passive = <10>;
         polling-delay = <0>;
         thermal-sensors = <&tsens0 13>;
-        thermal-governor = "step_wise";
+        thermal-governor = "smooth_step";
         trips {
             cg30_config: cg30-config {
                 temperature = <85000>;
@@ -285,7 +285,7 @@
         polling-delay-passive = <10>;
         polling-delay = <0>;
         thermal-sensors = <&tsens0 14>;
-        thermal-governor = "step_wise";
+        thermal-governor = "smooth_step";
         trips {
             cg31_config: cg31-config {
                 temperature = <85000>;
