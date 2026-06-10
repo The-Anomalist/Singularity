@@ -104,6 +104,8 @@ struct sugov_policy {
 	unsigned int		npu_signal_ema;
 	unsigned int		mem_signal_ema;
 	unsigned int		fusion_signal_ema;
+	unsigned int		thermal_signal_ema;
+	unsigned int		thermal_rise_ema;
 	unsigned long		prev_pgscan;
 	unsigned long		prev_pswpout;
 	unsigned long		prev_refault;
@@ -385,6 +387,8 @@ static void sugov_clear_display_off_boosts(struct sugov_policy *sg_policy)
 	sg_policy->npu_signal_ema = 0;
 	sg_policy->mem_signal_ema = 0;
 	sg_policy->fusion_signal_ema = 0;
+	sg_policy->thermal_signal_ema = 0;
+	sg_policy->thermal_rise_ema = 0;
 }
 
 static bool sugov_up_down_rate_limit(struct sugov_policy *sg_policy, u64 time,
@@ -1147,6 +1151,8 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	unsigned int fusion_signal, fusion_ema, fusion_sum;
 	u64 fusion_boost_until;
 	unsigned int thermal_penalty = 0;
+	unsigned int thermal_rise, thermal_rise_ema;
+	unsigned int thermal_relief = 0;
 	u64 decay_ns;
 	bool transition = sugov_is_transition_event(flags);
 	bool heavy_load;
@@ -1265,6 +1271,31 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	heavy_floor_util = sg_policy->has_prime_cpu ?
 		auto_cfg->auto_boost_prime_util : auto_cfg->auto_boost_gold_util;
 	thermal_penalty = max3(cpu_thermal_pct, gpu_thermal_pct, npu_thermal_pct);
+	thermal_rise = thermal_penalty > sg_policy->thermal_signal_ema ?
+		thermal_penalty - sg_policy->thermal_signal_ema : 0;
+	sg_policy->thermal_signal_ema =
+		((sg_policy->thermal_signal_ema * 7) + thermal_penalty) >> 3;
+	sg_policy->thermal_rise_ema =
+		((sg_policy->thermal_rise_ema * 3) + thermal_rise) >> 2;
+	thermal_rise_ema = sg_policy->thermal_rise_ema;
+	decay_ns = decay_us * NSEC_PER_USEC;
+
+	/*
+	 * Thermal efficiency loop: if heat is building while GPU/NPU/CPU work is
+	 * sustained, stop adding speculative Atlas boost before the platform hits a
+	 * hard thermal clamp.  Actual scheduler utilization is still honored below,
+	 * so this trims wasted chase-frequency instead of cutting demanded work.
+	 */
+	if (thermal_penalty >= 45 &&
+	    (thermal_rise_ema >= 3 || thermal_penalty >= 60) &&
+	    (gpu_util_pct >= 55 || npu_util_pct >= 55 || util_pct >= 70)) {
+		thermal_relief = thermal_penalty - 40 + (thermal_rise_ema << 1);
+		thermal_relief = min(thermal_relief, 32U);
+		if (sg_policy->freq_hold_until_ns > time)
+			sg_policy->freq_hold_until_ns = time;
+		if (sg_policy->efficiency_until_ns < time + decay_ns)
+			sg_policy->efficiency_until_ns = time + decay_ns;
+	}
 
 	/* Promote responsiveness when graphics bursts are detected. */
 	if (sg_policy->gpu_signal_ema >= 35 || gpu_util_pct >= 45) {
@@ -1274,6 +1305,15 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 				 min_util + 32);
 	}
 
+	if (thermal_relief) {
+		high_load = min_t(unsigned int, 100, high_load + (thermal_relief >> 1));
+		low_load = min_t(unsigned int, high_load, low_load + (thermal_relief >> 2));
+		min_util = min_util > thermal_relief ? min_util - thermal_relief : 0;
+		max_util = max_util > (thermal_relief << 1) ?
+			max_util - (thermal_relief << 1) : min_util;
+		max_util = max(max_util, min_util);
+	}
+
 	/*
 	 * GPU starvation guard: when Orion reports heavy GPU work, keep enough
 	 * CPU capacity available for userspace submission, irq work, and driver
@@ -1281,9 +1321,9 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	 * rises, so Atlas helps the GPU without stealing the entire budget.
 	 */
 	if (gpu_util_pct >= 85)
-		fairness_floor_util = max_t(unsigned int, fairness_floor_util, 160);
+		fairness_floor_util = max(fairness_floor_util, thermal_relief ? 112U : 160U);
 	else if (gpu_util_pct >= 70 || sg_policy->gpu_signal_ema >= 55)
-		fairness_floor_util = max_t(unsigned int, fairness_floor_util, 112);
+		fairness_floor_util = max(fairness_floor_util, thermal_relief ? 80U : 112U);
 	if (fairness_floor_util && (cpu_signal >= 45 || cpu_momentum >= 18))
 		fairness_floor_util = max_t(unsigned int, fairness_floor_util, 208);
 
@@ -1320,11 +1360,13 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	 * CPU boosts proportionally to avoid futile frequency chasing.
 	 */
 	if (thermal_penalty > 55) {
-		unsigned int damp = min_t(unsigned int, 20,
-					  (thermal_penalty - 55) / 2);
+		unsigned int damp = min_t(unsigned int, 24,
+					  (thermal_penalty - 55) / 2 +
+					  (thermal_rise_ema >> 1));
 
 		high_load = min_t(unsigned int, 100, high_load + damp);
 		low_load = min_t(unsigned int, high_load, low_load + (damp >> 1));
+		min_util = min_util > (damp >> 1) ? min_util - (damp >> 1) : 0;
 		max_util = max_t(unsigned int, min_util,
 				 max_util > damp ? max_util - damp : min_util);
 	}
@@ -1366,10 +1408,17 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		low_load = min_t(unsigned int, high_load, low_load + 6);
 		max_util = max_t(unsigned int, min_util,
 				 mult_frac(max_util, 17, 20));
-	} else if (gpu_util_pct >= 65 && gpu_freq_khz && cpu_freq_khz) {
+	} else if (!thermal_relief && gpu_util_pct >= 65 && gpu_freq_khz &&
+		   cpu_freq_khz) {
 		if (gpu_freq_khz > cpu_freq_khz)
 			min_util = min_t(unsigned int, SCHED_CAPACITY_SCALE,
 					 min_util + 48);
+	}
+
+	if (thermal_relief && fairness_floor_util) {
+		fairness_floor_util = fairness_floor_util > thermal_relief ?
+			fairness_floor_util - thermal_relief : 64;
+		fairness_floor_util = max(fairness_floor_util, 64U);
 	}
 
 	if (fairness_floor_util) {
@@ -1380,7 +1429,6 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	}
 
 	low_load = min(low_load, high_load);
-	decay_ns = decay_us * NSEC_PER_USEC;
 	heavy_load = util_pct >= heavy_util_thres ||
 		     nr_running >= heavy_tasks_thres;
 
@@ -1391,7 +1439,8 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	} else if (util_pct <= efficiency_load &&
 		   !transition && !(flags & SCHED_CPUFREQ_IOWAIT)) {
 		sg_policy->efficiency_until_ns = max_t(u64,
-			sg_policy->efficiency_until_ns, time + decay_ns);
+							sg_policy->efficiency_until_ns,
+							time + decay_ns);
 	}
 
 	sg_policy->auto_boost_avg_util = avg_util;
@@ -2756,6 +2805,9 @@ static int sugov_start(struct cpufreq_policy *policy)
 	sg_policy->gpu_signal_ema		= 0;
 	sg_policy->npu_signal_ema		= 0;
 	sg_policy->mem_signal_ema		= 0;
+	sg_policy->fusion_signal_ema		= 0;
+	sg_policy->thermal_signal_ema		= 0;
+	sg_policy->thermal_rise_ema		= 0;
 	sg_policy->prev_pgscan			= 0;
 	sg_policy->prev_pswpout			= 0;
 	sg_policy->prev_refault			= 0;
