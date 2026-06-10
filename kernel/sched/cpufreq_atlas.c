@@ -1768,9 +1768,12 @@ static ssize_t down_hysteresis_us_store(struct gov_attr_set *attr_set,
 	return count;
 }
 
-static struct governor_attr up_rate_limit_us = __ATTR_RW(up_rate_limit_us);
-static struct governor_attr down_rate_limit_us = __ATTR_RW(down_rate_limit_us);
-static struct governor_attr down_hysteresis_us = __ATTR_RW(down_hysteresis_us);
+static struct governor_attr up_rate_limit_us __maybe_unused =
+	__ATTR_RW(up_rate_limit_us);
+static struct governor_attr down_rate_limit_us __maybe_unused =
+	__ATTR_RW(down_rate_limit_us);
+static struct governor_attr down_hysteresis_us __maybe_unused =
+	__ATTR_RW(down_hysteresis_us);
 
 static ssize_t hispeed_load_show(struct gov_attr_set *attr_set, char *buf)
 {
