@@ -186,23 +186,23 @@ MODULE_PARM_DESC(kona_display_topology_strict,
  * workloads (Antutu/gaming) fed. These are intentionally biased a bit high to
  * avoid under-voting critical CPU/GPU/NPU traffic.
  */
-#define KONA_CPU_DDR_AB_FLOOR_KB	(25000000ULL) /* ~25 GB/s */
-#define KONA_CPU_DDR_IB_FLOOR_KB	(44000000ULL) /* ~44 GB/s */
-#define KONA_CPU_LLCC_AB_FLOOR_KB	(17000000ULL) /* ~17 GB/s */
-#define KONA_CPU_LLCC_IB_FLOOR_KB	(26000000ULL) /* ~26 GB/s */
+#define KONA_CPU_DDR_AB_FLOOR_KB	(23000000ULL) /* ~23 GB/s */
+#define KONA_CPU_DDR_IB_FLOOR_KB	(40000000ULL) /* ~40 GB/s */
+#define KONA_CPU_LLCC_AB_FLOOR_KB	(15000000ULL) /* ~15 GB/s */
+#define KONA_CPU_LLCC_IB_FLOOR_KB	(23000000ULL) /* ~23 GB/s */
 /*
  * CPU0 commonly carries foreground/scheduler work and can oscillate around
  * 1.804 GHz in short bursts. Keep its baseline lower than generic CPU floors
  * to avoid over-voting memory, then apply a targeted uplift near that corner.
  */
-#define KONA_CPU0_DDR_AB_FLOOR_KB	(15000000ULL) /* ~15 GB/s */
-#define KONA_CPU0_DDR_IB_FLOOR_KB	(25000000ULL) /* ~25 GB/s */
-#define KONA_CPU0_LLCC_AB_FLOOR_KB	(10000000ULL) /* ~10 GB/s */
-#define KONA_CPU0_LLCC_IB_FLOOR_KB	(17000000ULL) /* ~17 GB/s */
-#define KONA_CPU_PRIME_DDR_AB_FLOOR_KB	(30000000ULL) /* ~30 GB/s */
-#define KONA_CPU_PRIME_DDR_IB_FLOOR_KB	(48000000ULL) /* ~48 GB/s */
-#define KONA_CPU_PRIME_LLCC_AB_FLOOR_KB	(20000000ULL) /* ~20 GB/s */
-#define KONA_CPU_PRIME_LLCC_IB_FLOOR_KB	(30000000ULL) /* ~30 GB/s */
+#define KONA_CPU0_DDR_AB_FLOOR_KB	(13000000ULL) /* ~13 GB/s */
+#define KONA_CPU0_DDR_IB_FLOOR_KB	(22000000ULL) /* ~22 GB/s */
+#define KONA_CPU0_LLCC_AB_FLOOR_KB	(9000000ULL)  /* ~9 GB/s */
+#define KONA_CPU0_LLCC_IB_FLOOR_KB	(15000000ULL) /* ~15 GB/s */
+#define KONA_CPU_PRIME_DDR_AB_FLOOR_KB	(26000000ULL) /* ~26 GB/s */
+#define KONA_CPU_PRIME_DDR_IB_FLOOR_KB	(42000000ULL) /* ~42 GB/s */
+#define KONA_CPU_PRIME_LLCC_AB_FLOOR_KB	(16000000ULL) /* ~16 GB/s */
+#define KONA_CPU_PRIME_LLCC_IB_FLOOR_KB	(25000000ULL) /* ~25 GB/s */
 #define KONA_GPU_DDR_AB_FLOOR_KB	(26000000ULL) /* ~26 GB/s */
 #define KONA_GPU_DDR_IB_FLOOR_KB	(47000000ULL) /* ~47 GB/s */
 #define KONA_GPU_LLCC_AB_FLOOR_KB	(20000000ULL) /* ~20 GB/s */
@@ -713,7 +713,7 @@ static u64 kona_icc_add_headroom(u64 value, unsigned int bias)
 }
 
 static void kona_icc_apply_cpu_ib_headroom(bool prime, bool llcc,
-					 u64 *ab, u64 *ib)
+						 u64 *ab, u64 *ib)
 {
 	unsigned int boost = prime ? kona_cpu_prime_ib_boost_percent :
 					 kona_cpu_ib_boost_percent;
