@@ -95,6 +95,16 @@ module_param(midframe_timer_us, uint, 0644);
 MODULE_PARM_DESC(midframe_timer_us,
 		 "KGSL mid-frame devfreq sampling interval in microseconds (default: 16000)");
 
+static uint wakeup_boost_ms;
+module_param(wakeup_boost_ms, uint, 0644);
+MODULE_PARM_DESC(wakeup_boost_ms,
+		 "Time in milliseconds to hold a wakeup GPU frequency floor (default: off)");
+
+static int wakeup_boost_pwrlevel = -1;
+module_param(wakeup_boost_pwrlevel, int, 0644);
+MODULE_PARM_DESC(wakeup_boost_pwrlevel,
+		 "KGSL pwrlevel floor used during wakeup boost (default: max_pwrlevel)");
+
 /*
  * kgsl_pwrscale_sleep - notify governor that device is going off
  * @device: The device
@@ -652,6 +662,33 @@ int kgsl_devfreq_target(struct device *dev, unsigned long *freq, u32 flags)
 		 * a frequency transition to reduce adjacent-level oscillation and
 		 * preserve frametime stability under bursty gaming workloads.
 		 */
+		if (device->pwrscale.wakeup_boost_ms) {
+			if (device->pwrscale.on_time > 0) {
+				s64 active_ms = div_s64(ktime_to_us(ktime_get()) -
+					device->pwrscale.on_time, 1000);
+				unsigned int boost_level = clamp_t(unsigned int,
+					device->pwrscale.wakeup_boost_pwrlevel,
+					pwr->max_pwrlevel, pwr->min_pwrlevel);
+				bool boost = device->active_context_count > 0;
+
+				/*
+				 * Keep a short, thermal-safe floor after a new busy
+				 * period starts. Modern KGSL stacks use early-work
+				 * boost hints to avoid first-frame under-clocking;
+				 * this local floor gives older governors the same
+				 * opt-in behavior without bypassing pwrlevel limits.
+				 */
+				if (active_ms < 0)
+					boost = false;
+				if (active_ms >= device->pwrscale.wakeup_boost_ms)
+					boost = false;
+				if (level <= boost_level)
+					boost = false;
+				if (boost)
+					level = boost_level;
+			}
+		}
+
 		if (level > active_level && since_change_ms >= 0) {
 			/*
 			 * When the GPU still has active contexts and thermal
@@ -1115,6 +1152,22 @@ int kgsl_pwrscale_init(struct device *dev, const char *governor)
 		data->bin.ctxt_aware_busy_penalty =
 			pwrscale->ctxt_aware_busy_penalty;
 	}
+
+	pwrscale->wakeup_boost_ms = wakeup_boost_ms;
+	ret = of_property_read_u32(node, "qcom,wakeup-boost-ms",
+				   &pwrscale->wakeup_boost_ms);
+	if (ret)
+		pwrscale->wakeup_boost_ms = wakeup_boost_ms;
+
+	if (wakeup_boost_pwrlevel < 0)
+		pwrscale->wakeup_boost_pwrlevel = pwr->max_pwrlevel;
+	else
+		pwrscale->wakeup_boost_pwrlevel = wakeup_boost_pwrlevel;
+	of_property_read_u32(node, "qcom,wakeup-boost-pwrlevel",
+			     &pwrscale->wakeup_boost_pwrlevel);
+	pwrscale->wakeup_boost_pwrlevel =
+		clamp_t(unsigned int, pwrscale->wakeup_boost_pwrlevel,
+			pwr->max_pwrlevel, pwr->min_pwrlevel);
 
 	use_midframe_timer = enable_midframe_timer ||
 		of_property_read_bool(node, "qcom,enable-midframe-timer");

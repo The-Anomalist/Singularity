@@ -88,6 +88,8 @@ struct kgsl_pwr_history {
  * ctxt aware power level jump
  * @ctxt_aware_target_pwrlevel - pwrlevel to jump on in case of ctxt aware
  * power level jump
+ * @wakeup_boost_ms - time to hold a frequency floor after new active work
+ * @wakeup_boost_pwrlevel - pwrlevel floor used during wakeup boost
  */
 struct kgsl_pwrscale {
 	struct devfreq *devfreqptr;
@@ -114,6 +116,8 @@ struct kgsl_pwrscale {
 	bool ctxt_aware_enable;
 	unsigned int ctxt_aware_target_pwrlevel;
 	unsigned int ctxt_aware_busy_penalty;
+	unsigned int wakeup_boost_ms;
+	unsigned int wakeup_boost_pwrlevel;
 };
 
 int kgsl_pwrscale_init(struct device *dev, const char *governor);
