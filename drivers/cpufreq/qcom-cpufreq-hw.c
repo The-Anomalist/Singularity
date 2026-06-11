@@ -142,6 +142,7 @@ static struct cpufreq_qcom *qcom_freq_domain_map[NR_CPUS];
 static unsigned int hw_up_rate_limit_us = DEFAULT_HW_UP_RATE_LIMIT_US;
 static unsigned int hw_down_rate_limit_us = DEFAULT_HW_DOWN_RATE_LIMIT_US;
 static unsigned int hw_transition_hyst_khz = DEFAULT_TRANSITION_HYST_KHZ;
+static bool allow_logical_max_opp;
 
 module_param_named(hw_up_rate_limit_us, hw_up_rate_limit_us, uint, 0644);
 MODULE_PARM_DESC(hw_up_rate_limit_us,
@@ -154,6 +155,10 @@ MODULE_PARM_DESC(hw_down_rate_limit_us,
 module_param_named(hw_transition_hyst_khz, hw_transition_hyst_khz, uint, 0644);
 MODULE_PARM_DESC(hw_transition_hyst_khz,
 		 "Ignore target changes smaller than this kHz delta");
+
+module_param_named(allow_logical_max_opp, allow_logical_max_opp, bool, 0644);
+MODULE_PARM_DESC(allow_logical_max_opp,
+		 "Allow exposing a configured max OPP even if the HW LUT rejects it");
 
 static unsigned int qcom_cpufreq_hw_get(unsigned int cpu);
 
@@ -799,16 +804,15 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 			}
 		}
 
-		if (!hw_backed) {
+		if (!hw_backed && allow_logical_max_opp) {
 			/*
 			 * Some EPSS LUTs ignore AP writes after firmware has populated
-			 * the table, and some tables are already full. Do not leave
-			 * Android managers blind in those cases: expose the requested top
-			 * point as a normal policy entry, but map it back to the highest
-			 * accepted PERF_STATE row instead of writing an unaccepted or
-			 * duplicate terminator slot. This keeps sysfs max lists and policy
-			 * verification aware of the configured top bin while the hardware
-			 * still receives a safe, valid index.
+			 * the table, and some tables are already full. Exposing such an
+			 * OPP by default is harmful: policy->cpuinfo.max_freq and
+			 * arch_set_freq_scale() then describe a frequency the hardware
+			 * cannot reach, so scheduler capacity appears permanently low and
+			 * userspace may keep chasing a phantom top bin. Keep this opt-in
+			 * only for experiments that explicitly want the logical sysfs point.
 			 */
 			expose_logical = target_freq_khz > old_max_freq_khz;
 		}
@@ -865,8 +869,9 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 			}
 		} else {
 			dev_warn(dev,
-				 "max OPP skipped for domain cpus%*pbl: HW LUT rejected freq/volt programming or no programmable headroom\n",
-				 cpumask_pr_args(&c->related_cpus));
+				 "max OPP skipped for domain cpus%*pbl: HW LUT rejected freq/volt programming or no programmable headroom%s\n",
+				 cpumask_pr_args(&c->related_cpus),
+				 allow_logical_max_opp ? "" : "; logical exposure disabled");
 		}
 	}
 
