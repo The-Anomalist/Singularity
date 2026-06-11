@@ -25,6 +25,8 @@
 #include <linux/freezer.h>
 #include <linux/pm.h>
 #include <linux/suspend.h>
+#include <linux/atomic.h>
+#include <linux/msm_drm_notify.h>
 #include <trace/events/power.h>
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
@@ -33,6 +35,49 @@
 #define MBYTE (1ULL << 20)
 #define MAX_PATHS	2
 #define DBL_BUF		2
+
+static atomic_t devbw_display_active = ATOMIC_INIT(1);
+static atomic_t devbw_display_notifier_registered = ATOMIC_INIT(0);
+
+static int devbw_display_notifier_cb(struct notifier_block *nb,
+				     unsigned long event, void *data)
+{
+	struct msm_drm_notifier *evdata = data;
+	int *blank;
+
+	if (event != MSM_DRM_EARLY_EVENT_BLANK && event != MSM_DRM_EVENT_BLANK)
+		return NOTIFY_DONE;
+
+	if (!evdata || evdata->id != MSM_DRM_PRIMARY_DISPLAY || !evdata->data)
+		return NOTIFY_DONE;
+
+	blank = evdata->data;
+	switch (*blank) {
+	case MSM_DRM_BLANK_UNBLANK:
+		atomic_set(&devbw_display_active, 1);
+		break;
+	case MSM_DRM_BLANK_POWERDOWN:
+		atomic_set(&devbw_display_active, 0);
+		break;
+	default:
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block devbw_display_nb = {
+	.notifier_call = devbw_display_notifier_cb,
+};
+
+static void devbw_register_display_notifier(void)
+{
+	if (atomic_cmpxchg(&devbw_display_notifier_registered, 0, 1))
+		return;
+
+	if (msm_drm_register_client(&devbw_display_nb))
+		atomic_set(&devbw_display_notifier_registered, 0);
+}
 
 struct dev_data {
 	struct icc_path *icc_paths[MAX_PATHS];
@@ -138,7 +183,8 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 		 * DT should keep this modest; over-large uplifts are expensive on
 		 * battery-powered devices because every client vote is multiplied.
 		 */
-		if (d->icc_upscale_percent > 100 && new_ib > d->cur_ib) {
+		if (atomic_read(&devbw_display_active) &&
+		    d->icc_upscale_percent > 100 && new_ib > d->cur_ib) {
 			u64 boosted;
 
 			if (avg_bw) {
@@ -156,10 +202,11 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 
 		/*
 		 * Optional DT controlled headroom for benchmark-heavy or latency
-		 * sensitive SKUs. Keep disabled by default and only apply on
-		 * non-zero votes.
+		 * sensitive SKUs. Keep it screen-on and ramp-only so steady-state
+		 * or screen-off votes are not permanently inflated.
 		 */
-		if (d->icc_boost_percent > 100) {
+		if (atomic_read(&devbw_display_active) &&
+		    d->icc_boost_percent > 100 && new_ib > d->cur_ib) {
 			u64 boosted;
 
 			if (avg_bw) {
@@ -176,14 +223,17 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 		}
 
 		/*
-		 * Keep non-zero ICC requests above optional DT floors so critical
-		 * clients (CPU/GPU/NPU) don't fall into very low perf corners.
+		 * Keep screen-on non-zero ICC requests above optional DT floors so
+		 * critical clients don't fall into very low perf corners. Screen-off
+		 * requests intentionally skip these floors to allow standby collapse.
 		 */
-		if (avg_bw && d->icc_min_avg_kbps &&
+		if (atomic_read(&devbw_display_active) &&
+		    avg_bw && d->icc_min_avg_kbps &&
 		    avg_bw < d->icc_min_avg_kbps)
 			avg_bw = d->icc_min_avg_kbps;
 
-		if (peak_bw && d->icc_min_peak_kbps &&
+		if (atomic_read(&devbw_display_active) &&
+		    peak_bw && d->icc_min_peak_kbps &&
 		    peak_bw < d->icc_min_peak_kbps)
 			peak_bw = d->icc_min_peak_kbps;
 
@@ -323,6 +373,7 @@ int devfreq_add_devbw(struct device *dev)
 	if (!d)
 		return -ENOMEM;
 	dev_set_drvdata(dev, d);
+	devbw_register_display_notifier();
 	have_ports = of_find_property(dev->of_node, PROP_PORTS, &len);
 
 	num_icc_paths = of_count_phandle_with_args(dev->of_node,
