@@ -70,6 +70,8 @@
 #include "wlan_scan_api.h"
 #include <wlan_crypto_global_api.h>
 #include "cdp_txrx_host_stats.h"
+#include <linux/module.h>
+#include <linux/moduleparam.h>
 
 /**
  * WMA_SET_VDEV_IE_SOURCE_HOST - Flag to identify the source of VDEV SET IE
@@ -77,6 +79,25 @@
  * MCL platform.
  */
 #define WMA_SET_VDEV_IE_SOURCE_HOST 0x0
+
+#define WMA_WOW_WAKE_IGNORED 1
+
+static bool strict_wow_bpf_filter = true;
+module_param_named(strict_wow_bpf_filter, strict_wow_bpf_filter, bool, 0644);
+MODULE_PARM_DESC(strict_wow_bpf_filter,
+		 "Drop noisy APF/BPF_ALLOW WOW wake side effects for common background packets");
+
+static bool ignore_unsolicited_tcp_wow;
+module_param_named(ignore_unsolicited_tcp_wow, ignore_unsolicited_tcp_wow,
+		   bool, 0644);
+MODULE_PARM_DESC(ignore_unsolicited_tcp_wow,
+		 "When strict_wow_bpf_filter=1, suppress wakelock handling for IPv4 TCP BPF_ALLOW WOW wakes (default off)");
+
+static bool disable_icmpv6_wow_wake = true;
+module_param_named(disable_icmpv6_wow_wake, disable_icmpv6_wow_wake,
+		   bool, 0644);
+MODULE_PARM_DESC(disable_icmpv6_wow_wake,
+		 "When strict_wow_bpf_filter=1, suppress wakelock handling for ICMPv6 echo-request BPF_ALLOW WOW wakes");
 
 #if defined(FEATURE_WLAN_DIAG_SUPPORT)
 /**
@@ -2151,11 +2172,11 @@ static void wma_wow_inc_wake_lock_stats_by_protocol(t_wma_handle *wma,
  * skb->data) to get information like src mac addr, dst mac addr, packet
  * len, seq_num, etc. It also increments stats for different packet types.
  *
- * Return: void
+ * Return: detected protocol subtype.
  */
-static void wma_wow_parse_data_pkt(t_wma_handle *wma,
-				   uint8_t vdev_id, uint8_t *data,
-				   uint32_t length)
+static enum qdf_proto_subtype
+wma_wow_parse_data_pkt(t_wma_handle *wma, uint8_t vdev_id, uint8_t *data,
+		       uint32_t length)
 {
 	uint8_t *src_mac;
 	uint8_t *dest_mac;
@@ -2164,7 +2185,7 @@ static void wma_wow_parse_data_pkt(t_wma_handle *wma,
 
 	WMA_LOGD("packet length: %u", length);
 	if (length < QDF_NBUF_TRAC_IPV4_OFFSET)
-		return;
+		return QDF_PROTO_INVALID;
 
 	src_mac = data + QDF_NBUF_SRC_MAC_OFFSET;
 	dest_mac = data + QDF_NBUF_DEST_MAC_OFFSET;
@@ -2232,6 +2253,23 @@ static void wma_wow_parse_data_pkt(t_wma_handle *wma,
 		break;
 	default:
 		break;
+	}
+
+	return proto_subtype;
+}
+
+static bool wma_wow_bpf_wake_should_ignore(enum qdf_proto_subtype proto_subtype)
+{
+	if (!strict_wow_bpf_filter)
+		return false;
+
+	switch (proto_subtype) {
+	case QDF_PROTO_IPV4_TCP:
+		return ignore_unsolicited_tcp_wow;
+	case QDF_PROTO_ICMPV6_REQ:
+		return disable_icmpv6_wow_wake;
+	default:
+		return false;
 	}
 }
 
@@ -2416,9 +2454,10 @@ static int wma_wake_event_packet(
 	uint32_t length)
 {
 	WOW_EVENT_INFO_fixed_param *wake_info;
-	struct wma_txrx_node *vdev;
 	uint8_t *packet;
 	uint32_t packet_len;
+	enum qdf_proto_subtype proto_subtype;
+	const char *proto_subtype_name;
 
 	if (event_param->num_wow_packet_buffer <= 4) {
 		WMA_LOGE("Invalid wow packet buffer from firmware %u",
@@ -2466,10 +2505,25 @@ static int wma_wake_event_packet(
 		qdf_trace_hex_dump(QDF_MODULE_ID_WMA, QDF_TRACE_LEVEL_DEBUG,
 				   packet, packet_len);
 
-		vdev = &wma->interfaces[wake_info->vdev_id];
-		wma_wow_parse_data_pkt(wma, wake_info->vdev_id,
-				       packet, packet_len);
-		break;
+		proto_subtype = wma_wow_parse_data_pkt(wma, wake_info->vdev_id,
+						       packet, packet_len);
+		if (wake_info->wake_reason != WOW_REASON_BPF_ALLOW)
+			break;
+
+		proto_subtype_name =
+			wma_pkt_proto_subtype_to_string(proto_subtype);
+		if (!proto_subtype_name)
+			proto_subtype_name = "unknown";
+
+		if (!wma_wow_bpf_wake_should_ignore(proto_subtype)) {
+			wma_nofl_info_rl("Allowing WOW BPF_ALLOW wake: %s, vdev %u",
+					 proto_subtype_name, wake_info->vdev_id);
+			break;
+		}
+
+		wma_nofl_info_rl("Ignoring noisy WOW BPF_ALLOW wake: %s, vdev %u",
+				 proto_subtype_name, wake_info->vdev_id);
+		return WMA_WOW_WAKE_IGNORED;
 
 	case WOW_REASON_PAGE_FAULT:
 		/*
@@ -2770,6 +2824,9 @@ int wma_wow_wakeup_host_event(void *handle, uint8_t *event, uint32_t len)
 		errno = wma_wake_event_packet(wma, event_param, len);
 	else
 		errno = wma_wake_event_no_payload(wma, event_param, len);
+
+	if (errno == WMA_WOW_WAKE_IGNORED)
+		return 0;
 
 	wma_inc_wow_stats(wma, wake_info);
 	wma_print_wow_stats(wma, wake_info);
