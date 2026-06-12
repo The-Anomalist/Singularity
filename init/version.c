@@ -1,4 +1,4 @@
-/*
+/*/*
  *  linux/init/version.c
  *
  *  Copyright (C) 1992  Theodore Ts'o
@@ -41,17 +41,15 @@ struct uts_namespace init_uts_ns = {
 };
 EXPORT_SYMBOL_GPL(init_uts_ns);
 
-/* FIXED STRINGS! Don't touch! */
+/* Singularity kernel identity banner */
 const char linux_banner[] =
-	"Linux version " UTS_RELEASE " (" LINUX_COMPILE_BY "@"
-	LINUX_COMPILE_HOST ") (" LINUX_COMPILER ") " UTS_VERSION "\n";
+	"Singularity Kernel by The_Anomalist | Linux " UTS_RELEASE
+	" | ST-16 CIP-133\n";
 
 const char *linux_banner_ptr = linux_banner;
 EXPORT_SYMBOL_GPL(linux_banner_ptr);
 
 const char linux_proc_banner[] =
-	"%s version %s"
-	" (" LINUX_COMPILE_BY "@" LINUX_COMPILE_HOST ")"
-	" (" LINUX_COMPILER ") %s\n";
+	"Singularity Kernel by The_Anomalist | %s %s | ST16 CIP133\n";
 
 BUILD_SALT;
