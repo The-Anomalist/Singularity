@@ -357,6 +357,28 @@ static void devbw_log_icc_dt(struct device *dev, int num_icc_paths)
 		dev_info_ratelimited(dev, "interconnect-names property missing\n");
 }
 
+static int devbw_icc_err(struct device *dev, int ret, const char *name, bool *dependency_missing)
+{
+	if (ret != -EPROBE_DEFER)
+		return ret;
+
+	ret = driver_deferred_probe_check_state(dev);
+	if (ret == -EPROBE_DEFER)
+		return ret;
+
+	*dependency_missing = true;
+	if (name)
+		dev_warn(dev,
+			 "ICC provider for path '%s' unavailable after deferred probe window (err=%d)\n",
+			 name, ret);
+	else
+		dev_warn(dev,
+			 "unnamed ICC provider unavailable after deferred probe window (err=%d)\n",
+			 ret);
+
+	return ret;
+}
+
 int devfreq_add_devbw(struct device *dev)
 {
 	struct dev_data *d;
@@ -366,6 +388,7 @@ int devfreq_add_devbw(struct device *dev)
 	const char *icc_name;
 	const char *gov_name;
 	int ret, len, i, num_paths = 0, num_icc_paths;
+	bool icc_missing = false;
 	struct opp_table *opp_table;
 	u32 version;
 
@@ -426,8 +449,6 @@ int devfreq_add_devbw(struct device *dev)
 	}
 
 	if (num_icc_paths > 0) {
-		devbw_log_icc_dt(dev, num_icc_paths);
-
 		if (num_icc_paths > MAX_PATHS) {
 			if (have_ports && !d->icc_strict) {
 				dev_warn(dev,
@@ -459,9 +480,12 @@ int devfreq_add_devbw(struct device *dev)
 				if (IS_ERR(d->icc_paths[i])) {
 					ret = PTR_ERR(d->icc_paths[i]);
 					d->icc_paths[i] = NULL;
-					dev_warn_ratelimited(dev,
-						"ICC attach failed at index %d (name '%s', err=%d)\n",
-						i, icc_name, ret);
+					ret = devbw_icc_err(dev, ret, icc_name, &icc_missing);
+					if (ret == -EPROBE_DEFER)
+						return ret;
+					if (!icc_missing)
+						dev_warn_ratelimited(dev, "ICC attach failed at index %d (name '%s', err=%d)\n",
+								     i, icc_name, ret);
 					break;
 				}
 
@@ -474,9 +498,12 @@ int devfreq_add_devbw(struct device *dev)
 			if (IS_ERR(d->icc_paths[0])) {
 				ret = PTR_ERR(d->icc_paths[0]);
 				d->icc_paths[0] = NULL;
-				dev_warn_ratelimited(dev,
-					"ICC attach failed for unnamed single path (err=%d)\n",
-					ret);
+				ret = devbw_icc_err(dev, ret, NULL, &icc_missing);
+				if (ret == -EPROBE_DEFER)
+					return ret;
+				if (!icc_missing)
+					dev_warn_ratelimited(dev, "ICC attach failed for unnamed single path (err=%d)\n",
+							     ret);
 			} else {
 				dev_dbg(dev, "Attached ICC unnamed single path\n");
 			}
@@ -515,7 +542,9 @@ int devfreq_add_devbw(struct device *dev)
 	}
 
 	if (ret) {
-		if (!have_ports || d->icc_strict)
+		devbw_log_icc_dt(dev, num_icc_paths);
+
+		if (!have_ports || (d->icc_strict && !icc_missing))
 			return ret;
 
 		dev_err_ratelimited(dev,
