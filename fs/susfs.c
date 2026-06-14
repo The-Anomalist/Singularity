@@ -13,6 +13,7 @@
 #include <linux/version.h>
 #include <linux/fdtable.h>
 #include <linux/statfs.h>
+#include <linux/atomic.h>
 #include <linux/susfs.h>
 #include "mount.h"
 
@@ -25,11 +26,37 @@ extern void ksu_try_umount(const char *mnt, bool check_mnt, int flags, uid_t uid
 
 #ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
 bool susfs_is_log_enabled __read_mostly = true;
-#define SUSFS_LOGI(fmt, ...) if (susfs_is_log_enabled) pr_info("susfs:[%u][%d][%s] " fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)
-#define SUSFS_LOGE(fmt, ...) if (susfs_is_log_enabled) pr_err("susfs:[%u][%d][%s]" fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)
+#define SUSFS_LOGI(fmt, ...) \
+	do { \
+		if (susfs_is_log_enabled) \
+			pr_info("susfs:[%u][%d][%s] " fmt, current_uid().val, \
+				current->pid, __func__, ##__VA_ARGS__); \
+	} while (0)
+#define SUSFS_LOGE(fmt, ...) \
+	do { \
+		if (susfs_is_log_enabled) \
+			pr_err("susfs:[%u][%d][%s]" fmt, current_uid().val, \
+				current->pid, __func__, ##__VA_ARGS__); \
+	} while (0)
+#define SUSFS_LOGI_RL(fmt, ...) \
+	do { \
+		if (susfs_is_log_enabled) \
+			pr_info_ratelimited("susfs:[%u][%d][%s] " fmt, \
+				current_uid().val, current->pid, __func__, \
+				##__VA_ARGS__); \
+	} while (0)
+#define SUSFS_LOGE_RL(fmt, ...) \
+	do { \
+		if (susfs_is_log_enabled) \
+			pr_err_ratelimited("susfs:[%u][%d][%s]" fmt, \
+				current_uid().val, current->pid, __func__, \
+				##__VA_ARGS__); \
+	} while (0)
 #else
-#define SUSFS_LOGI(fmt, ...) 
-#define SUSFS_LOGE(fmt, ...) 
+#define SUSFS_LOGI(fmt, ...) do { } while (0)
+#define SUSFS_LOGE(fmt, ...) do { } while (0)
+#define SUSFS_LOGI_RL(fmt, ...) do { } while (0)
+#define SUSFS_LOGE_RL(fmt, ...) do { } while (0)
 #endif
 
 /* sus_path */
@@ -523,21 +550,27 @@ void susfs_sus_ino_for_show_map_vma(unsigned long ino, dev_t *out_dev, unsigned 
 /* try_umount */
 #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
 static LIST_HEAD(LH_TRY_UMOUNT_PATH);
+static atomic_t susfs_auto_try_umount_active = ATOMIC_INIT(0);
+
+static bool susfs_try_umount_path_exists_locked(const char *pathname)
+{
+	struct st_susfs_try_umount_list *cursor = NULL;
+
+	list_for_each_entry(cursor, &LH_TRY_UMOUNT_PATH, list) {
+		if (unlikely(!strcmp(pathname, cursor->info.target_pathname)))
+			return true;
+	}
+
+	return false;
+}
+
 int susfs_add_try_umount(struct st_susfs_try_umount* __user user_info) {
-	struct st_susfs_try_umount_list *cursor = NULL, *temp = NULL;
 	struct st_susfs_try_umount_list *new_list = NULL;
 	struct st_susfs_try_umount info;
 
 	if (copy_from_user(&info, user_info, sizeof(info))) {
 		SUSFS_LOGE("failed copying from userspace\n");
 		return 1;
-	}
-
-	list_for_each_entry_safe(cursor, temp, &LH_TRY_UMOUNT_PATH, list) {
-		if (unlikely(!strcmp(info.target_pathname, cursor->info.target_pathname))) {
-			SUSFS_LOGE("target_pathname: '%s' is already created in LH_TRY_UMOUNT_PATH\n", info.target_pathname);
-			return 1;
-		}
 	}
 
 	new_list = kmalloc(sizeof(struct st_susfs_try_umount_list), GFP_KERNEL);
@@ -550,6 +583,14 @@ int susfs_add_try_umount(struct st_susfs_try_umount* __user user_info) {
 
 	INIT_LIST_HEAD(&new_list->list);
 	spin_lock(&susfs_spin_lock);
+	if (susfs_try_umount_path_exists_locked(new_list->info.target_pathname)) {
+		spin_unlock(&susfs_spin_lock);
+		SUSFS_LOGI_RL("target_pathname: '%s' already exists in "
+				"LH_TRY_UMOUNT_PATH, skipping duplicate\n",
+				new_list->info.target_pathname);
+		kfree(new_list);
+		return 0;
+	}
 	list_add_tail(&new_list->list, &LH_TRY_UMOUNT_PATH);
 	spin_unlock(&susfs_spin_lock);
 	SUSFS_LOGI("target_pathname: '%s', mnt_mode: %d, is successfully added to LH_TRY_UMOUNT_PATH\n", new_list->info.target_pathname, new_list->info.mnt_mode);
@@ -574,79 +615,100 @@ void susfs_try_umount(uid_t target_uid) {
 
 #ifdef CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
 void susfs_auto_add_try_umount_for_bind_mount(struct path *path) {
-	struct st_susfs_try_umount_list *cursor = NULL, *temp = NULL;
+	struct st_susfs_try_umount_list *cursor = NULL;
 	struct st_susfs_try_umount_list *new_list = NULL;
 	char *pathname = NULL, *dpath = NULL;
+	char target_pathname[SUSFS_MAX_LEN_PATHNAME];
 #ifdef CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
 	bool is_magic_mount_path = false;
 #endif
 
+	if (atomic_cmpxchg(&susfs_auto_try_umount_active, 0, 1)) {
+		SUSFS_LOGI_RL("skip recursive auto try_umount for bind mount\n");
+		return;
+	}
+
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 	if (path->dentry->d_inode->i_state & INODE_STATE_SUS_KSTAT) {
 		SUSFS_LOGI("skip adding path to try_umount list as its inode is flagged INODE_STATE_SUS_KSTAT already\n");
-		return;
+		goto out_clear_active;
 	}
 #endif
 
 	pathname = kmalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!pathname) {
-		SUSFS_LOGE("no enough memory\n");
-		return;
+		SUSFS_LOGE_RL("auto try_umount insertion failed: no memory for pathname\n");
+		goto out_clear_active;
 	}
 
 	dpath = d_path(path, pathname, PAGE_SIZE);
-	if (!dpath) {
-		SUSFS_LOGE("dpath is NULL\n");
+	if (IS_ERR_OR_NULL(dpath)) {
+		SUSFS_LOGE_RL("auto try_umount insertion failed: d_path returned %ld\n",
+				IS_ERR(dpath) ? PTR_ERR(dpath) : 0L);
 		goto out_free_pathname;
 	}
 
 #ifdef CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
-	if (strstr(dpath, MAGIC_MOUNT_WORKDIR)) {
+	if (strstr(dpath, MAGIC_MOUNT_WORKDIR))
 		is_magic_mount_path = true;
-	}
 #endif
 
-	list_for_each_entry_safe(cursor, temp, &LH_TRY_UMOUNT_PATH, list) {
+	memset(target_pathname, 0, sizeof(target_pathname));
 #ifdef CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
-		if (is_magic_mount_path && strstr(dpath, cursor->info.target_pathname)) {
-			goto out_free_pathname;
-		}
+	if (is_magic_mount_path)
+		strncpy(target_pathname, dpath + strlen(MAGIC_MOUNT_WORKDIR),
+			SUSFS_MAX_LEN_PATHNAME - 1);
+	else
 #endif
-		if (unlikely(!strcmp(dpath, cursor->info.target_pathname))) {
-			SUSFS_LOGE("target_pathname: '%s', ino: %lu, is already created in LH_TRY_UMOUNT_PATH\n",
-							dpath, path->dentry->d_inode->i_ino);
-			goto out_free_pathname;
-		}
-	}
+		strncpy(target_pathname, dpath, SUSFS_MAX_LEN_PATHNAME - 1);
 
 	new_list = kmalloc(sizeof(struct st_susfs_try_umount_list), GFP_KERNEL);
 	if (!new_list) {
-		SUSFS_LOGE("no enough memory\n");
+		SUSFS_LOGE_RL("auto try_umount insertion failed: no memory for list entry\n");
 		goto out_free_pathname;
 	}
 
+	strncpy(new_list->info.target_pathname, target_pathname,
+		SUSFS_MAX_LEN_PATHNAME - 1);
+	new_list->info.target_pathname[SUSFS_MAX_LEN_PATHNAME - 1] = '\0';
+	new_list->info.mnt_mode = TRY_UMOUNT_DETACH;
+	INIT_LIST_HEAD(&new_list->list);
+
+	spin_lock(&susfs_spin_lock);
 #ifdef CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
 	if (is_magic_mount_path) {
-		strncpy(new_list->info.target_pathname, dpath + strlen(MAGIC_MOUNT_WORKDIR), SUSFS_MAX_LEN_PATHNAME-1);
-		goto out_add_to_list;
+		list_for_each_entry(cursor, &LH_TRY_UMOUNT_PATH, list) {
+			if (strstr(target_pathname, cursor->info.target_pathname)) {
+				spin_unlock(&susfs_spin_lock);
+				SUSFS_LOGI_RL("target_pathname: '%s' already covered "
+						"by magic mount try_umount entry '%s', "
+						"skipping duplicate\n",
+						target_pathname,
+						cursor->info.target_pathname);
+				kfree(new_list);
+				goto out_free_pathname;
+			}
+		}
+	} else if (susfs_try_umount_path_exists_locked(target_pathname)) {
+#else
+	if (susfs_try_umount_path_exists_locked(target_pathname)) {
+#endif
+		spin_unlock(&susfs_spin_lock);
+		SUSFS_LOGI_RL("target_pathname: '%s', ino: %lu already exists in "
+				"LH_TRY_UMOUNT_PATH, skipping duplicate\n",
+				target_pathname, path->dentry->d_inode->i_ino);
+		kfree(new_list);
+		goto out_free_pathname;
 	}
-#endif
-	strncpy(new_list->info.target_pathname, dpath, SUSFS_MAX_LEN_PATHNAME-1);
-
-#ifdef CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
-out_add_to_list:
-#endif
-
-	new_list->info.mnt_mode = TRY_UMOUNT_DETACH;
-
-	INIT_LIST_HEAD(&new_list->list);
-	spin_lock(&susfs_spin_lock);
 	list_add_tail(&new_list->list, &LH_TRY_UMOUNT_PATH);
 	spin_unlock(&susfs_spin_lock);
+
 	SUSFS_LOGI("target_pathname: '%s', ino: %lu, mnt_mode: %d, is successfully added to LH_TRY_UMOUNT_PATH\n",
 					new_list->info.target_pathname, path->dentry->d_inode->i_ino, new_list->info.mnt_mode);
 out_free_pathname:
 	kfree(pathname);
+out_clear_active:
+	atomic_set(&susfs_auto_try_umount_active, 0);
 }
 #endif // #ifdef CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
 #endif // #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT

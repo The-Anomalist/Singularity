@@ -2443,6 +2443,11 @@ static int do_loopback(struct path *path, const char *old_name,
 	struct mount *mnt = NULL, *old, *parent;
 	struct mountpoint *mp;
 	int err;
+#if defined(CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT) || \
+	defined(CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT)
+	bool susfs_do_auto_bind_mount = false;
+	bool susfs_skip_auto_try_umount = false;
+#endif
 	if (!old_name || !*old_name)
 		return -EINVAL;
 	err = kern_path(old_name, LOOKUP_FOLLOW|LOOKUP_AUTOMOUNT, &old_path);
@@ -2492,29 +2497,34 @@ static int do_loopback(struct path *path, const char *old_name,
 		umount_tree(mnt, UMOUNT_SYNC);
 		unlock_mount_hash();
 	}
-#if defined(CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT) || defined(CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT)
-	// Check if bind mounted path should be hidden and umounted automatically.
-	// And we target only process with ksu domain.
-	if (susfs_is_current_ksu_domain()) {
-#if defined(CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT)
-		if (susfs_is_auto_add_sus_bind_mount_enabled &&
-				susfs_auto_add_sus_bind_mount(old_name, &old_path)) {
-			goto orig_flow;
-		}
+#if defined(CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT) || \
+	defined(CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT)
+	if (!err && susfs_is_current_ksu_domain())
+		susfs_do_auto_bind_mount = true;
 #endif
-#if defined(CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT)
-		if (susfs_is_auto_add_try_umount_for_bind_mount_enabled) {
-			susfs_auto_add_try_umount_for_bind_mount(path);
-		}
-#endif
-	}
-#if defined(CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT)
-orig_flow:
-#endif
-#endif // #if defined(CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT) || defined(CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT)
 
 out2:
 	unlock_mount(mp);
+#if defined(CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT) || \
+	defined(CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT)
+	/*
+	 * SUSFS auto bind-mount bookkeeping can allocate memory, stringify paths,
+	 * and mutate SUSFS lists.  Run it after dropping lock_mount() so namespace
+	 * mount locks are not held across slow path walking or allocation.
+	 */
+	if (susfs_do_auto_bind_mount) {
+#if defined(CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT)
+		if (susfs_is_auto_add_sus_bind_mount_enabled &&
+				susfs_auto_add_sus_bind_mount(old_name, &old_path))
+			susfs_skip_auto_try_umount = true;
+#endif
+#if defined(CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT)
+		if (!susfs_skip_auto_try_umount &&
+		    susfs_is_auto_add_try_umount_for_bind_mount_enabled)
+			susfs_auto_add_try_umount_for_bind_mount(path);
+#endif
+	}
+#endif
 out:
 	path_put(&old_path);
 	return err;
@@ -3913,6 +3923,8 @@ void susfs_run_try_umount_for_current_mnt_ns(void) {
 	struct mnt_namespace *mnt_ns;
 
 	mnt_ns = current->nsproxy->mnt_ns;
+	pr_info_ratelimited("susfs: namespace cleanup start uid=%u pid=%d\n",
+			    current_uid().val, current->pid);
 	// Lock the namespace
 	namespace_lock();
 	list_for_each_entry(mnt, &mnt_ns->list, mnt_list) {
@@ -3924,6 +3936,8 @@ void susfs_run_try_umount_for_current_mnt_ns(void) {
 	// Unlock the namespace
 	namespace_unlock();
 	susfs_try_umount_all(current_uid().val);
+	pr_info_ratelimited("susfs: namespace cleanup end uid=%u pid=%d\n",
+			    current_uid().val, current->pid);
 }
 #endif
 #ifdef CONFIG_KSU_SUSFS
