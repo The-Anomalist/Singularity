@@ -95,8 +95,8 @@ unsigned int sysctl_sched_cstate_aware = 1;
  * - idle bias prefers shallower idle states during wake placement.
  * - auto tune adapts wakeup and placement behavior per-task.
  */
-unsigned int sysctl_sched_uclass_wakeup_boost = 0;
 unsigned int sysctl_sched_uclass_idle_bias = 0;
+unsigned int sysctl_sched_uclass_wakeup_boost = 1;
 unsigned int sysctl_sched_uclass_prefer_prev_cpu = 1;
 unsigned int sysctl_sched_uclass_gran_boost_pct = 20;
 unsigned int sysctl_sched_uclass_prev_cpu_energy_margin_pct = 6;

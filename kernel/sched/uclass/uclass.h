@@ -9,6 +9,16 @@ struct cpuidle_state;
 struct task_struct;
 
 #ifdef CONFIG_SCHED_UCLASS
+static inline unsigned int uclass_pct(unsigned int pct, unsigned int max_pct)
+{
+	return min_t(unsigned int, pct, max_pct);
+}
+
+static inline bool uclass_task_active(struct task_struct *p)
+{
+	return likely(p) && uclamp_latency_sensitive(p);
+}
+
 bool uclass_enabled(void);
 bool uclass_wakeup_preempt_enabled(void);
 bool uclass_placement_enabled(void);
@@ -101,10 +111,10 @@ static inline unsigned int uclass_prev_cpu_energy_margin_pct(void)
 }
 
 static inline bool uclass_idle_candidate_is_better(unsigned long cpu_cap,
-					    unsigned long target_cap,
-					    struct task_struct *p,
-					    struct cpuidle_state *idle,
-					    unsigned int min_exit_lat)
+						   unsigned long target_cap,
+						   struct task_struct *p,
+						   struct cpuidle_state *idle,
+						   unsigned int min_exit_lat)
 {
 	(void)cpu_cap;
 	(void)target_cap;
