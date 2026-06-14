@@ -7657,10 +7657,11 @@ static void select_cpu_candidates(struct sched_domain *sd, cpumask_t *cpus,
 		for_each_cpu_and(cpu, perf_domain_span(pd), sched_domain_span(sd)) {
 			if (!cpumask_test_cpu(cpu, &p->cpus_allowed))
 				continue;
+			if (cpu_isolated(cpu) || !cpu_active(cpu))
+				continue;
 
 			util = cpu_util_next(cpu, p, cpu);
 			cpu_cap = capacity_of(cpu);
-			spare_cap = cpu_cap - util;
 
 			/*
 			 * Skip CPUs that cannot satisfy the capacity request.
@@ -7674,6 +7675,8 @@ static void select_cpu_candidates(struct sched_domain *sd, cpumask_t *cpus,
 			if (cpu_cap * 1024 <
 					util * sched_capacity_margin_up[cpu])
 				continue;
+
+			spare_cap = cpu_cap - min(util, cpu_cap);
 
 			/*
 			 * Find the CPU with the maximum spare capacity in
@@ -7720,6 +7723,39 @@ static void select_cpu_candidates(struct sched_domain *sd, cpumask_t *cpus,
 		cpumask_set_cpu(best_idle_cpu, cpus);
 	else if (highest_spare_cap_cpu >= 0)
 		cpumask_set_cpu(highest_spare_cap_cpu, cpus);
+}
+
+/*
+ * EAS migration should be conservative when the previous CPU is still a
+ * sensible placement.  Keeping it in the candidate set lets the Energy Model
+ * compare "stay" and "move" decisions directly, then the existing energy
+ * margin can avoid migrations whose energy win is too small to justify losing
+ * cache locality.
+ */
+static inline bool eas_prev_cpu_candidate(struct task_struct *p, int prev_cpu,
+					  struct sched_domain *sd)
+{
+	unsigned long util, capacity;
+
+	if (!cpumask_test_cpu(prev_cpu, &p->cpus_allowed))
+		return false;
+	if (!cpumask_test_cpu(prev_cpu, sched_domain_span(sd)))
+		return false;
+	if (cpu_isolated(prev_cpu) || !cpu_active(prev_cpu))
+		return false;
+	if (!task_fits_max(p, prev_cpu))
+		return false;
+
+#ifdef CONFIG_SCHED_WALT
+	util = cpu_util_next_walt(prev_cpu, p, prev_cpu);
+#else
+	util = cpu_util_next(prev_cpu, p, prev_cpu);
+#endif
+	capacity = capacity_of(prev_cpu);
+
+	util = uclamp_rq_util_with(cpu_rq(prev_cpu), util, p);
+
+	return capacity * 1024 >= util * sched_capacity_margin_up[prev_cpu];
 }
 
 static inline int wake_to_idle(struct task_struct *p)
@@ -7873,6 +7909,9 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 	} else {
 		select_cpu_candidates(sd, candidates, pd, p, prev_cpu);
 	}
+
+	if (eas_prev_cpu_candidate(p, prev_cpu, sd))
+		cpumask_set_cpu(prev_cpu, candidates);
 
 	/* Bail out if no candidate was found. */
 	weight = cpumask_weight(candidates);
