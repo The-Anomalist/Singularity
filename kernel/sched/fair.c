@@ -99,11 +99,11 @@ unsigned int sysctl_sched_uclass_idle_bias = 0;
 unsigned int sysctl_sched_uclass_wakeup_boost = 1;
 unsigned int sysctl_sched_uclass_prefer_prev_cpu = 1;
 unsigned int sysctl_sched_uclass_gran_boost_pct = 20;
-unsigned int sysctl_sched_uclass_prev_cpu_energy_margin_pct = 6;
+unsigned int sysctl_sched_uclass_prev_cpu_energy_margin_pct = 10;
 unsigned int sysctl_sched_uclass_auto_tune = 1;
-unsigned int sysctl_sched_uclass_auto_boost_max_pct = 40;
+unsigned int sysctl_sched_uclass_auto_boost_max_pct = 30;
 unsigned int sysctl_sched_uclass_idle_exit_latency_limit_us = 1000;
-unsigned int sysctl_sched_uclass_high_util_pct = 80;
+unsigned int sysctl_sched_uclass_high_util_pct = 85;
 #endif
 
 /*
@@ -185,9 +185,9 @@ unsigned int sysctl_sched_cfs_bandwidth_slice		= 5000UL;
  */
 unsigned int capacity_margin				= 1280;
 unsigned int sched_capacity_margin_up[NR_CPUS] = {
-			[0 ... NR_CPUS-1] = 1078}; /* ~5% margin */
+			[0 ... NR_CPUS-1] = 1126}; /* ~10% margin */
 unsigned int sched_capacity_margin_down[NR_CPUS] = {
-			[0 ... NR_CPUS-1] = 1205}; /* ~15% margin */
+			[0 ... NR_CPUS-1] = 1280}; /* ~20% margin */
 
 #ifdef CONFIG_SCHED_WALT
 /* 1ms default for 20ms window size scaled to 1024 */

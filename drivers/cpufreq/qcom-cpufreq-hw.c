@@ -27,9 +27,9 @@
 #define GT_IRQ_STATUS			BIT(2)
 #define MAX_FN_SIZE			20
 #define LIMITS_POLLING_DELAY_MS		10
-#define DEFAULT_HW_UP_RATE_LIMIT_US	250
-#define DEFAULT_HW_DOWN_RATE_LIMIT_US	2000
-#define DEFAULT_TRANSITION_HYST_KHZ	15360
+#define DEFAULT_HW_UP_RATE_LIMIT_US	500
+#define DEFAULT_HW_DOWN_RATE_LIMIT_US	4000
+#define DEFAULT_TRANSITION_HYST_KHZ	30720
 
 #define CYCLE_CNTR_OFFSET(c, m, acc_count)				\
 			(acc_count ? ((c - cpumask_first(m) + 1) * 4) : 0)

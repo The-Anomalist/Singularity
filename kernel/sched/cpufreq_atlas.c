@@ -2696,14 +2696,13 @@ static int sugov_init(struct cpufreq_policy *policy)
 	}
 
 	/*
-	 * Keep upscaling snappy for bursty foreground benchmarks/tasks,
-	 * but give downscaling a short guard window. Unbounded downscale
-	 * bypassing made Atlas chase every Orion sample and could produce
-	 * CPU/GPU oscillation under long benchmark loops.
+	 * Rate-limit both directions to avoid chasing short-lived samples.
+	 * A slightly longer downscale guard window improves performance per
+	 * watt by preventing repeated CPU/GPU oscillation under long loops.
 	 */
-	tunables->auto_cfg.up_rate_limit_us = 0;
-	tunables->auto_cfg.down_rate_limit_us = 1000;
-	tunables->auto_cfg.down_hysteresis_us = 1500;
+	tunables->auto_cfg.up_rate_limit_us = 500;
+	tunables->auto_cfg.down_rate_limit_us = 4000;
+	tunables->auto_cfg.down_hysteresis_us = 3000;
 	tunables->auto_cfg.hispeed_load = DEFAULT_HISPEED_LOAD;
 	tunables->auto_cfg.hispeed_freq = 0;
 	tunables->auto_cfg.auto_profile = SUGOV_AUTO_PROFILE_BALANCED;

@@ -1048,13 +1048,13 @@ void set_window_start(struct rq *rq)
 unsigned int max_possible_efficiency = 1;
 unsigned int min_possible_efficiency = UINT_MAX;
 
-unsigned int sysctl_sched_conservative_pl;
+unsigned int sysctl_sched_conservative_pl = 1;
 unsigned int sysctl_sched_many_wakeup_threshold = WALT_MANY_WAKEUP_DEFAULT;
 
-#define INC_STEP 8
-#define DEC_STEP 2
-#define CONSISTENT_THRES 16
-#define INC_STEP_BIG 16
+#define INC_STEP 6
+#define DEC_STEP 3
+#define CONSISTENT_THRES 24
+#define INC_STEP_BIG 12
 /*
  * bucket_increase - update the count of all buckets
  *
@@ -3781,9 +3781,9 @@ EXPORT_SYMBOL(sched_set_refresh_rate);
 
 /* Migration margins */
 unsigned int sysctl_sched_capacity_margin_up[MAX_MARGIN_LEVELS] = {
-			[0 ... MAX_MARGIN_LEVELS-1] = 1078}; /* ~5% margin */
+			[0 ... MAX_MARGIN_LEVELS-1] = 1126}; /* ~10% margin */
 unsigned int sysctl_sched_capacity_margin_down[MAX_MARGIN_LEVELS] = {
-			[0 ... MAX_MARGIN_LEVELS-1] = 1205}; /* ~15% margin */
+			[0 ... MAX_MARGIN_LEVELS-1] = 1280}; /* ~20% margin */
 
 #ifdef CONFIG_PROC_SYSCTL
 static void sched_update_updown_migrate_values(bool up)
