@@ -357,6 +357,30 @@ static void devbw_log_icc_dt(struct device *dev, int num_icc_paths)
 		dev_info_ratelimited(dev, "interconnect-names property missing\n");
 }
 
+static void devbw_log_icc_attach_err(struct device *dev, int idx,
+				     const char *name, int ret)
+{
+	if (ret == -EPROBE_DEFER) {
+		if (name)
+			dev_dbg_ratelimited(dev,
+				"ICC provider for path[%d] '%s' not ready, deferring probe\n",
+				idx, name);
+		else
+			dev_dbg_ratelimited(dev,
+				"ICC provider for unnamed path not ready, deferring probe\n");
+		return;
+	}
+
+	if (name)
+		dev_warn_ratelimited(dev,
+			"ICC attach failed at index %d (name '%s', err=%d)\n",
+			idx, name, ret);
+	else
+		dev_warn_ratelimited(dev,
+			"ICC attach failed for unnamed single path (err=%d)\n",
+			ret);
+}
+
 int devfreq_add_devbw(struct device *dev)
 {
 	struct dev_data *d;
@@ -426,8 +450,6 @@ int devfreq_add_devbw(struct device *dev)
 	}
 
 	if (num_icc_paths > 0) {
-		devbw_log_icc_dt(dev, num_icc_paths);
-
 		if (num_icc_paths > MAX_PATHS) {
 			if (have_ports && !d->icc_strict) {
 				dev_warn(dev,
@@ -459,9 +481,7 @@ int devfreq_add_devbw(struct device *dev)
 				if (IS_ERR(d->icc_paths[i])) {
 					ret = PTR_ERR(d->icc_paths[i]);
 					d->icc_paths[i] = NULL;
-					dev_warn_ratelimited(dev,
-						"ICC attach failed at index %d (name '%s', err=%d)\n",
-						i, icc_name, ret);
+					devbw_log_icc_attach_err(dev, i, icc_name, ret);
 					break;
 				}
 
@@ -474,9 +494,7 @@ int devfreq_add_devbw(struct device *dev)
 			if (IS_ERR(d->icc_paths[0])) {
 				ret = PTR_ERR(d->icc_paths[0]);
 				d->icc_paths[0] = NULL;
-				dev_warn_ratelimited(dev,
-					"ICC attach failed for unnamed single path (err=%d)\n",
-					ret);
+				devbw_log_icc_attach_err(dev, 0, NULL, ret);
 			} else {
 				dev_dbg(dev, "Attached ICC unnamed single path\n");
 			}
@@ -515,9 +533,21 @@ int devfreq_add_devbw(struct device *dev)
 	}
 
 	if (ret) {
-		if (!have_ports || d->icc_strict)
+		/*
+		 * Never switch to the legacy msm-bus path while the ICC provider is
+		 * only temporarily missing.  Returning -EPROBE_DEFER keeps probe order
+		 * intact and avoids programming a second bandwidth backend during early
+		 * boot/resume, which can deadlock or freeze some targets.
+		 */
+		if (ret == -EPROBE_DEFER)
 			return ret;
 
+		if (!have_ports || d->icc_strict) {
+			devbw_log_icc_dt(dev, num_icc_paths);
+			return ret;
+		}
+
+		devbw_log_icc_dt(dev, num_icc_paths);
 		dev_err_ratelimited(dev,
 			"ICC unavailable (err=%d), falling back to msm-bus via %s\n",
 			ret, PROP_PORTS);
