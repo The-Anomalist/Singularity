@@ -5,6 +5,7 @@
 #include <linux/types.h>
 #include <linux/utsname.h>
 #include <linux/hashtable.h>
+#include <linux/rcupdate.h>
 #include <linux/path.h>
 #include <linux/susfs_def.h>
 
@@ -59,6 +60,7 @@ struct st_susfs_sus_path_hlist {
 	unsigned long                    target_ino;
 	char                             target_pathname[SUSFS_MAX_LEN_PATHNAME];
 	struct hlist_node                node;
+	struct rcu_head                  rcu;
 };
 #endif
 
@@ -99,6 +101,7 @@ struct st_susfs_sus_kstat_hlist {
 	unsigned long                           target_ino;
 	struct st_susfs_sus_kstat               info;
 	struct hlist_node                       node;
+	struct rcu_head                         rcu;
 };
 #endif
 
@@ -136,6 +139,7 @@ struct st_susfs_open_redirect_hlist {
 	char                             target_pathname[SUSFS_MAX_LEN_PATHNAME];
 	char                             redirected_pathname[SUSFS_MAX_LEN_PATHNAME];
 	struct hlist_node                node;
+	struct rcu_head                  rcu;
 };
 #endif
 
