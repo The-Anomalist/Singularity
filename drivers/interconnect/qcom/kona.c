@@ -9,6 +9,7 @@
 
 #include <linux/interconnect-provider.h>
 #include <linux/interconnect.h>
+#include <linux/init.h>
 #include <linux/bitmap.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -86,6 +87,7 @@ struct kona_icc_provider {
 	bool display_active;
 	unsigned long display_off_jiffies;
 	struct notifier_block display_nb;
+	bool display_nb_registered;
 	struct device **sysfs_nodes;
 	struct class *icc_class;
 	unsigned long gpu_oc_last_jiffies;
@@ -3142,11 +3144,12 @@ static int kona_icc_probe(struct platform_device *pdev)
         }
 
 	ret = msm_drm_register_client(&qp->display_nb);
-	if (ret) {
-		kona_icc_unregister_sysfs(qp);
-		icc_provider_unregister(&qp->provider);
-		goto err_free_bitmaps;
-	}
+	if (ret)
+		dev_dbg(&pdev->dev,
+			"display notifier unavailable (%d); continuing without display hints\n",
+			ret);
+	else
+		qp->display_nb_registered = true;
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
 	if (qp->boot_floor_vote) {
@@ -3197,7 +3200,8 @@ static int kona_icc_remove(struct platform_device *pdev)
 	struct kona_icc_provider *qp = platform_get_drvdata(pdev);
 
 	cancel_delayed_work_sync(&qp->retry_work);
-	msm_drm_unregister_client(&qp->display_nb);
+	if (qp->display_nb_registered)
+		msm_drm_unregister_client(&qp->display_nb);
 
 	        kona_icc_unregister_sysfs(qp);
 	        icc_provider_unregister(&qp->provider);
@@ -3223,7 +3227,21 @@ static struct platform_driver kona_icc_driver = {
 		.pm = &kona_icc_pm_ops,
 	},
 };
-module_platform_driver(kona_icc_driver);
+static int __init kona_icc_init(void)
+{
+	return platform_driver_register(&kona_icc_driver);
+}
+/*
+ * Register before devfreq/devbw consumers.  Strict ICC devbw nodes must not
+ * depend on deferred probe to find the provider during early boot.
+ */
+arch_initcall(kona_icc_init);
+
+static void __exit kona_icc_exit(void)
+{
+	platform_driver_unregister(&kona_icc_driver);
+}
+module_exit(kona_icc_exit);
 
 MODULE_DESCRIPTION("Qualcomm Kona interconnect driver with BW floors");
 MODULE_LICENSE("GPL v2");
