@@ -357,6 +357,31 @@ static void devbw_log_icc_dt(struct device *dev, int num_icc_paths)
 		dev_info_ratelimited(dev, "interconnect-names property missing\n");
 }
 
+static void devbw_log_icc_attach_err(struct device *dev, int idx,
+				     const char *name, int ret)
+{
+	if (ret == -EPROBE_DEFER) {
+		if (name)
+			dev_dbg_ratelimited(dev,
+				"ICC provider deferred for path[%d] '%s' (err=%d)\n",
+				idx, name, ret);
+		else
+			dev_dbg_ratelimited(dev,
+				"ICC provider deferred for unnamed path (err=%d)\n",
+				ret);
+		return;
+	}
+
+	if (name)
+		dev_warn_ratelimited(dev,
+			"ICC attach failed at index %d (name '%s', err=%d)\n",
+			idx, name, ret);
+	else
+		dev_warn_ratelimited(dev,
+			"ICC attach failed for unnamed single path (err=%d)\n",
+			ret);
+}
+
 int devfreq_add_devbw(struct device *dev)
 {
 	struct dev_data *d;
@@ -459,9 +484,7 @@ int devfreq_add_devbw(struct device *dev)
 				if (IS_ERR(d->icc_paths[i])) {
 					ret = PTR_ERR(d->icc_paths[i]);
 					d->icc_paths[i] = NULL;
-					dev_warn_ratelimited(dev,
-						"ICC attach failed at index %d (name '%s', err=%d)\n",
-						i, icc_name, ret);
+					devbw_log_icc_attach_err(dev, i, icc_name, ret);
 					break;
 				}
 
@@ -474,9 +497,7 @@ int devfreq_add_devbw(struct device *dev)
 			if (IS_ERR(d->icc_paths[0])) {
 				ret = PTR_ERR(d->icc_paths[0]);
 				d->icc_paths[0] = NULL;
-				dev_warn_ratelimited(dev,
-					"ICC attach failed for unnamed single path (err=%d)\n",
-					ret);
+				devbw_log_icc_attach_err(dev, 0, NULL, ret);
 			} else {
 				dev_dbg(dev, "Attached ICC unnamed single path\n");
 			}
@@ -515,12 +536,30 @@ int devfreq_add_devbw(struct device *dev)
 	}
 
 	if (ret) {
-		if (!have_ports || d->icc_strict)
+		devbw_log_icc_dt(dev, num_icc_paths);
+
+		if (!have_ports)
 			return ret;
 
-		dev_err_ratelimited(dev,
-			"ICC unavailable (err=%d), falling back to msm-bus via %s\n",
-			ret, PROP_PORTS);
+		/*
+		 * Staged ICC bring-up: strict nodes should eventually fail when ICC
+		 * is broken, but returning -EPROBE_DEFER here currently prevents boot
+		 * before the Kona provider/display ordering is fixed. Allow only the
+		 * deferred-provider case to use the legacy msm-bus path temporarily.
+		 * Real non-defer failures remain fatal for qcom,icc-strict nodes.
+		 */
+		if (ret == -EPROBE_DEFER) {
+			dev_warn_ratelimited(dev,
+				"ICC provider deferred (err=%d), temporarily using msm-bus via %s for staged boot compatibility%s\n",
+				ret, PROP_PORTS, d->icc_strict ? " despite qcom,icc-strict" : "");
+		} else {
+			if (d->icc_strict)
+				return ret;
+
+			dev_err_ratelimited(dev,
+				"ICC unavailable (err=%d), falling back to msm-bus via %s\n",
+				ret, PROP_PORTS);
+		}
 	}
 
 use_msm_bus:

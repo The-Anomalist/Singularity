@@ -84,8 +84,10 @@ struct kona_icc_provider {
 	unsigned long *replay_scan_nodes;
 	spinlock_t dirty_lock;
 	bool display_active;
+	bool display_hints_available;
 	unsigned long display_off_jiffies;
 	struct notifier_block display_nb;
+	bool display_nb_registered;
 	struct device **sysfs_nodes;
 	struct class *icc_class;
 	unsigned long gpu_oc_last_jiffies;
@@ -703,7 +705,14 @@ static void kona_icc_apply_gpu_llcc_turbo(struct kona_icc_provider *qp,
 
 static inline bool kona_icc_display_runtime_active(struct kona_icc_provider *qp)
 {
-	return qp->display_active && !READ_ONCE(qp->system_suspended);
+	/*
+	 * Display-derived floors are only safe when the DRM notifier is live.
+	 * If notifier registration failed, keep the ICC provider available for
+	 * CPU/GPU/NPU clients but avoid applying stale display-state hints.
+	 */
+	return READ_ONCE(qp->display_hints_available) &&
+		READ_ONCE(qp->display_active) &&
+		!READ_ONCE(qp->system_suspended);
 }
 
 static u64 kona_icc_add_headroom(u64 value, unsigned int bias)
@@ -733,6 +742,13 @@ static inline bool kona_icc_sleep_mode_active(struct kona_icc_provider *qp,
 				      const struct kona_icc_node_desc *desc)
 {
 	if (desc->role == KONA_ROLE_DISPLAY)
+		return false;
+
+	/*
+	 * Without a registered display notifier we cannot trust display_active,
+	 * so do not enter display-inactive floor/decay policy from stale state.
+	 */
+	if (!READ_ONCE(qp->display_hints_available))
 		return false;
 
 	return !READ_ONCE(qp->display_active);
@@ -3104,6 +3120,7 @@ static int kona_icc_probe(struct platform_device *pdev)
 	atomic_set(&qp->display_replay_skips, 0);
 	atomic_set(&qp->replay_queue_skips, 0);
 	qp->display_active = true;
+	qp->display_hints_available = false;
 	qp->display_off_jiffies = 0;
 	qp->display_nb.notifier_call = kona_icc_display_notifier_cb;
 
@@ -3144,9 +3161,21 @@ static int kona_icc_probe(struct platform_device *pdev)
 
 	ret = msm_drm_register_client(&qp->display_nb);
 	if (ret) {
-		kona_icc_unregister_sysfs(qp);
-		icc_provider_unregister(&qp->provider);
-		goto err_free_bitmaps;
+		/*
+		 * Display notifications are policy hints, not a hard dependency for
+		 * the ICC provider. Keep the provider registered so CPU/GPU/devbw
+		 * clients can attach to ICC, but disable display-hint-only behavior
+		 * and skip the one-shot boot floor votes for this staged bring-up.
+		 */
+		dev_warn(&pdev->dev,
+			 "display notifier unavailable (%d); keeping ICC provider without display hints\n",
+			 ret);
+		qp->display_nb_registered = false;
+		WRITE_ONCE(qp->display_hints_available, false);
+		qp->boot_floor_vote = false;
+	} else {
+		qp->display_nb_registered = true;
+		WRITE_ONCE(qp->display_hints_available, true);
 	}
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
@@ -3198,14 +3227,18 @@ static int kona_icc_remove(struct platform_device *pdev)
 	struct kona_icc_provider *qp = platform_get_drvdata(pdev);
 
 	cancel_delayed_work_sync(&qp->retry_work);
-	msm_drm_unregister_client(&qp->display_nb);
 
-	        kona_icc_unregister_sysfs(qp);
-	        icc_provider_unregister(&qp->provider);
+	if (qp->display_nb_registered) {
+		msm_drm_unregister_client(&qp->display_nb);
+		qp->display_nb_registered = false;
+	}
+
+	kona_icc_unregister_sysfs(qp);
+	icc_provider_unregister(&qp->provider);
 	bitmap_free(qp->replay_scan_nodes);
 	bitmap_free(qp->dirty_nodes);
 
-        return 0;
+	return 0;
 }
 
 static const struct of_device_id kona_icc_of_match[] = {
