@@ -9,6 +9,7 @@
 #include <linux/io.h>
 #include <linux/iommu.h>
 #include <linux/mailbox_client.h>
+#include <linux/moduleparam.h>
 #include <linux/msm-bus.h>
 #include <linux/of_platform.h>
 #include <linux/regulator/consumer.h>
@@ -75,6 +76,11 @@ struct gmu_iommu_context gmu_ctx[] = {
  */
 static unsigned int next_uncached_kernel_alloc;
 static unsigned int next_uncached_user_alloc;
+
+static bool kgsl_gmu_tcs_debug;
+module_param_named(gmu_tcs_debug, kgsl_gmu_tcs_debug, bool, 0644);
+MODULE_PARM_DESC(gmu_tcs_debug,
+	"Dump GMU firmware/HFI RPMh bandwidth TCS tables once per boot");
 
 static void gmu_snapshot(struct kgsl_device *device);
 static void gmu_remove(struct kgsl_device *device);
@@ -821,7 +827,62 @@ static int rpmh_arc_votes_init(struct kgsl_device *device,
  * @handle: Provided by bus driver. It contains TCS command sets for
  * all BW use cases of a bus client.
  */
-static void build_rpmh_bw_votes(struct gmu_bw_votes *rpmh_vote,
+static void gmu_dbg_dump_bw_votes(struct device *dev, const char *name,
+		struct gmu_bw_votes *rpmh_vote, unsigned int num_usecases,
+		unsigned int dump_id)
+{
+	static bool dumped[2];
+	unsigned int i, j, cmds;
+
+	if (!kgsl_gmu_tcs_debug || dump_id >= ARRAY_SIZE(dumped) || dumped[dump_id])
+		return;
+
+	dumped[dump_id] = true;
+	cmds = min_t(unsigned int, rpmh_vote->cmds_per_bw_vote, MAX_BW_CMDS);
+
+	dev_info(dev,
+		"GMU TCS %s BW votes: num_usecases=%u cmds_per_bw_vote=%u wait_bitmask=0x%x\n",
+		name, num_usecases, cmds, rpmh_vote->cmds_wait_bitmask);
+
+	for (j = 0; j < cmds; j++)
+		dev_info(dev, "GMU TCS %s BW cmd_addrs[%u]=0x%x\n",
+			name, j, rpmh_vote->cmd_addrs[j]);
+
+	for (i = 0; i < num_usecases; i++) {
+		for (j = 0; j < cmds; j++)
+			dev_info(dev,
+				"GMU TCS %s BW cmd_data[%u][%u]=0x%x\n",
+				name, i, j, rpmh_vote->cmd_data[i][j]);
+	}
+}
+
+static void gmu_dbg_dump_hfi_bwtable(struct gmu_device *gmu)
+{
+	static bool dumped;
+	struct device *dev = &gmu->pdev->dev;
+	struct hfi_bwtable_cmd *cmd = &gmu->hfi.bwtbl_cmd;
+	unsigned int i;
+
+	if (!kgsl_gmu_tcs_debug || dumped)
+		return;
+
+	dumped = true;
+	dev_info(dev,
+		"HFI BW table: bw_level_num=%u ddr_cmds_num=%u ddr_wait_bitmask=0x%x cnoc_cmds_num=%u cnoc_wait_bitmask=0x%x\n",
+		cmd->bw_level_num, cmd->ddr_cmds_num, cmd->ddr_wait_bitmask,
+		cmd->cnoc_cmds_num, cmd->cnoc_wait_bitmask);
+
+	for (i = 0; i < cmd->ddr_cmds_num; i++)
+		dev_info(dev, "HFI BW ddr_cmd_addrs[%u]=0x%x\n",
+			i, cmd->ddr_cmd_addrs[i]);
+
+	for (i = 0; i < cmd->cnoc_cmds_num; i++)
+		dev_info(dev, "HFI BW cnoc_cmd_addrs[%u]=0x%x\n",
+			i, cmd->cnoc_cmd_addrs[i]);
+}
+
+static void build_rpmh_bw_votes(struct device *dev, const char *name,
+		unsigned int dump_id, struct gmu_bw_votes *rpmh_vote,
 		unsigned int num_usecases, struct msm_bus_tcs_handle handle)
 {
 	struct msm_bus_tcs_usecase *tmp;
@@ -854,6 +915,8 @@ static void build_rpmh_bw_votes(struct gmu_bw_votes *rpmh_vote,
 			rpmh_vote->cmd_data[i][j] = tmp->cmds[j].data;
 		}
 	}
+
+	gmu_dbg_dump_bw_votes(dev, name, rpmh_vote, num_usecases, dump_id);
 }
 
 static void build_bwtable_cmd_cache(struct gmu_device *gmu)
@@ -882,6 +945,8 @@ static void build_bwtable_cmd_cache(struct gmu_device *gmu)
 	for (i = 0; i < MAX_CNOC_LEVELS; i++)
 		memcpy(cmd->cnoc_cmd_data[i], votes->cnoc_votes.cmd_data[i],
 				cmd->cnoc_cmds_num * sizeof(cmd->cnoc_cmd_data[0][0]));
+
+	gmu_dbg_dump_hfi_bwtable(gmu);
 }
 
 /*
@@ -1098,7 +1163,8 @@ static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
 	if (ret)
 		goto out;
 
-	build_rpmh_bw_votes(&votes->ddr_votes, gmu->num_bwlevels, hdl);
+	build_rpmh_bw_votes(dev, "DDR", 0, &votes->ddr_votes,
+			gmu->num_bwlevels, hdl);
 
 	/*
 	 * Query CNOC TCS command set for each use case defined in cnoc bw
@@ -1115,8 +1181,8 @@ static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
 		if (ret)
 			goto out;
 
-		build_rpmh_bw_votes(&votes->cnoc_votes, gmu->num_cnocbwlevels,
-				hdl);
+		build_rpmh_bw_votes(dev, "CNOC", 1, &votes->cnoc_votes,
+				gmu->num_cnocbwlevels, hdl);
 	}
 
 	build_bwtable_cmd_cache(gmu);
