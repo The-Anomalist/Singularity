@@ -102,6 +102,8 @@ struct dev_data {
 	u32 polling_ms;
 	long gov_ab;
 	bool freeze_bw_blocked;
+	unsigned long icc_votes;
+	unsigned long msm_bus_votes;
 	struct devfreq *df;
 	struct devfreq_dev_profile dp;
 };
@@ -266,6 +268,10 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 		if (!deferred) {
 			d->cur_ib = new_ib;
 			d->cur_ab = new_ab;
+			d->icc_votes++;
+			dev_dbg_ratelimited(dev,
+				"devbw runtime BW vote via ICC: freq=%d total_icc_votes=%lu\n",
+				new_ib, d->icc_votes);
 		}
 
 		return 0;
@@ -287,6 +293,10 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 		d->cur_idx = i;
 		d->cur_ib = new_ib;
 		d->cur_ab = new_ab;
+		d->msm_bus_votes++;
+		dev_dbg_ratelimited(dev,
+			"devbw runtime BW vote via msm_bus fallback: idx=%d freq=%d total_msm_bus_votes=%lu\n",
+			i, new_ib, d->msm_bus_votes);
 	}
 
 	return ret;

@@ -1010,14 +1010,23 @@ static int gmu_bootstrap_bw_vote(struct gmu_device *gmu, unsigned int level)
 {
 	int ret = 0;
 
+	gmu->bootstrap_bw_vote_icc = false;
+
 	if (gmu->num_icc_paths) {
 		ret = gmu_icc_set_vote(gmu, level);
 		if (ret)
 			dev_warn(&gmu->pdev->dev,
 				"GMU ICC vote failed (%d), falling back to msm_bus\n",
 				ret);
-		else
+		else {
+			gmu->icc_bootstrap_votes++;
+			gmu->bootstrap_bw_vote_icc = true;
+			dev_dbg_ratelimited(&gmu->pdev->dev,
+				"GMU bootstrap BW vote via ICC: level=%u paths=%u total_icc_votes=%lu\n",
+				level, gmu->num_icc_paths,
+				gmu->icc_bootstrap_votes);
 			return 0;
+		}
 	}
 
 	if (!gmu->pcl)
@@ -1027,6 +1036,13 @@ static int gmu_bootstrap_bw_vote(struct gmu_device *gmu, unsigned int level)
 	if (ret)
 		dev_err(&gmu->pdev->dev,
 			"Failed to allocate gmu b/w: %d\n", ret);
+	else {
+		gmu->msm_bus_bootstrap_fallback_votes++;
+		gmu->bootstrap_bw_vote_icc = false;
+		dev_dbg_ratelimited(&gmu->pdev->dev,
+			"GMU bootstrap BW vote via msm_bus fallback: level=%u total_fallback_votes=%lu\n",
+			level, gmu->msm_bus_bootstrap_fallback_votes);
+	}
 
 	return ret;
 }
@@ -1035,11 +1051,14 @@ static void gmu_clear_bootstrap_bw_vote(struct gmu_device *gmu)
 {
 	unsigned int i;
 
-	for (i = 0; i < gmu->num_icc_paths; i++)
-		icc_set_bw(gmu->icc_paths[i], 0, 0);
-
-	if (gmu->pcl)
+	if (gmu->bootstrap_bw_vote_icc) {
+		for (i = 0; i < gmu->num_icc_paths; i++)
+			icc_set_bw(gmu->icc_paths[i], 0, 0);
+	} else if (gmu->pcl) {
 		msm_bus_scale_client_update_request(gmu->pcl, 0);
+	}
+
+	gmu->bootstrap_bw_vote_icc = false;
 }
 
 static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
@@ -1065,9 +1084,16 @@ static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
 	hdl.usecases = usecases;
 
 	/*
-	 * Query TCS command set for each use case defined in GPU b/w table
+	 * Query TCS command set for each use case defined in the GPU b/w
+	 * table. This msm_bus query is intentionally retained even when
+	 * runtime driver bandwidth voting is ICC-primary: GMU firmware/HFI
+	 * still consumes these RPMh DDR bandwidth command tables.
 	 */
 	hdl.num_usecases = gmu->num_bwlevels;
+	gmu->fw_tcs_table_builds++;
+	dev_dbg_ratelimited(dev,
+		"Building GMU firmware/HFI DDR BW TCS table via msm_bus query: usecases=%u build_count=%lu\n",
+		hdl.num_usecases, gmu->fw_tcs_table_builds);
 	ret = msm_bus_scale_query_tcs_cmd_all(&hdl, gmu->pcl);
 	if (ret)
 		goto out;
@@ -1075,10 +1101,16 @@ static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
 	build_rpmh_bw_votes(&votes->ddr_votes, gmu->num_bwlevels, hdl);
 
 	/*
-	 *Query CNOC TCS command set for each use case defined in cnoc bw table
+	 * Query CNOC TCS command set for each use case defined in cnoc bw
+	 * table. This also builds GMU firmware/HFI RPMh commands and is not
+	 * runtime driver bandwidth voting.
 	 */
 	if (gmu->num_cnocbwlevels && gmu->ccl) {
 		hdl.num_usecases = gmu->num_cnocbwlevels;
+		gmu->fw_tcs_table_builds++;
+		dev_dbg_ratelimited(dev,
+			"Building GMU firmware/HFI CNOC TCS table via msm_bus query: usecases=%u build_count=%lu\n",
+			hdl.num_usecases, gmu->fw_tcs_table_builds);
 		ret = msm_bus_scale_query_tcs_cmd_all(&hdl, gmu->ccl);
 		if (ret)
 			goto out;

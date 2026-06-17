@@ -454,14 +454,36 @@ static int kgsl_bus_scale_request(struct kgsl_device *device,
 			dev_warn(device->dev,
 				"ICC bus vote failed (%d), falling back to msm_bus\n",
 				ret);
+		else {
+			pwr->icc_runtime_votes++;
+			dev_dbg_ratelimited(device->dev,
+				"GPU runtime BW vote via ICC: level=%u paths=%u total_icc_votes=%lu\n",
+				buslevel, pwr->num_icc_paths,
+				pwr->icc_runtime_votes);
+			return 0;
+		}
 	}
 
-	else if (pwr->pcl)
+	else if (pwr->pcl) {
 		/* Linux bus driver scales BW */
 		ret = msm_bus_scale_client_update_request(pwr->pcl, buslevel);
+		if (!ret) {
+			pwr->msm_bus_runtime_fallback_votes++;
+			dev_dbg_ratelimited(device->dev,
+				"GPU runtime BW vote via msm_bus fallback: level=%u total_fallback_votes=%lu\n",
+				buslevel, pwr->msm_bus_runtime_fallback_votes);
+		}
+	}
 
-	if (ret && pwr->pcl)
+	if (ret && pwr->pcl) {
 		ret = msm_bus_scale_client_update_request(pwr->pcl, buslevel);
+		if (!ret) {
+			pwr->msm_bus_runtime_fallback_votes++;
+			dev_dbg_ratelimited(device->dev,
+				"GPU runtime BW vote via msm_bus fallback after ICC failure: level=%u total_fallback_votes=%lu\n",
+				buslevel, pwr->msm_bus_runtime_fallback_votes);
+		}
+	}
 
 	if (ret)
 		dev_err(device->dev, "GPU BW scaling failure: %d\n", ret);

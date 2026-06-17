@@ -164,6 +164,9 @@ struct gpu_cx_ipeak_client {
  * @icc_ab_mbytes - optional AB votes (MB/s) for main GPU ICC levels
  * @icc_ib_mbytes - optional IB votes (MB/s) for main GPU ICC levels
  * @bus_scale_table - msm_bus table used to map legacy indices to bw
+ * @icc_runtime_votes - count of runtime GPU BW votes sent through ICC
+ * @msm_bus_runtime_fallback_votes - count of runtime GPU BW fallback votes
+ *		sent through msm_bus after ICC is unavailable or fails
  * @irq_name - resource name for the IRQ
  * @clk_stats - structure of clock statistics
  * @l2pc_cpus_mask - mask to avoid L2PC on masked CPUs
@@ -235,6 +238,8 @@ struct kgsl_pwrctrl {
 	u32 *icc_ab_mbytes;
 	u32 *icc_ib_mbytes;
 	struct msm_bus_scale_pdata *bus_scale_table;
+	unsigned long icc_runtime_votes;
+	unsigned long msm_bus_runtime_fallback_votes;
 	const char *irq_name;
 	struct kgsl_clk_stats clk_stats;
 	unsigned int l2pc_cpus_mask;

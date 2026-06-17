@@ -168,6 +168,12 @@ struct kgsl_mailbox {
  * @icc_ab_mbytes: optional AB vote table (MB/s) for GMU ICC levels
  * @icc_ib_mbytes: optional IB vote table (MB/s) for GMU ICC levels
  * @gpu_bus_scale_table: msm_bus table used to map legacy indices to bw
+ * @icc_bootstrap_votes: count of GMU bootstrap BW votes sent through ICC
+ * @msm_bus_bootstrap_fallback_votes: count of GMU bootstrap BW fallback
+ *		votes sent through msm_bus after ICC is unavailable or fails
+ * @fw_tcs_table_builds: count of msm_bus TCS table queries used only to
+ *		build firmware/HFI RPMh BW tables
+ * @bootstrap_bw_vote_icc: true when the active bootstrap BW vote used ICC
  * @rpmh_votes: RPMh TCS command set for GPU, GMU voltage and bw scaling
  * @cx_gdsc: CX headswitch that controls power of GMU and
 		subsystem peripherals
@@ -211,6 +217,10 @@ struct gmu_device {
 	u32 *icc_ib_mbytes;
 	unsigned int freq;
 	struct msm_bus_scale_pdata *gpu_bus_scale_table;
+	unsigned long icc_bootstrap_votes;
+	unsigned long msm_bus_bootstrap_fallback_votes;
+	unsigned long fw_tcs_table_builds;
+	bool bootstrap_bw_vote_icc;
 	struct rpmh_votes_t rpmh_votes;
 	struct regulator *cx_gdsc;
 	struct regulator *gx_gdsc;
