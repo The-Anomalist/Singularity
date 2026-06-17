@@ -271,6 +271,7 @@ void a6xx_preemption_trigger(struct adreno_device *adreno_dev)
 {
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 	struct kgsl_iommu *iommu = KGSL_IOMMU_PRIV(device);
+	struct adreno_preemption *preempt = &adreno_dev->preempt;
 	struct adreno_ringbuffer *next;
 	uint64_t ttbr0, gpuaddr;
 	unsigned int contextidr, cntl, preempt_level;
