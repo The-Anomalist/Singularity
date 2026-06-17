@@ -49,6 +49,8 @@ struct adreno_dispatcher_drawqueue {
  * @timer: Timer to monitor the progress of the drawobjs
  * @inflight: Number of drawobj operations pending in the ringbuffer
  * @fault: Non-zero if a fault was detected.
+ * @a650_soft_fault_grace: Consecutive unchanged fault-detect samples deferred
+ *                         on A650-family GPUs before declaring soft fault
  * @pending: Priority list of contexts waiting to submit drawobjs
  * @plist_lock: Spin lock to protect the pending queue
  * @work: work_struct to put the dispatcher in a work queue
@@ -62,6 +64,7 @@ struct adreno_dispatcher {
 	struct timer_list fault_timer;
 	unsigned int inflight;
 	atomic_t fault;
+	unsigned int a650_soft_fault_grace;
 	struct plist_head pending;
 	spinlock_t plist_lock;
 	struct kthread_work work;

@@ -44,6 +44,7 @@ static unsigned int _dispatcher_q_inflight_lo = 6;
 #define A650_DISPATCH_Q_INFLIGHT_HI	24
 #define A650_DISPATCH_Q_INFLIGHT_LO	6
 #define A650_CONTEXT_DRAWOBJ_BURST	8
+#define A650_SOFT_FAULT_GRACE_SAMPLES	2
 
 /* Command batch timeout (in milliseconds) */
 unsigned int adreno_drawobj_timeout = 2000;
@@ -282,6 +283,8 @@ static int fault_detect_read_compare(struct adreno_device *adreno_dev)
 static void start_fault_timer(struct adreno_device *adreno_dev)
 {
 	struct adreno_dispatcher *dispatcher = &adreno_dev->dispatcher;
+
+	dispatcher->a650_soft_fault_grace = 0;
 
 	if (adreno_soft_fault_detect(adreno_dev))
 		mod_timer(&dispatcher->fault_timer,
@@ -2193,6 +2196,7 @@ static int dispatcher_do_fault(struct adreno_device *adreno_dev)
 	fault = atomic_xchg(&dispatcher->fault, 0);
 	if (fault == 0)
 		return 0;
+	dispatcher->a650_soft_fault_grace = 0;
 
 	mutex_lock(&device->mutex);
 
@@ -2685,6 +2689,28 @@ void adreno_dispatcher_queue_context(struct kgsl_device *device,
 	adreno_dispatcher_schedule(device);
 }
 
+static void a650_soft_fault_log(struct adreno_device *adreno_dev,
+		struct adreno_ringbuffer *rb, const char *state)
+{
+	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
+	struct adreno_dispatcher *dispatcher = &adreno_dev->dispatcher;
+	struct adreno_dispatcher_drawqueue *drawqueue = rb ? &rb->dispatch_q : NULL;
+	unsigned int depth = drawqueue ? _drawqueue_depth(drawqueue) : 0;
+	int active = 0, active_rb = 0, rb_id = rb ? rb->id : -1;
+
+	if (spin_trylock(&adreno_dev->active_list_lock)) {
+		_adreno_count_active_contexts(adreno_dev, drawqueue,
+				&active, &active_rb);
+		spin_unlock(&adreno_dev->active_list_lock);
+	}
+
+	dev_warn_ratelimited(device->dev,
+		"A650 soft fault %s: rb=%d inflight=%u active=%d/%d depth=%u grace=%u/%u\n",
+		state, rb_id, READ_ONCE(dispatcher->inflight),
+		active_rb, active, depth, dispatcher->a650_soft_fault_grace,
+		A650_SOFT_FAULT_GRACE_SAMPLES);
+}
+
 /*
  * This is called on a regular basis while cmdobj's are inflight.  Fault
  * detection registers are read and compared to the existing values - if they
@@ -2704,6 +2730,7 @@ static void adreno_dispatcher_fault_timer(struct timer_list *t)
 		return;
 
 	if (adreno_gpu_fault(adreno_dev)) {
+		dispatcher->a650_soft_fault_grace = 0;
 		adreno_dispatcher_schedule(KGSL_DEVICE(adreno_dev));
 		return;
 	}
@@ -2714,11 +2741,35 @@ static void adreno_dispatcher_fault_timer(struct timer_list *t)
 	 */
 
 	if (!fault_detect_read_compare(adreno_dev)) {
+		if (adreno_is_a650_family(adreno_dev) &&
+				READ_ONCE(dispatcher->inflight) > 0 &&
+				!(adreno_gpu_fault(adreno_dev) &
+					(ADRENO_HARD_FAULT | ADRENO_GMU_FAULT))) {
+			dispatcher->a650_soft_fault_grace++;
+			if (dispatcher->a650_soft_fault_grace <=
+					A650_SOFT_FAULT_GRACE_SAMPLES) {
+				a650_soft_fault_log(adreno_dev,
+					ADRENO_CURRENT_RINGBUFFER(adreno_dev),
+					dispatcher->a650_soft_fault_grace == 1 ?
+					"deferred first unchanged sample" :
+					"deferred unchanged sample");
+				mod_timer(&dispatcher->fault_timer,
+					jiffies +
+					msecs_to_jiffies(_fault_timer_interval));
+				return;
+			}
+			a650_soft_fault_log(adreno_dev,
+				ADRENO_CURRENT_RINGBUFFER(adreno_dev),
+				"declared after grace");
+		}
 		adreno_set_gpu_fault(adreno_dev, ADRENO_SOFT_FAULT);
 		adreno_dispatcher_schedule(KGSL_DEVICE(adreno_dev));
 	} else if (dispatcher->inflight > 0) {
+		dispatcher->a650_soft_fault_grace = 0;
 		mod_timer(&dispatcher->fault_timer,
 			jiffies + msecs_to_jiffies(_fault_timer_interval));
+	} else {
+		dispatcher->a650_soft_fault_grace = 0;
 	}
 }
 
