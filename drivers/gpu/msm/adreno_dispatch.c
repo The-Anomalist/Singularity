@@ -1810,6 +1810,13 @@ static void adreno_fault_header(struct kgsl_device *device,
 					   ADRENO_REG_CP_IB2_BASE_HI, &ib2base);
 	adreno_readreg(adreno_dev, ADRENO_REG_CP_IB2_BUFSZ, &ib2sz);
 
+	dev_err(device->dev,
+		"preempt state %d cur_rb %d next_rb %d prev_rb %d active_rb %d\n",
+		atomic_read(&adreno_dev->preempt.state),
+		adreno_dev->cur_rb ? adreno_dev->cur_rb->id : -1,
+		adreno_dev->next_rb ? adreno_dev->next_rb->id : -1,
+		adreno_dev->prev_rb ? adreno_dev->prev_rb->id : -1, id);
+
 	if (drawobj != NULL) {
 		drawctxt->base.total_fault_count++;
 		drawctxt->base.last_faulted_cmd_ts = drawobj->timestamp;

@@ -23,6 +23,31 @@ enum {
 	SET_PSEUDO_REGISTER_SAVE_REGISTER_COUNTER,
 };
 
+static void a650_preempt_effective_config(struct adreno_device *adreno_dev,
+		unsigned int *level, bool *skip_save_restore, bool *use_gmem)
+{
+	struct adreno_preemption *preempt = &adreno_dev->preempt;
+
+	*level = preempt->preempt_level;
+	*skip_save_restore = preempt->skipsaverestore;
+	*use_gmem = preempt->usesgmem;
+
+	/*
+	 * A650/A620 command streams have been observed to wedge in benchmark
+	 * Vulkan workloads with queued ringbuffer work that does not retire, but
+	 * without RPMh/TCS busy evidence.  Avoid the CP save/restore path that is
+	 * exercised by L1/GMEM preemption on this family and fall back to a plain
+	 * ringbuffer boundary switch.  This keeps multi-ringbuffer scheduling
+	 * enabled while removing the most likely preemption-side command stream
+	 * hazard.
+	 */
+	if (adreno_is_a650_family(adreno_dev)) {
+		*level = 0;
+		*skip_save_restore = false;
+		*use_gmem = false;
+	}
+}
+
 static void _update_wptr(struct adreno_device *adreno_dev, bool reset_timer)
 {
 	struct adreno_ringbuffer *rb = adreno_dev->cur_rb;
@@ -248,13 +273,15 @@ void a6xx_preemption_trigger(struct adreno_device *adreno_dev)
 	struct kgsl_iommu *iommu = KGSL_IOMMU_PRIV(device);
 	struct adreno_ringbuffer *next;
 	uint64_t ttbr0, gpuaddr;
-	unsigned int contextidr, cntl;
+	unsigned int contextidr, cntl, preempt_level;
 	unsigned long flags;
-	struct adreno_preemption *preempt = &adreno_dev->preempt;
+	bool skipsaverestore, usesgmem;
 
-	cntl = (((preempt->preempt_level << 6) & 0xC0) |
-		((preempt->skipsaverestore << 9) & 0x200) |
-		((preempt->usesgmem << 8) & 0x100) | 0x1);
+	a650_preempt_effective_config(adreno_dev, &preempt_level,
+		&skipsaverestore, &usesgmem);
+	cntl = (((preempt_level << 6) & 0xC0) |
+		((skipsaverestore << 9) & 0x200) |
+		((usesgmem << 8) & 0x100) | 0x1);
 
 	/* Put ourselves into a possible trigger state */
 	if (!adreno_move_preempt_state(adreno_dev,
