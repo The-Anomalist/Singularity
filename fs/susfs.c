@@ -1103,14 +1103,37 @@ void susfs_sus_kstat(unsigned long ino, struct stat *stat)
 #endif /* CONFIG_KSU_SUSFS_SUS_KSTAT */
 
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-bool susfs_is_current_ksu_domain(void)
+static bool susfs_task_comm_starts_with(const char *prefix)
 {
-	return current_uid().val == 0;
+	return !strncmp(current->comm, prefix, strlen(prefix));
 }
 
 bool susfs_is_current_zygote_domain(void)
 {
-	return !strncmp(current->comm, "zygote", 6);
+	/* Android's zygote threads commonly appear as zygote/zygote64. */
+	return susfs_task_comm_starts_with("zygote");
+}
+
+bool susfs_is_current_ksu_domain(void)
+{
+	/*
+	 * The legacy susfs4ksu helper used by this 4.19 port is queried from
+	 * hot VFS and namespace paths.  Treating every uid-0 task as KSU is too
+	 * broad on Android: zygote starts as root, and Zygisk/ReZygisk modules
+	 * unshare/copy mount namespaces during app specialization.  If zygote is
+	 * misclassified as KSU, clone_mnt() takes the KSU branch before the
+	 * zygote-specific branch and hands app processes SUSFS mount IDs, which
+	 * can crash compatibility modules that expect the normal zygote flow.
+	 *
+	 * Keep the compatibility fallback narrow.  KernelSU/KernelSU Next's
+	 * userspace daemon is ksud; interactive root shells remain uid-0, but
+	 * they should not be allowed to shadow zygote namespace handling.
+	 */
+	if (susfs_is_current_zygote_domain())
+		return false;
+
+	return uid_eq(current_uid(), GLOBAL_ROOT_UID) &&
+	       susfs_task_comm_starts_with("ksud");
 }
 
 int susfs_sus_mount(struct vfsmount *mnt, struct path *root)

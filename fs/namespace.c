@@ -1154,7 +1154,21 @@ static struct mount *clone_mnt(struct mount *old, struct dentry *root,
 	 * - If caller process is zygote and old mnt_id is sus => call alloc_vfsmnt() to assign a new sus mnt_id
 	 * - For the rest of caller process that doing unshare => call alloc_vfsmnt() to assign a new sus mnt_id only for old sus mount
 	 */
-	// Firstly, check if it is KSU process
+	/*
+	 * Check zygote before KSU.  Android zygote starts with root credentials
+	 * and Zygisk/ReZygisk may copy or unshare mount namespaces during app
+	 * specialization; it must not be routed through the KSU mount-clone path.
+	 */
+	if (likely(is_current_zygote_domain) && (old->mnt_id >= DEFAULT_SUS_MNT_ID)) {
+		/* Important Note:
+		 *  - Here we can't determine whether the unshare is called zygisk or not,
+		 *    so we can only patch out the unshare code in zygisk source code for now
+		 *  - But at least we can deal with old sus mounts using alloc_vfsmnt()
+		 */
+		mnt = alloc_vfsmnt(old->mnt_devname, true, 0);
+		goto bypass_orig_flow;
+	}
+	// Secondly, check if it is KSU process
 	if (unlikely(is_current_ksu_domain)) {
 		// if it is doing single clone
 		if (!(flag & CL_COPY_MNT_NS)) {
@@ -1166,16 +1180,6 @@ static struct mount *clone_mnt(struct mount *old, struct dentry *root,
 		if (mnt) {
 			mnt->mnt.susfs_mnt_id_backup = DEFAULT_SUS_MNT_ID_FOR_KSU_PROC_UNSHARE;
 		}
-		goto bypass_orig_flow;
-	}
-	// Secondly, check if it is zygote process and no matter it is doing unshare or not
-	if (likely(is_current_zygote_domain) && (old->mnt_id >= DEFAULT_SUS_MNT_ID)) {
-		/* Important Note:
-		 *  - Here we can't determine whether the unshare is called zygisk or not,
-		 *    so we can only patch out the unshare code in zygisk source code for now
-		 *  - But at least we can deal with old sus mounts using alloc_vfsmnt()
-		 */
-		mnt = alloc_vfsmnt(old->mnt_devname, true, 0);
 		goto bypass_orig_flow;
 	}
 	// Lastly, for other process that is doing unshare operation, but only deal with old sus mount
