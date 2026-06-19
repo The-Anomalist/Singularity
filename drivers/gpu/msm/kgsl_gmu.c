@@ -14,6 +14,7 @@
 #include <linux/of_platform.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 #include <soc/qcom/cmd-db.h>
 
 #include "adreno.h"
@@ -81,6 +82,11 @@ static bool kgsl_gmu_tcs_debug;
 module_param_named(gmu_tcs_debug, kgsl_gmu_tcs_debug, bool, 0644);
 MODULE_PARM_DESC(gmu_tcs_debug,
 	"Dump GMU firmware/HFI RPMh bandwidth TCS tables once per boot");
+
+static bool kgsl_gmu_cmd_db_bwtable;
+module_param_named(gmu_cmd_db_bwtable, kgsl_gmu_cmd_db_bwtable, bool, 0644);
+MODULE_PARM_DESC(gmu_cmd_db_bwtable,
+	"Build GMU DDR HFI bandwidth table from command-db resource addresses");
 
 static void gmu_snapshot(struct kgsl_device *device);
 static void gmu_remove(struct kgsl_device *device);
@@ -841,8 +847,9 @@ static void gmu_dbg_dump_bw_votes(struct device *dev, const char *name,
 	cmds = min_t(unsigned int, rpmh_vote->cmds_per_bw_vote, MAX_BW_CMDS);
 
 	dev_info(dev,
-		"GMU TCS %s BW votes: num_usecases=%u cmds_per_bw_vote=%u wait_bitmask=0x%x\n",
-		name, num_usecases, cmds, rpmh_vote->cmds_wait_bitmask);
+		"GMU TCS %s BW votes: source=%s num_usecases=%u cmds_per_bw_vote=%u wait_bitmask=0x%x\n",
+		name, strstr(name, "cmd-db") ? "cmd-db bridge" : "msm-bus",
+		num_usecases, cmds, rpmh_vote->cmds_wait_bitmask);
 
 	for (j = 0; j < cmds; j++)
 		dev_info(dev, "GMU TCS %s BW cmd_addrs[%u]=0x%x\n",
@@ -879,6 +886,59 @@ static void gmu_dbg_dump_hfi_bwtable(struct gmu_device *gmu)
 	for (i = 0; i < cmd->cnoc_cmds_num; i++)
 		dev_info(dev, "HFI BW cnoc_cmd_addrs[%u]=0x%x\n",
 			i, cmd->cnoc_cmd_addrs[i]);
+}
+
+static const uint32_t gmu_kona_ddr_cmd_db_cmd_data[][MAX_BW_CMDS] = {
+	{ 0x20004004, 0x60004004 },
+	{ 0x20000320, 0x60000320 },
+	{ 0x200004b0, 0x600004b0 },
+	{ 0x2000070c, 0x6000070c },
+	{ 0x2000088c, 0x6000088c },
+	{ 0x20000aa4, 0x60000aa4 },
+	{ 0x20000c00, 0x60000c00 },
+	{ 0x20000fe4, 0x60000fe4 },
+	{ 0x20001524, 0x60001524 },
+	{ 0x2000184c, 0x6000184c },
+	{ 0x20001c30, 0x60001c30 },
+	{ 0x200020b0, 0x600020b0 },
+	{ 0x20003200, 0x60003200 },
+	{ 0x20003840, 0x60003840 },
+};
+
+static int build_cmd_db_ddr_bw_votes(struct device *dev,
+		struct gmu_bw_votes *ddr_votes, unsigned int num_usecases)
+{
+	u32 mc0_addr = cmd_db_read_addr("MC0");
+	u32 sh4_addr = cmd_db_read_addr("SH4");
+	unsigned int levels = ARRAY_SIZE(gmu_kona_ddr_cmd_db_cmd_data);
+
+	if (!mc0_addr || !sh4_addr) {
+		dev_warn_ratelimited(dev,
+			"GMU DDR cmd-db BW table unavailable: MC0=0x%x SH4=0x%x; falling back to msm_bus query\n",
+			mc0_addr, sh4_addr);
+		return -ENODEV;
+	}
+
+	if (num_usecases != levels) {
+		dev_warn_ratelimited(dev,
+			"GMU DDR cmd-db BW table level mismatch: dt=%u golden=%u; falling back to msm_bus query\n",
+			num_usecases, levels);
+		return -EINVAL;
+	}
+
+	memset(ddr_votes, 0, sizeof(*ddr_votes));
+	ddr_votes->cmds_per_bw_vote = 2;
+	ddr_votes->cmds_wait_bitmask = BIT(0) | BIT(1);
+	ddr_votes->cmd_addrs[0] = mc0_addr;
+	ddr_votes->cmd_addrs[1] = sh4_addr;
+	BUILD_BUG_ON(ARRAY_SIZE(gmu_kona_ddr_cmd_db_cmd_data) > MAX_GX_LEVELS);
+	memcpy(ddr_votes->cmd_data, gmu_kona_ddr_cmd_db_cmd_data,
+		sizeof(gmu_kona_ddr_cmd_db_cmd_data));
+
+	gmu_dbg_dump_bw_votes(dev, "DDR cmd-db bridge", ddr_votes,
+		num_usecases, 0);
+
+	return 0;
 }
 
 static void build_rpmh_bw_votes(struct device *dev, const char *name,
@@ -1155,16 +1215,24 @@ static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
 	 * still consumes these RPMh DDR bandwidth command tables.
 	 */
 	hdl.num_usecases = gmu->num_bwlevels;
-	gmu->fw_tcs_table_builds++;
-	dev_dbg_ratelimited(dev,
-		"Building GMU firmware/HFI DDR BW TCS table via msm_bus query: usecases=%u build_count=%lu\n",
-		hdl.num_usecases, gmu->fw_tcs_table_builds);
-	ret = msm_bus_scale_query_tcs_cmd_all(&hdl, gmu->pcl);
-	if (ret)
-		goto out;
+	if (kgsl_gmu_cmd_db_bwtable)
+		ret = build_cmd_db_ddr_bw_votes(dev, &votes->ddr_votes,
+			gmu->num_bwlevels);
+	else
+		ret = -EOPNOTSUPP;
 
-	build_rpmh_bw_votes(dev, "DDR", 0, &votes->ddr_votes,
+	if (ret) {
+		gmu->fw_tcs_table_builds++;
+		dev_dbg_ratelimited(dev,
+			"Building GMU firmware/HFI DDR BW TCS table via msm_bus query: usecases=%u build_count=%lu\n",
+			hdl.num_usecases, gmu->fw_tcs_table_builds);
+		ret = msm_bus_scale_query_tcs_cmd_all(&hdl, gmu->pcl);
+		if (ret)
+			goto out;
+
+		build_rpmh_bw_votes(dev, "DDR", 0, &votes->ddr_votes,
 			gmu->num_bwlevels, hdl);
+	}
 
 	/*
 	 * Query CNOC TCS command set for each use case defined in cnoc bw
