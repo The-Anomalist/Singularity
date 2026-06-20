@@ -8,6 +8,7 @@
 #include <linux/list.h>
 #include <linux/init_task.h>
 #include <linux/spinlock.h>
+#include <linux/mutex.h>
 #include <linux/stat.h>
 #include <linux/uaccess.h>
 #include <linux/version.h>
@@ -589,6 +590,7 @@ void susfs_sus_ino_for_show_map_vma(unsigned long ino, dev_t *out_dev, unsigned 
 #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
 static LIST_HEAD(LH_TRY_UMOUNT_PATH);
 static atomic_t susfs_auto_try_umount_active = ATOMIC_INIT(0);
+static DEFINE_MUTEX(susfs_try_umount_lock);
 
 static bool susfs_try_umount_path_exists_locked(const char *pathname)
 {
@@ -621,9 +623,11 @@ int susfs_add_try_umount(struct st_susfs_try_umount* __user user_info) {
 	memcpy(&new_list->info, &info, sizeof(info));
 
 	INIT_LIST_HEAD(&new_list->list);
+	mutex_lock(&susfs_try_umount_lock);
 	spin_lock(&susfs_spin_lock);
 	if (susfs_try_umount_path_exists_locked(new_list->info.target_pathname)) {
 		spin_unlock(&susfs_spin_lock);
+		mutex_unlock(&susfs_try_umount_lock);
 		SUSFS_LOGI_RL("target_pathname: '%s' already exists in "
 				"LH_TRY_UMOUNT_PATH, skipping duplicate\n",
 				new_list->info.target_pathname);
@@ -632,24 +636,52 @@ int susfs_add_try_umount(struct st_susfs_try_umount* __user user_info) {
 	}
 	list_add_tail(&new_list->list, &LH_TRY_UMOUNT_PATH);
 	spin_unlock(&susfs_spin_lock);
+	mutex_unlock(&susfs_try_umount_lock);
 	SUSFS_LOGI("target_pathname: '%s', mnt_mode: %d, is successfully added to LH_TRY_UMOUNT_PATH\n", new_list->info.target_pathname, new_list->info.mnt_mode);
 	return 0;
 }
 
 void susfs_try_umount(uid_t target_uid) {
 	struct st_susfs_try_umount_list *cursor = NULL;
+	struct st_susfs_try_umount *entries = NULL;
+	unsigned int count = 0, i = 0;
 
-	// We should umount in reversed order
-	list_for_each_entry_reverse(cursor, &LH_TRY_UMOUNT_PATH, list) {
-		if (cursor->info.mnt_mode == TRY_UMOUNT_DEFAULT) {
-			ksu_try_umount(cursor->info.target_pathname, false, 0, target_uid);
-		} else if (cursor->info.mnt_mode == TRY_UMOUNT_DETACH) {
-			ksu_try_umount(cursor->info.target_pathname, false, MNT_DETACH, target_uid);
-		} else {
-			SUSFS_LOGE("failed umounting '%s' for uid: %d, mnt_mode '%d' not supported\n",
-							cursor->info.target_pathname, target_uid, cursor->info.mnt_mode);
+	mutex_lock(&susfs_try_umount_lock);
+	list_for_each_entry(cursor, &LH_TRY_UMOUNT_PATH, list)
+		count++;
+
+	if (count) {
+		entries = kcalloc(count, sizeof(*entries), GFP_KERNEL);
+		if (entries) {
+			list_for_each_entry(cursor, &LH_TRY_UMOUNT_PATH, list)
+				memcpy(&entries[i++], &cursor->info,
+				       sizeof(*entries));
 		}
 	}
+	mutex_unlock(&susfs_try_umount_lock);
+
+	if (count && !entries) {
+		SUSFS_LOGE("failed umounting for uid: %d, no memory for %u entries\n",
+			   target_uid, count);
+		return;
+	}
+
+	// We should umount in reversed order
+	for (i = count; i > 0; i--) {
+		struct st_susfs_try_umount *entry = &entries[i - 1];
+
+		if (entry->mnt_mode == TRY_UMOUNT_DEFAULT) {
+			ksu_try_umount(entry->target_pathname, false, 0,
+				       target_uid);
+		} else if (entry->mnt_mode == TRY_UMOUNT_DETACH) {
+			ksu_try_umount(entry->target_pathname, false, MNT_DETACH,
+				       target_uid);
+		} else {
+			SUSFS_LOGE("failed umounting '%s' for uid: %d, mnt_mode '%d' not supported\n",
+							entry->target_pathname, target_uid, entry->mnt_mode);
+		}
+	}
+	kfree(entries);
 }
 
 #ifdef CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
@@ -713,12 +745,14 @@ void susfs_auto_add_try_umount_for_bind_mount(struct path *path) {
 	new_list->info.mnt_mode = TRY_UMOUNT_DETACH;
 	INIT_LIST_HEAD(&new_list->list);
 
+	mutex_lock(&susfs_try_umount_lock);
 	spin_lock(&susfs_spin_lock);
 #ifdef CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
 	if (is_magic_mount_path) {
 		list_for_each_entry(cursor, &LH_TRY_UMOUNT_PATH, list) {
 			if (strstr(target_pathname, cursor->info.target_pathname)) {
 				spin_unlock(&susfs_spin_lock);
+				mutex_unlock(&susfs_try_umount_lock);
 				SUSFS_LOGI_RL("target_pathname: '%s' already covered "
 						"by magic mount try_umount entry '%s', "
 						"skipping duplicate\n",
@@ -733,6 +767,7 @@ void susfs_auto_add_try_umount_for_bind_mount(struct path *path) {
 	if (susfs_try_umount_path_exists_locked(target_pathname)) {
 #endif
 		spin_unlock(&susfs_spin_lock);
+		mutex_unlock(&susfs_try_umount_lock);
 		SUSFS_LOGI_RL("target_pathname: '%s', ino: %lu already exists in "
 				"LH_TRY_UMOUNT_PATH, skipping duplicate\n",
 				target_pathname, path->dentry->d_inode->i_ino);
@@ -741,6 +776,7 @@ void susfs_auto_add_try_umount_for_bind_mount(struct path *path) {
 	}
 	list_add_tail(&new_list->list, &LH_TRY_UMOUNT_PATH);
 	spin_unlock(&susfs_spin_lock);
+	mutex_unlock(&susfs_try_umount_lock);
 
 	SUSFS_LOGI("target_pathname: '%s', ino: %lu, mnt_mode: %d, is successfully added to LH_TRY_UMOUNT_PATH\n",
 					new_list->info.target_pathname, path->dentry->d_inode->i_ino, new_list->info.mnt_mode);
@@ -1204,4 +1240,3 @@ void susfs_init(void) {
 
 /* No module exit is needed becuase it should never be a loadable kernel module */
 //void __init susfs_exit(void)
-

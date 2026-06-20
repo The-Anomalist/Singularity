@@ -3926,6 +3926,12 @@ void susfs_run_try_umount_for_current_mnt_ns(void) {
 	struct mount *mnt;
 	struct mnt_namespace *mnt_ns;
 
+	if (!current->nsproxy || !current->nsproxy->mnt_ns) {
+		pr_warn_ratelimited("susfs: namespace cleanup skipped: no mount namespace uid=%u pid=%d\n",
+				    current_uid().val, current->pid);
+		return;
+	}
+
 	mnt_ns = current->nsproxy->mnt_ns;
 	pr_info_ratelimited("susfs: namespace cleanup start uid=%u pid=%d\n",
 			    current_uid().val, current->pid);
