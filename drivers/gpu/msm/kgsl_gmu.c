@@ -86,7 +86,7 @@ MODULE_PARM_DESC(gmu_tcs_debug,
 static bool kgsl_gmu_cmd_db_bwtable;
 module_param_named(gmu_cmd_db_bwtable, kgsl_gmu_cmd_db_bwtable, bool, 0644);
 MODULE_PARM_DESC(gmu_cmd_db_bwtable,
-	"Build GMU DDR HFI bandwidth table from command-db resource addresses");
+	"Verify GMU DDR HFI bandwidth table against cmd-db bridge before use");
 
 static void gmu_snapshot(struct kgsl_device *device);
 static void gmu_remove(struct kgsl_device *device);
@@ -888,59 +888,6 @@ static void gmu_dbg_dump_hfi_bwtable(struct gmu_device *gmu)
 			i, cmd->cnoc_cmd_addrs[i]);
 }
 
-static const uint32_t gmu_kona_ddr_cmd_db_cmd_data[][MAX_BW_CMDS] = {
-	{ 0x20004004, 0x60004004 },
-	{ 0x20000320, 0x60000320 },
-	{ 0x200004b0, 0x600004b0 },
-	{ 0x2000070c, 0x6000070c },
-	{ 0x2000088c, 0x6000088c },
-	{ 0x20000aa4, 0x60000aa4 },
-	{ 0x20000c00, 0x60000c00 },
-	{ 0x20000fe4, 0x60000fe4 },
-	{ 0x20001524, 0x60001524 },
-	{ 0x2000184c, 0x6000184c },
-	{ 0x20001c30, 0x60001c30 },
-	{ 0x200020b0, 0x600020b0 },
-	{ 0x20003200, 0x60003200 },
-	{ 0x20003840, 0x60003840 },
-};
-
-static int build_cmd_db_ddr_bw_votes(struct device *dev,
-		struct gmu_bw_votes *ddr_votes, unsigned int num_usecases)
-{
-	u32 mc0_addr = cmd_db_read_addr("MC0");
-	u32 sh4_addr = cmd_db_read_addr("SH4");
-	unsigned int levels = ARRAY_SIZE(gmu_kona_ddr_cmd_db_cmd_data);
-
-	if (!mc0_addr || !sh4_addr) {
-		dev_warn_ratelimited(dev,
-			"GMU DDR cmd-db BW table unavailable: MC0=0x%x SH4=0x%x; falling back to msm_bus query\n",
-			mc0_addr, sh4_addr);
-		return -ENODEV;
-	}
-
-	if (num_usecases != levels) {
-		dev_warn_ratelimited(dev,
-			"GMU DDR cmd-db BW table level mismatch: dt=%u golden=%u; falling back to msm_bus query\n",
-			num_usecases, levels);
-		return -EINVAL;
-	}
-
-	memset(ddr_votes, 0, sizeof(*ddr_votes));
-	ddr_votes->cmds_per_bw_vote = 2;
-	ddr_votes->cmds_wait_bitmask = BIT(0) | BIT(1);
-	ddr_votes->cmd_addrs[0] = mc0_addr;
-	ddr_votes->cmd_addrs[1] = sh4_addr;
-	BUILD_BUG_ON(ARRAY_SIZE(gmu_kona_ddr_cmd_db_cmd_data) > MAX_GX_LEVELS);
-	memcpy(ddr_votes->cmd_data, gmu_kona_ddr_cmd_db_cmd_data,
-		sizeof(gmu_kona_ddr_cmd_db_cmd_data));
-
-	gmu_dbg_dump_bw_votes(dev, "DDR cmd-db bridge", ddr_votes,
-		num_usecases, 0);
-
-	return 0;
-}
-
 static void build_rpmh_bw_votes(struct device *dev, const char *name,
 		unsigned int dump_id, struct gmu_bw_votes *rpmh_vote,
 		unsigned int num_usecases, struct msm_bus_tcs_handle handle)
@@ -977,6 +924,166 @@ static void build_rpmh_bw_votes(struct device *dev, const char *name,
 	}
 
 	gmu_dbg_dump_bw_votes(dev, name, rpmh_vote, num_usecases, dump_id);
+}
+
+static const u32 gmu_cmd_db_ddr_cmd_data[][2] = {
+	{ 0x20004004, 0x60004004 },
+	{ 0x20000320, 0x60000320 },
+	{ 0x200004b0, 0x600004b0 },
+	{ 0x2000070c, 0x6000070c },
+	{ 0x2000088c, 0x6000088c },
+	{ 0x20000aa4, 0x60000aa4 },
+	{ 0x20000c00, 0x60000c00 },
+	{ 0x20000fe4, 0x60000fe4 },
+	{ 0x20001524, 0x60001524 },
+	{ 0x2000184c, 0x6000184c },
+	{ 0x20001c30, 0x60001c30 },
+	{ 0x200020b0, 0x600020b0 },
+	{ 0x20003200, 0x60003200 },
+	{ 0x20003840, 0x60003840 },
+};
+
+static bool gmu_cmd_db_ddr_votes_match(struct device *dev,
+		const struct gmu_bw_votes *legacy, const struct gmu_bw_votes *bridge,
+		unsigned int num_levels)
+{
+	unsigned int i, j, cmds;
+
+	cmds = max(legacy->cmds_per_bw_vote, bridge->cmds_per_bw_vote);
+	cmds = min_t(unsigned int, cmds, MAX_BW_CMDS);
+
+	if (kgsl_gmu_tcs_debug) {
+		dev_info(dev, "GMU DDR legacy wait_bitmask=0x%x\n",
+			legacy->cmds_wait_bitmask);
+		dev_info(dev, "GMU DDR bridge wait_bitmask=0x%x\n",
+			bridge->cmds_wait_bitmask);
+		for (j = 0; j < cmds; j++) {
+			dev_info(dev, "GMU DDR legacy cmd_addrs[%u]=0x%x\n",
+				j, legacy->cmd_addrs[j]);
+			dev_info(dev, "GMU DDR bridge cmd_addrs[%u]=0x%x\n",
+				j, bridge->cmd_addrs[j]);
+		}
+	}
+
+	if (legacy->cmds_per_bw_vote != bridge->cmds_per_bw_vote) {
+		if (kgsl_gmu_tcs_debug)
+			dev_warn_ratelimited(dev,
+				"GMU DDR cmd-db bridge mismatch: cmds_per_bw_vote legacy=%u bridge=%u\n",
+				legacy->cmds_per_bw_vote, bridge->cmds_per_bw_vote);
+		return false;
+	}
+
+	if (legacy->cmds_wait_bitmask != bridge->cmds_wait_bitmask) {
+		if (kgsl_gmu_tcs_debug)
+			dev_warn_ratelimited(dev,
+				"GMU DDR cmd-db bridge mismatch: wait_bitmask legacy=0x%x bridge=0x%x\n",
+				legacy->cmds_wait_bitmask, bridge->cmds_wait_bitmask);
+		return false;
+	}
+
+	cmds = min_t(unsigned int, legacy->cmds_per_bw_vote, MAX_BW_CMDS);
+
+	for (j = 0; j < cmds; j++) {
+		if (legacy->cmd_addrs[j] != bridge->cmd_addrs[j]) {
+			if (kgsl_gmu_tcs_debug)
+				dev_warn_ratelimited(dev,
+					"GMU DDR cmd-db bridge mismatch: cmd_addrs[%u] legacy=0x%x bridge=0x%x\n",
+					j, legacy->cmd_addrs[j], bridge->cmd_addrs[j]);
+			return false;
+		}
+	}
+
+	for (i = 0; i < num_levels; i++) {
+		for (j = 0; j < cmds; j++) {
+			if (legacy->cmd_data[i][j] != bridge->cmd_data[i][j]) {
+				if (kgsl_gmu_tcs_debug)
+					dev_warn_ratelimited(dev,
+						"GMU DDR cmd-db bridge mismatch: cmd_data[%u][%u] legacy=0x%x bridge=0x%x\n",
+						i, j, legacy->cmd_data[i][j],
+						bridge->cmd_data[i][j]);
+				return false;
+			}
+		}
+	}
+
+	return true;
+}
+
+static bool gmu_cmd_db_build_ddr_votes(struct gmu_device *gmu,
+		struct gmu_bw_votes *bridge)
+{
+	struct device *dev = &gmu->pdev->dev;
+	unsigned int i;
+	u32 mc0_addr, sh4_addr;
+	int ret;
+
+	BUILD_BUG_ON(ARRAY_SIZE(gmu_cmd_db_ddr_cmd_data) > MAX_GX_LEVELS);
+	BUILD_BUG_ON(ARRAY_SIZE(gmu_cmd_db_ddr_cmd_data[0]) > MAX_BW_CMDS);
+
+	if (gmu->num_bwlevels != ARRAY_SIZE(gmu_cmd_db_ddr_cmd_data)) {
+		if (kgsl_gmu_tcs_debug)
+			dev_info(dev,
+				"GMU DDR cmd-db bridge level count mismatch: gmu=%u bridge=%zu; keeping legacy msm_bus table\n",
+				gmu->num_bwlevels, ARRAY_SIZE(gmu_cmd_db_ddr_cmd_data));
+		return false;
+	}
+
+	ret = cmd_db_ready();
+	if (ret) {
+		if (kgsl_gmu_tcs_debug)
+			dev_info(dev,
+				"GMU DDR cmd-db bridge unavailable: cmd_db_ready=%d; keeping legacy msm_bus table\n",
+				ret);
+		return false;
+	}
+
+	mc0_addr = cmd_db_read_addr("MC0");
+	sh4_addr = cmd_db_read_addr("SH4");
+	if (!mc0_addr || !sh4_addr) {
+		if (kgsl_gmu_tcs_debug)
+			dev_info(dev,
+				"GMU DDR cmd-db bridge address lookup failed: MC0=0x%x SH4=0x%x; keeping legacy msm_bus table\n",
+				mc0_addr, sh4_addr);
+		return false;
+	}
+
+	if (kgsl_gmu_tcs_debug && (mc0_addr != 0x50000 || sh4_addr != 0x50014))
+		dev_info(dev,
+			"GMU DDR cmd-db bridge Kona sanity: expected MC0=0x50000 SH4=0x50014 got MC0=0x%x SH4=0x%x\n",
+			mc0_addr, sh4_addr);
+
+	memset(bridge, 0, sizeof(*bridge));
+	bridge->cmds_per_bw_vote = ARRAY_SIZE(gmu_cmd_db_ddr_cmd_data[0]);
+	bridge->cmds_wait_bitmask = BIT(0) | BIT(1);
+	bridge->cmd_addrs[0] = mc0_addr;
+	bridge->cmd_addrs[1] = sh4_addr;
+
+	for (i = 0; i < ARRAY_SIZE(gmu_cmd_db_ddr_cmd_data); i++) {
+		bridge->cmd_data[i][0] = gmu_cmd_db_ddr_cmd_data[i][0];
+		bridge->cmd_data[i][1] = gmu_cmd_db_ddr_cmd_data[i][1];
+	}
+
+	return true;
+}
+
+static void gmu_cmd_db_verify_ddr_votes(struct gmu_device *gmu)
+{
+	struct device *dev = &gmu->pdev->dev;
+	struct gmu_bw_votes bridge;
+
+	if (!kgsl_gmu_cmd_db_bwtable)
+		return;
+
+	if (!gmu_cmd_db_build_ddr_votes(gmu, &bridge))
+		return;
+
+	if (!gmu_cmd_db_ddr_votes_match(dev, &gmu->rpmh_votes.ddr_votes,
+			&bridge, gmu->num_bwlevels))
+		return;
+
+	memcpy(&gmu->rpmh_votes.ddr_votes, &bridge, sizeof(bridge));
+	dev_info(dev,
+		"GMU DDR cmd-db bridge table matches legacy msm_bus table; using verified bridge table\n");
 }
 
 static void build_bwtable_cmd_cache(struct gmu_device *gmu)
@@ -1215,24 +1322,18 @@ static int gmu_bus_vote_init(struct gmu_device *gmu, struct kgsl_pwrctrl *pwr)
 	 * still consumes these RPMh DDR bandwidth command tables.
 	 */
 	hdl.num_usecases = gmu->num_bwlevels;
-	if (kgsl_gmu_cmd_db_bwtable)
-		ret = build_cmd_db_ddr_bw_votes(dev, &votes->ddr_votes,
-			gmu->num_bwlevels);
-	else
-		ret = -EOPNOTSUPP;
+	gmu->fw_tcs_table_builds++;
+	dev_dbg_ratelimited(dev,
+		"Building GMU firmware/HFI DDR BW TCS table via msm_bus query: usecases=%u build_count=%lu\n",
+		hdl.num_usecases, gmu->fw_tcs_table_builds);
+	ret = msm_bus_scale_query_tcs_cmd_all(&hdl, gmu->pcl);
+	if (ret)
+		goto out;
 
-	if (ret) {
-		gmu->fw_tcs_table_builds++;
-		dev_dbg_ratelimited(dev,
-			"Building GMU firmware/HFI DDR BW TCS table via msm_bus query: usecases=%u build_count=%lu\n",
-			hdl.num_usecases, gmu->fw_tcs_table_builds);
-		ret = msm_bus_scale_query_tcs_cmd_all(&hdl, gmu->pcl);
-		if (ret)
-			goto out;
-
-		build_rpmh_bw_votes(dev, "DDR", 0, &votes->ddr_votes,
+	build_rpmh_bw_votes(dev, "DDR", 0, &votes->ddr_votes,
 			gmu->num_bwlevels, hdl);
-	}
+
+	gmu_cmd_db_verify_ddr_votes(gmu);
 
 	/*
 	 * Query CNOC TCS command set for each use case defined in cnoc bw
