@@ -251,6 +251,7 @@ void a6xx_preemption_trigger(struct adreno_device *adreno_dev)
 	uint64_t ttbr0, gpuaddr;
 	unsigned int contextidr, cntl;
 	unsigned long flags;
+	struct adreno_preemption *preempt = &adreno_dev->preempt;
 
 	cntl = (((preempt->preempt_level << 6) & 0xC0) |
 		((preempt->skipsaverestore << 9) & 0x200) |

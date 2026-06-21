@@ -2564,7 +2564,6 @@ static unsigned int _adreno_drawobj_timeout_ms(struct kgsl_device *device)
 static int adreno_dispatch_process_drawqueue(struct adreno_device *adreno_dev,
 		struct adreno_dispatcher_drawqueue *drawqueue)
 {
-	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 	int count = adreno_dispatch_retire_drawqueue(adreno_dev, drawqueue);
 
 	/* Nothing to do if there are no pending commands */

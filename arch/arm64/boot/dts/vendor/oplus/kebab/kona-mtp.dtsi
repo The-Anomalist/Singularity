@@ -125,12 +125,42 @@
 };
 
 /*
+<<<<<<< HEAD
+ * Keep GPU memory/cfg paths responsive for foreground animation, but avoid
+ * pinning the fabric at benchmark-style floors all day.
+ */
+&gpubw {
+	qcom,icc-boost-percent = <160>;
+	qcom,icc-upscale-percent = <250>;
+	qcom,polling-ms = <8>;
+	qcom,icc-min-avg-kbps = <4218750>;
+	qcom,icc-min-peak-kbps = <16875000>;
+};
+
+&msm_gpu {
+	qcom,pm-qos-active-latency = <20>;
+	qcom,ca-busy-penalty = <10000>;
+	qcom,ca-target-pwrlevel = <1>;
+	qcom,tz-sample-floor = <2500>;
+	qcom,tz-min-busy = <550>;
+	qcom,tz-busy-ceiling = <28000>;
+	qcom,gpu-icc-bw-avg-kbps =
+		<1 390625 585937 878906 1113281 1406250 1757812
+		 2109375 2812500 3375000 4218750 4921875 5625000 6328125>;
+	qcom,gpu-icc-bw-peak-kbps =
+		<1 1562500 2343750 3515625 4453125 5625000 7031250
+		 8437500 11250000 13500000 16875000 19687500 22500000 25312500>;
+	qcom,gpu-cfg-icc-bw-avg-kbps = <1 64>;
+	qcom,gpu-cfg-icc-bw-peak-kbps = <1 256>;
+};
+=======
  * Keep GPU votes on the common Kona defaults for stability. The previous kebab
  * overlay forced tighter PM-QoS, top context-aware jumps, short TZ sampling, and
  * larger GPU ICC tables. Those benchmark-oriented overrides can make 3DMark and
  * Antutu run closer to rail/interconnect margins, so leave GPU scaling to the
  * shared Kona tables and runtime governors here.
  */
+>>>>>>> bdf6c946e67f (gpu: msm: stabilize A650 Vulkan workloads)
 
 /*
  * Keep app-launch I/O from stalling, but drop the sustained storage fabric
