@@ -435,33 +435,6 @@ static void a6xx_patch_pwrup_reglist(struct adreno_device *adreno_dev)
  *
  * a6xx device start
  */
-static unsigned int a6xx_valid_mal(struct kgsl_device *device, unsigned int mal)
-{
-	if (mal == 32 || mal == 64)
-		return mal;
-
-	dev_warn_once(device->dev,
-		      "Invalid qcom,min-access-length=%u. Falling back to 32\n",
-		      mal);
-	return 32;
-}
-
-static unsigned int a6xx_valid_ubwc(struct kgsl_device *device, unsigned int mode)
-{
-	switch (mode) {
-	case KGSL_UBWC_1_0:
-	case KGSL_UBWC_2_0:
-	case KGSL_UBWC_3_0:
-	case KGSL_UBWC_4_0:
-		return mode;
-	default:
-		dev_warn_once(device->dev,
-			      "Invalid qcom,ubwc-mode=%u. Falling back to KGSL_UBWC_2_0\n",
-			      mode);
-		return KGSL_UBWC_2_0;
-	}
-}
-
 static void a6xx_start(struct adreno_device *adreno_dev)
 {
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
@@ -470,6 +443,7 @@ static void a6xx_start(struct adreno_device *adreno_dev)
 	unsigned int uavflagprd_inv;
 	unsigned int amsbc = 0;
 	unsigned int rgb565_predicator = 0;
+	static bool patch_reglist;
 
 	/* runtime adjust callbacks based on feature sets */
 	if (!gmu_core_isenabled(device))
@@ -566,12 +540,10 @@ static void a6xx_start(struct adreno_device *adreno_dev)
 	if (of_property_read_u32(device->pdev->dev.of_node,
 		"qcom,min-access-length", &mal))
 		mal = 32;
-	mal = a6xx_valid_mal(device, mal);
 
 	if (of_property_read_u32(device->pdev->dev.of_node,
 		"qcom,ubwc-mode", &mode))
-		mode = KGSL_UBWC_2_0;
-	mode = a6xx_valid_ubwc(device, mode);
+		mode = 0;
 
 	switch (mode) {
 	case KGSL_UBWC_1_0:
@@ -633,14 +605,6 @@ static void a6xx_start(struct adreno_device *adreno_dev)
 			0x3F0243F0);
 	}
 
-	/*
-	 * Posted writes can linger while CP comes out of reset on some A650
-	 * boards. Read back a non-privileged register to serialize programming
-	 * before command submission starts.
-	 */
-	if (adreno_is_a650_family(adreno_dev))
-		kgsl_regread(device, A6XX_RBBM_STATUS, &bit);
-
 	/* Set TWOPASSUSEWFI in A6XX_PC_DBG_ECO_CNTL if requested */
 	if (ADRENO_QUIRK(adreno_dev, ADRENO_QUIRK_TWO_PASS_USE_WFI))
 		kgsl_regrmw(device, A6XX_PC_DBG_ECO_CNTL, 0, (1 << 8));
@@ -671,8 +635,10 @@ static void a6xx_start(struct adreno_device *adreno_dev)
 
 	a6xx_protect_init(adreno_dev);
 
-	if (adreno_dev->pwrup_reglist.gpuaddr != 0)
+	if (!patch_reglist && (adreno_dev->pwrup_reglist.gpuaddr != 0)) {
 		a6xx_patch_pwrup_reglist(adreno_dev);
+		patch_reglist = true;
+	}
 
 	a6xx_preemption_start(adreno_dev);
 

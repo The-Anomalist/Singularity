@@ -58,32 +58,6 @@ static const unsigned int a6xx_gmu_registers[] = {
 
 #define RSC_CMD_OFFSET 2
 #define PDC_CMD_OFFSET 4
-#define A650_GMU_BOOT_RETRY_US 200
-
-static int gmu_poll_retry(struct kgsl_device *device, u32 offset, u32 expected,
-			  unsigned int timeout, u32 mask, const char *op_name)
-{
-	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
-	struct gmu_device *gmu = KGSL_GMU_DEVICE(device);
-	int ret;
-
-	ret = timed_poll_check(device, offset, expected, timeout, mask);
-	if (!ret || !adreno_is_a650_family(adreno_dev))
-		return ret;
-
-	/*
-	 * A650-family bringup can occasionally miss the first poll window due to
-	 * posted writes and interconnect latency around reset deassertion. Retry
-	 * once after a short delay before declaring the GMU unrecoverable.
-	 */
-	udelay(A650_GMU_BOOT_RETRY_US);
-	ret = timed_poll_check(device, offset, expected, timeout, mask);
-	if (!ret)
-		dev_warn(&gmu->pdev->dev,
-			 "GMU %s recovered after retry\n", op_name);
-
-	return ret;
-}
 
 static void _regwrite(void __iomem *regbase,
 		unsigned int offsetwords, unsigned int value)
@@ -416,8 +390,9 @@ static int a6xx_gmu_start(struct kgsl_device *device)
 	/* Make sure the request completes before continuing */
 	wmb();
 
-	if (gmu_poll_retry(device, A6XX_GMU_CM3_FW_INIT_RESULT, val,
-			   GMU_START_TIMEOUT, mask, "firmware boot")) {
+	if (timed_poll_check(device,
+			A6XX_GMU_CM3_FW_INIT_RESULT,
+			val, GMU_START_TIMEOUT, mask)) {
 		dev_err(&gmu->pdev->dev, "GMU doesn't boot\n");
 		return -ETIMEDOUT;
 	}
@@ -435,8 +410,11 @@ static int a6xx_gmu_hfi_start(struct kgsl_device *device)
 
 	gmu_core_regwrite(device, A6XX_GMU_HFI_CTRL_INIT, 1);
 
-	if (gmu_poll_retry(device, A6XX_GMU_HFI_CTRL_STATUS, BIT(0),
-			   GMU_START_TIMEOUT, BIT(0), "HFI init")) {
+	if (timed_poll_check(device,
+			A6XX_GMU_HFI_CTRL_STATUS,
+			BIT(0),
+			GMU_START_TIMEOUT,
+			BIT(0))) {
 		dev_err(&gmu->pdev->dev, "GMU HFI init failed\n");
 		return -ETIMEDOUT;
 	}

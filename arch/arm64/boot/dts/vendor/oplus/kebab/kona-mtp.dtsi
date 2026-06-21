@@ -125,7 +125,6 @@
 };
 
 /*
-<<<<<<< HEAD
  * Keep GPU memory/cfg paths responsive for foreground animation, but avoid
  * pinning the fabric at benchmark-style floors all day.
  */
@@ -153,14 +152,6 @@
 	qcom,gpu-cfg-icc-bw-avg-kbps = <1 64>;
 	qcom,gpu-cfg-icc-bw-peak-kbps = <1 256>;
 };
-=======
- * Keep GPU votes on the common Kona defaults for stability. The previous kebab
- * overlay forced tighter PM-QoS, top context-aware jumps, short TZ sampling, and
- * larger GPU ICC tables. Those benchmark-oriented overrides can make 3DMark and
- * Antutu run closer to rail/interconnect margins, so leave GPU scaling to the
- * shared Kona tables and runtime governors here.
- */
->>>>>>> bdf6c946e67f (gpu: msm: stabilize A650 Vulkan workloads)
 
 /*
  * Keep app-launch I/O from stalling, but drop the sustained storage fabric
