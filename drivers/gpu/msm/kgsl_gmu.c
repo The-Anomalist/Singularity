@@ -926,21 +926,21 @@ static void build_rpmh_bw_votes(struct device *dev, const char *name,
 	gmu_dbg_dump_bw_votes(dev, name, rpmh_vote, num_usecases, dump_id);
 }
 
-static const u32 gmu_cmd_db_ddr_cmd_data[][2] = {
-	{ 0x20004004, 0x60004004 },
-	{ 0x20000320, 0x60000320 },
-	{ 0x200004b0, 0x600004b0 },
-	{ 0x2000070c, 0x6000070c },
-	{ 0x2000088c, 0x6000088c },
-	{ 0x20000aa4, 0x60000aa4 },
-	{ 0x20000c00, 0x60000c00 },
-	{ 0x20000fe4, 0x60000fe4 },
-	{ 0x20001524, 0x60001524 },
-	{ 0x2000184c, 0x6000184c },
-	{ 0x20001c30, 0x60001c30 },
-	{ 0x200020b0, 0x600020b0 },
-	{ 0x20003200, 0x60003200 },
-	{ 0x20003840, 0x60003840 },
+static const u32 gmu_cmd_db_ddr_cmd_data[][3] = {
+	{ 0x60004005, 0x60004003, 0x60000008 },
+	{ 0x60000485, 0x6000030d, 0x60000008 },
+	{ 0x600006c8, 0x60000493, 0x60000008 },
+	{ 0x60000a31, 0x600006e1, 0x60000008 },
+	{ 0x60000c5d, 0x60000858, 0x60000008 },
+	{ 0x60000f64, 0x60000a64, 0x60000008 },
+	{ 0x6000115c, 0x60000bb8, 0x60000008 },
+	{ 0x600016fd, 0x60000f84, 0x60000008 },
+	{ 0x60001e95, 0x600014a5, 0x60000008 },
+	{ 0x60002326, 0x600017ba, 0x60000008 },
+	{ 0x600028c7, 0x60001b86, 0x60000008 },
+	{ 0x60002f4a, 0x60001feb, 0x60000008 },
+	{ 0x60003fff, 0x600030d4, 0x60000008 },
+	{ 0x60003fff, 0x600036ee, 0x60000008 },
 };
 
 static bool gmu_cmd_db_ddr_votes_match(struct device *dev,
@@ -1013,8 +1013,8 @@ static bool gmu_cmd_db_build_ddr_votes(struct gmu_device *gmu,
 		struct gmu_bw_votes *bridge)
 {
 	struct device *dev = &gmu->pdev->dev;
-	unsigned int i;
-	u32 mc0_addr, sh4_addr;
+	unsigned int i, j;
+	u32 mc0_addr, sh0_addr, acv_addr;
 	int ret;
 
 	BUILD_BUG_ON(ARRAY_SIZE(gmu_cmd_db_ddr_cmd_data) > MAX_GX_LEVELS);
@@ -1038,29 +1038,33 @@ static bool gmu_cmd_db_build_ddr_votes(struct gmu_device *gmu,
 	}
 
 	mc0_addr = cmd_db_read_addr("MC0");
-	sh4_addr = cmd_db_read_addr("SH4");
-	if (!mc0_addr || !sh4_addr) {
+	sh0_addr = cmd_db_read_addr("SH0");
+	acv_addr = cmd_db_read_addr("ACV");
+	if (!mc0_addr || !sh0_addr || !acv_addr) {
 		if (kgsl_gmu_tcs_debug)
 			dev_info(dev,
-				"GMU DDR cmd-db bridge address lookup failed: MC0=0x%x SH4=0x%x; keeping legacy msm_bus table\n",
-				mc0_addr, sh4_addr);
+				"GMU DDR cmd-db bridge address lookup failed: MC0=0x%x SH0=0x%x ACV=0x%x; keeping legacy msm_bus table\n",
+				mc0_addr, sh0_addr, acv_addr);
 		return false;
 	}
 
-	if (kgsl_gmu_tcs_debug && (mc0_addr != 0x50000 || sh4_addr != 0x50014))
+	if (kgsl_gmu_tcs_debug &&
+			(mc0_addr != 0x50000 || sh0_addr != 0x50004 ||
+			 acv_addr != 0x5007c))
 		dev_info(dev,
-			"GMU DDR cmd-db bridge Kona sanity: expected MC0=0x50000 SH4=0x50014 got MC0=0x%x SH4=0x%x\n",
-			mc0_addr, sh4_addr);
+			"GMU DDR cmd-db bridge Kona sanity: expected MC0=0x50000 SH0=0x50004 ACV=0x5007c got MC0=0x%x SH0=0x%x ACV=0x%x\n",
+			mc0_addr, sh0_addr, acv_addr);
 
 	memset(bridge, 0, sizeof(*bridge));
 	bridge->cmds_per_bw_vote = ARRAY_SIZE(gmu_cmd_db_ddr_cmd_data[0]);
-	bridge->cmds_wait_bitmask = BIT(0) | BIT(1);
+	bridge->cmds_wait_bitmask = 0x0;
 	bridge->cmd_addrs[0] = mc0_addr;
-	bridge->cmd_addrs[1] = sh4_addr;
+	bridge->cmd_addrs[1] = sh0_addr;
+	bridge->cmd_addrs[2] = acv_addr;
 
 	for (i = 0; i < ARRAY_SIZE(gmu_cmd_db_ddr_cmd_data); i++) {
-		bridge->cmd_data[i][0] = gmu_cmd_db_ddr_cmd_data[i][0];
-		bridge->cmd_data[i][1] = gmu_cmd_db_ddr_cmd_data[i][1];
+		for (j = 0; j < ARRAY_SIZE(gmu_cmd_db_ddr_cmd_data[0]); j++)
+			bridge->cmd_data[i][j] = gmu_cmd_db_ddr_cmd_data[i][j];
 	}
 
 	return true;
