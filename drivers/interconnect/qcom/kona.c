@@ -269,9 +269,9 @@ MODULE_PARM_DESC(kona_max_downscale_percent,
  * - kona_perf_bias_turbo: extra bias for very large votes (race-to-performance).
  * - kona_perf_light_kb / kona_perf_turbo_kb: thresholds for selecting a profile.
  */
-static unsigned int kona_perf_bias = 124;
-static unsigned int kona_perf_bias_light = 110;
-static unsigned int kona_perf_bias_turbo = 145;
+static unsigned int kona_perf_bias = 118;
+static unsigned int kona_perf_bias_light = 104;
+static unsigned int kona_perf_bias_turbo = 150;
 #define KONA_PRIME_EXTRA_BIAS_PERCENT	10
 static unsigned long kona_perf_light_kb = 1000000;   /* 1 GB/s */
 static unsigned long kona_perf_turbo_kb = 14000000;  /* 14 GB/s */
@@ -280,13 +280,13 @@ static unsigned long kona_perf_sustain_kb = 3600000; /* 3.6 GB/s */
 static unsigned int kona_perf_sustain_extra_bias = 0;
 module_param(kona_perf_bias, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias,
-        "Percent headroom added on CPU/DDR/LLCC/GPU/NPU paths (default: 124)");
+        "Percent headroom added on CPU/DDR/LLCC/GPU/NPU paths (default: 118)");
 module_param(kona_perf_bias_light, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias_light,
-        "Percent headroom added for light requests to save power (default: 110)");
+        "Percent headroom added for light requests to save power (default: 104)");
 module_param(kona_perf_bias_turbo, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias_turbo,
-        "Percent headroom added for very large votes (default: 145)");
+        "Percent headroom added for very large votes (default: 150)");
 module_param(kona_perf_light_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_perf_light_kb,
         "Threshold KB/s for light-load bias selection (default: 1000000)");
@@ -381,10 +381,10 @@ module_param_named(kona_active_floor_mid_percent, kona_active_floor_mid_percent,
 MODULE_PARM_DESC(kona_active_floor_mid_percent,
 	"Percent of post-path floor kept for medium display-on non-display workload votes");
 
-static unsigned int kona_gpu_ib_boost_percent = 205;
-static unsigned int kona_gpu_ib_min_ratio_percent = 255;
-static unsigned int kona_gpu_llcc_boost_percent = 155;
-static unsigned int kona_gpu_llcc_min_ratio_percent = 205;
+static unsigned int kona_gpu_ib_boost_percent = 235;
+static unsigned int kona_gpu_ib_min_ratio_percent = 285;
+static unsigned int kona_gpu_llcc_boost_percent = 185;
+static unsigned int kona_gpu_llcc_min_ratio_percent = 235;
 static unsigned int kona_cpu_ib_boost_percent = 112;
 static unsigned int kona_cpu_ddr_min_ratio_percent = 175;
 static unsigned int kona_cpu_llcc_min_ratio_percent = 155;
@@ -407,17 +407,17 @@ static unsigned long kona_npu_oc_llcc_floor_ab_kb = 16000000; /* 16 GB/s */
 static unsigned long kona_npu_oc_llcc_floor_ib_kb = 28000000; /* 28 GB/s */
 static bool kona_gpu_bimc_pinning_enable = true;
 static bool kona_gpu_bimc_no_hyst_enable = false;
-static unsigned long kona_gpu_bimc_floor_ab_kb = 22000000; /* 22 GB/s */
-static unsigned long kona_gpu_bimc_floor_ib_kb = 46000000; /* 46 GB/s */
-static unsigned long kona_gpu_bimc_pin_threshold_kb = 6500000; /* 6.5 GB/s */
-static unsigned int kona_gpu_bimc_pin_exit_percent = 70;
-static unsigned int kona_gpu_bimc_pin_hold_ms = 220;
-static unsigned int kona_gpu_bimc_min_ratio_percent = 245;
+static unsigned long kona_gpu_bimc_floor_ab_kb = 28000000; /* 28 GB/s */
+static unsigned long kona_gpu_bimc_floor_ib_kb = 56000000; /* 56 GB/s */
+static unsigned long kona_gpu_bimc_pin_threshold_kb = 4800000; /* 4.8 GB/s */
+static unsigned int kona_gpu_bimc_pin_exit_percent = 62;
+static unsigned int kona_gpu_bimc_pin_hold_ms = 320;
+static unsigned int kona_gpu_bimc_min_ratio_percent = 300;
 static bool kona_gpu_llcc_turbo_enable = true;
-static unsigned long kona_gpu_llcc_turbo_enter_ib_kb = 7200000; /* 7.2 GB/s */
-static unsigned long kona_gpu_llcc_turbo_exit_ib_kb = 5400000;  /* 5.4 GB/s */
-static unsigned long kona_gpu_llcc_turbo_ab_kb = 28000000;      /* 28 GB/s */
-static unsigned long kona_gpu_llcc_turbo_ib_kb = 36000000;      /* 36 GB/s */
+static unsigned long kona_gpu_llcc_turbo_enter_ib_kb = 5200000; /* 5.2 GB/s */
+static unsigned long kona_gpu_llcc_turbo_exit_ib_kb = 3600000;  /* 3.6 GB/s */
+static unsigned long kona_gpu_llcc_turbo_ab_kb = 34000000;      /* 34 GB/s */
+static unsigned long kona_gpu_llcc_turbo_ib_kb = 46000000;      /* 46 GB/s */
 static bool kona_cpu_prime_oc_mem_pinning_enable = true;
 static unsigned long kona_cpu_prime_oc_pin_threshold_kb = 20000000; /* 20 GB/s */
 static unsigned int kona_cpu_prime_oc_pin_exit_percent = 75;
@@ -506,16 +506,16 @@ MODULE_PARM_DESC(kona_sleep_keepalive_percent,
 
 module_param(kona_gpu_ib_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_ib_boost_percent,
-        "Percent boost applied to gpu-ddr IB after floors (default: 205)");
+        "Percent boost applied to gpu-ddr IB after floors (default: 235)");
 module_param(kona_gpu_ib_min_ratio_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_ib_min_ratio_percent,
-        "Minimum gpu-ddr IB as percent of AB (default: 255)");
+        "Minimum gpu-ddr IB as percent of AB (default: 285)");
 module_param(kona_gpu_llcc_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_llcc_boost_percent,
-        "Percent boost applied to gpu-llcc IB after floors (default: 155)");
+        "Percent boost applied to gpu-llcc IB after floors (default: 185)");
 module_param(kona_gpu_llcc_min_ratio_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_llcc_min_ratio_percent,
-        "Minimum gpu-llcc IB as percent of AB (default: 205)");
+        "Minimum gpu-llcc IB as percent of AB (default: 235)");
 module_param(kona_cpu_ib_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_cpu_ib_boost_percent,
 	"Percent boost applied to CPU DDR/LLCC IB after floors (default: 112)");
@@ -584,22 +584,22 @@ MODULE_PARM_DESC(kona_gpu_bimc_no_hyst_enable,
         "Disable downvote hysteresis for gpu-ddr votes to remove ramp-down/ramp-up lag");
 module_param(kona_gpu_bimc_floor_ab_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_gpu_bimc_floor_ab_kb,
-        "Pinned gpu-ddr BIMC AB floor in KB/s (default: 16500000)");
+        "Pinned gpu-ddr BIMC AB floor in KB/s (default: 28000000)");
 module_param(kona_gpu_bimc_floor_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_gpu_bimc_floor_ib_kb,
-        "Pinned gpu-ddr BIMC IB floor in KB/s (default: 35000000)");
+        "Pinned gpu-ddr BIMC IB floor in KB/s (default: 56000000)");
 module_param(kona_gpu_bimc_pin_threshold_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_gpu_bimc_pin_threshold_kb,
         "Only enable gpu-ddr BIMC pinning above this KB/s request threshold");
 module_param(kona_gpu_bimc_pin_exit_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_bimc_pin_exit_percent,
-	"Exit threshold as percent of enter threshold for GPU BIMC pinning (default: 70)");
+	"Exit threshold as percent of enter threshold for GPU BIMC pinning (default: 62)");
 module_param(kona_gpu_bimc_pin_hold_ms, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_bimc_pin_hold_ms,
-	"Hold GPU BIMC pinning for N ms after threshold crossing (default: 220)");
+	"Hold GPU BIMC pinning for N ms after threshold crossing (default: 320)");
 module_param(kona_gpu_bimc_min_ratio_percent, uint, 0644);
 MODULE_PARM_DESC(kona_gpu_bimc_min_ratio_percent,
-        "Minimum gpu-ddr BIMC IB as percent of AB when pinning is active (default: 245)");
+        "Minimum gpu-ddr BIMC IB as percent of AB when pinning is active (default: 300)");
 module_param(kona_gpu_llcc_turbo_enable, bool, 0644);
 MODULE_PARM_DESC(kona_gpu_llcc_turbo_enable,
         "Force high gpu-llcc vote while gpu-ddr IB remains above threshold");
@@ -1485,12 +1485,17 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 	 * - medium request: retain most of the floor (default 82%)
 	 * - high request: keep full floors (100%)
 	 *
+	 * GPU pinning is exempt from this scaling because the pin only latches
+	 * once a real GPU request is already large enough to risk top-clock
+	 * starvation; shrinking that vote would defeat the anti-starvation path.
+	 *
 	 * Classify on raw client request max(req_ab, req_ib), not post-floor vote.
 	 * Apply after path-specific floors and before minimum clamps/bias.
 	 */
 	if (kona_active_floor_scaling_enable && active_floor_active &&
 	    !kona_icc_sleep_mode_active(qp, desc) &&
-	    desc->role != KONA_ROLE_DISPLAY) {
+	    desc->role != KONA_ROLE_DISPLAY &&
+	    !(desc->role == KONA_ROLE_GPU && gpu_pin_active)) {
 		unsigned long low_kb = kona_active_floor_low_kb;
 		unsigned long high_kb = max(kona_active_floor_high_kb, low_kb);
 		unsigned int low_pct = clamp_val(kona_active_floor_low_percent, 0, 100);
