@@ -626,6 +626,23 @@ void kgsl_pwrctrl_buslevel_update(struct kgsl_device *device,
 	 * otherwise request bus level 0, off.
 	 */
 	if (on) {
+		/*
+		 * Keep the top GPU OPP paired with its nominal/max DDR vote.
+		 *
+		 * After the ICC migration the devbw slow-hint path can leave a
+		 * negative bus_mod in place while the GPU is still running at the
+		 * highest pwrlevel.  On Kona/A650 the overclocked Vulkan top bin
+		 * has no higher bus corner to recover with, so allowing that stale
+		 * negative modifier under-votes DDR exactly when rb-heavy Vulkan
+		 * workloads need the programmed qcom,bus-freq vote.  Clamp only this
+		 * top-OPP case; lower pwrlevels keep their normal busmon/ICC DCVS
+		 * range and the verified GMU cmd-db DDR bridge is untouched.
+		 */
+		if (pwr->active_pwrlevel == pwr->max_pwrlevel && pwr->bus_mod < 0) {
+			pwr->bus_mod = 0;
+			pwr->bus_percent_ab = 0;
+		}
+
 		buslevel = min_t(int, pwr->pwrlevels[0].bus_max,
 				cur + pwr->bus_mod);
 		buslevel = max_t(int, buslevel, 1);
