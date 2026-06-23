@@ -44,6 +44,7 @@ enum kona_icc_role {
         KONA_ROLE_NPU,
         KONA_ROLE_DSP,
         KONA_ROLE_MEDIA,
+	KONA_ROLE_CAMERA,
 	KONA_ROLE_STORAGE,
         KONA_ROLE_DISPLAY,
         KONA_ROLE_GENERIC,
@@ -54,6 +55,8 @@ struct kona_icc_node_desc {
         const char *name;
         const char *ab;
         const char *ib;
+	const char *fallback_ab;
+	const char *fallback_ib;
         enum kona_icc_role role;
 };
 
@@ -227,6 +230,10 @@ MODULE_PARM_DESC(kona_display_topology_strict,
 #define KONA_MEDIA_DDR_IB_FLOOR_KB	(34000000ULL) /* ~34 GB/s */
 #define KONA_MEDIA_LLCC_AB_FLOOR_KB	(13000000ULL) /* ~13 GB/s */
 #define KONA_MEDIA_LLCC_IB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
+#define KONA_CAMERA_DDR_AB_FLOOR_KB	(18000000ULL) /* ~18 GB/s */
+#define KONA_CAMERA_DDR_IB_FLOOR_KB	(34000000ULL) /* ~34 GB/s */
+#define KONA_CAMERA_CFG_AB_FLOOR_KB	(300000ULL)   /* 300 MB/s */
+#define KONA_CAMERA_CFG_IB_FLOOR_KB	(300000ULL)   /* 300 MB/s */
 #define KONA_UX_DDR_AB_FLOOR_KB	(12000000ULL)  /* ~12 GB/s */
 #define KONA_UX_DDR_IB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
 /*
@@ -1223,7 +1230,6 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 	case KONA_ICC_QUP_TO_MEM:
 	case KONA_ICC_CRYPTO_TO_MEM:
 	case KONA_ICC_TSIF_TO_MEM:
-	case KONA_ICC_CAM_CFG:
 	case KONA_ICC_VIDEO_TO_MEM:
 	case KONA_ICC_CPU1_TO_MEM:
 	case KONA_ICC_CPU2_TO_MEM:
@@ -1262,6 +1268,20 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 			*ib = kona_icc_add_headroom(*ib, kona_storage_ib_boost_percent);
 		if (*ab && *ib < mul_u64_u32_div(*ab, kona_storage_ib_min_ratio_percent, 100))
 			*ib = mul_u64_u32_div(*ab, kona_storage_ib_min_ratio_percent, 100);
+		break;
+	case KONA_ICC_CAM_CFG:
+		if (active && *ab < KONA_CAMERA_CFG_AB_FLOOR_KB)
+			*ab = KONA_CAMERA_CFG_AB_FLOOR_KB;
+		if (active && *ib < KONA_CAMERA_CFG_IB_FLOOR_KB)
+			*ib = KONA_CAMERA_CFG_IB_FLOOR_KB;
+		break;
+	case KONA_ICC_CAM_HF0_TO_MEM:
+	case KONA_ICC_CAM_SF0_TO_MEM:
+	case KONA_ICC_CAM_SF_ICP_TO_MEM:
+		if (active && *ab < KONA_CAMERA_DDR_AB_FLOOR_KB)
+			*ab = KONA_CAMERA_DDR_AB_FLOOR_KB;
+		if (active && *ib < KONA_CAMERA_DDR_IB_FLOOR_KB)
+			*ib = KONA_CAMERA_DDR_IB_FLOOR_KB;
 		break;
 	case KONA_ICC_VIDEO_CFG:
 		if (active && *ab < KONA_MEDIA_DDR_AB_FLOOR_KB)
@@ -1832,30 +1852,38 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 	{
 		.id = KONA_ICC_CAM_CFG,
 		.name = "cam-cfg",
-		.ab = "CPU_MEM_AB",
-		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
+		.ab = "CAM_CFG_AB",
+		.ib = "CAM_CFG_IB",
+		.fallback_ab = "CPU_MEM_AB",
+		.fallback_ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_CAMERA,
 	},
 	{
 		.id = KONA_ICC_CAM_HF0_TO_MEM,
 		.name = "cam-hf0-ddr",
-		.ab = "CPU_MEM_AB",
-		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
+		.ab = "CAM_MEM_AB",
+		.ib = "CAM_MEM_IB",
+		.fallback_ab = "CPU_MEM_AB",
+		.fallback_ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_CAMERA,
 	},
 	{
 		.id = KONA_ICC_CAM_SF0_TO_MEM,
 		.name = "cam-sf0-ddr",
-		.ab = "CPU_MEM_AB",
-		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
+		.ab = "CAM_MEM_AB",
+		.ib = "CAM_MEM_IB",
+		.fallback_ab = "CPU_MEM_AB",
+		.fallback_ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_CAMERA,
 	},
 	{
 		.id = KONA_ICC_CAM_SF_ICP_TO_MEM,
 		.name = "cam-sf-icp-ddr",
-		.ab = "CPU_MEM_AB",
-		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
+		.ab = "CAM_MEM_AB",
+		.ib = "CAM_MEM_IB",
+		.fallback_ab = "CPU_MEM_AB",
+		.fallback_ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_CAMERA,
 	},
 	{
 		.id = KONA_ICC_DISP_CFG,
@@ -2126,7 +2154,7 @@ static int kona_icc_send_bw(struct device *dev, const char *res, u32 kbps, bool 
 	addr = cmd_db_read_addr(res);
 	if (!addr) {
 		dev_dbg_ratelimited(dev, "kona-icc: missing cmd-db addr for %s\n", res ?: "?");
-		return -EAGAIN;
+		return -ENOENT;
 	}
 
 	/* cmd.data is KB/s; callers must already scale to KB/s. */
@@ -2145,6 +2173,22 @@ static int kona_icc_send_bw(struct device *dev, const char *res, u32 kbps, bool 
 	return ret;
 }
 
+static int kona_icc_send_bw_with_fallback(struct device *dev, const char *res,
+					 const char *fallback_res, u32 kbps, bool wait)
+{
+	int ret;
+
+	ret = kona_icc_send_bw(dev, res, kbps, wait);
+	if (ret != -ENOENT || !fallback_res)
+		return ret;
+
+	dev_dbg_ratelimited(dev,
+		"kona-icc: falling back from missing %s to %s\n",
+		res ?: "?", fallback_res);
+
+	return kona_icc_send_bw(dev, fallback_res, kbps, wait);
+}
+
 static int kona_icc_send_node_votes(struct kona_icc_provider *qp,
 				    unsigned int index, u64 ab, u64 ib,
 				    bool *retry)
@@ -2156,25 +2200,33 @@ static int kona_icc_send_node_votes(struct kona_icc_provider *qp,
 		*retry = false;
 
 	if (qp->nodes[index].id == KONA_ICC_GPU_TO_MEM) {
-		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ib, ib, wait);
+		ret = kona_icc_send_bw_with_fallback(qp->provider.dev,
+			qp->nodes[index].ib, qp->nodes[index].fallback_ib,
+			ib, wait);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
 			return ret;
 
-		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ab, ab, wait);
+		ret = kona_icc_send_bw_with_fallback(qp->provider.dev,
+			qp->nodes[index].ab, qp->nodes[index].fallback_ab,
+			ab, wait);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
 			return ret;
 	} else {
-		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ab, ab, wait);
+		ret = kona_icc_send_bw_with_fallback(qp->provider.dev,
+			qp->nodes[index].ab, qp->nodes[index].fallback_ab,
+			ab, wait);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
 			return ret;
 
-		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ib, ib, wait);
+		ret = kona_icc_send_bw_with_fallback(qp->provider.dev,
+			qp->nodes[index].ib, qp->nodes[index].fallback_ib,
+			ib, wait);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
@@ -2814,7 +2866,9 @@ static ssize_t res_show(struct device *dev,
 
 	desc = &node->qp->nodes[node->index];
 
-	return sysfs_emit(buf, "ab=%s ib=%s\n", desc->ab ?: "", desc->ib ?: "");
+	return sysfs_emit(buf, "ab=%s ib=%s fallback_ab=%s fallback_ib=%s\n",
+		desc->ab ?: "", desc->ib ?: "",
+		desc->fallback_ab ?: "", desc->fallback_ib ?: "");
 }
 
 static DEVICE_ATTR_RO(ab);
@@ -3232,10 +3286,12 @@ static int kona_icc_probe(struct platform_device *pdev)
 			ib = KONA_ICC_MIN_IB_FLOOR_KB;
 			kona_icc_apply_floor(qp, &qp->nodes[i], ab, ib, &ab, &ib);
 
-			r_ab = kona_icc_send_bw(qp->provider.dev,
-					     qp->nodes[i].ab, ab, false);
-			r_ib = kona_icc_send_bw(qp->provider.dev,
-					     qp->nodes[i].ib, ib, false);
+			r_ab = kona_icc_send_bw_with_fallback(qp->provider.dev,
+				qp->nodes[i].ab, qp->nodes[i].fallback_ab,
+				ab, false);
+			r_ib = kona_icc_send_bw_with_fallback(qp->provider.dev,
+				qp->nodes[i].ib, qp->nodes[i].fallback_ib,
+				ib, false);
 
 			/*
 			 * Only cache if both votes were applied. If we got -EAGAIN,
