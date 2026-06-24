@@ -1945,34 +1945,24 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 	},
 };
 
-static void kona_icc_validate_node_table(struct device *dev)
+static inline int kona_icc_validate_node_count(void)
 {
 	bool seen[KONA_ICC_NUM_NODES] = { };
 	size_t i;
 
 	if (ARRAY_SIZE(kona_nodes) != KONA_ICC_NUM_NODES)
-		dev_warn(dev,
-			 "kona-icc: node table count mismatch (table=%zu binding=%u); missing clients will fail xlate only\n",
-			 ARRAY_SIZE(kona_nodes), KONA_ICC_NUM_NODES);
+		return -EINVAL;
 
 	for (i = 0; i < ARRAY_SIZE(kona_nodes); i++) {
-		if (kona_nodes[i].id >= KONA_ICC_NUM_NODES) {
-			dev_warn(dev,
-				 "kona-icc: node %s has invalid binding id %u (max %u)\n",
-				 kona_nodes[i].name, kona_nodes[i].id,
-				 KONA_ICC_NUM_NODES - 1);
-			continue;
-		}
-
-		if (seen[kona_nodes[i].id]) {
-			dev_warn(dev,
-				 "kona-icc: duplicate binding id %u at node %s; first entry will be used\n",
-				 kona_nodes[i].id, kona_nodes[i].name);
-			continue;
-		}
+		if (kona_nodes[i].id >= KONA_ICC_NUM_NODES)
+			return -EINVAL;
+		if (seen[kona_nodes[i].id])
+			return -EINVAL;
 
 		seen[kona_nodes[i].id] = true;
 	}
+
+	return 0;
 }
 
 
@@ -3080,7 +3070,13 @@ static int kona_icc_probe(struct platform_device *pdev)
 	u64 __maybe_unused ab, ib;
 	int ret, i;
 
-	kona_icc_validate_node_table(&pdev->dev);
+	ret = kona_icc_validate_node_count();
+	if (ret) {
+		dev_err(&pdev->dev,
+			"kona-icc: node table count mismatch (table=%zu binding=%u)\n",
+			ARRAY_SIZE(kona_nodes), KONA_ICC_NUM_NODES);
+		return ret;
+	}
 
 	qp = devm_kzalloc(&pdev->dev, sizeof(*qp), GFP_KERNEL);
 	if (!qp)
