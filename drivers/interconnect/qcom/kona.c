@@ -1837,27 +1837,6 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.role = KONA_ROLE_MEDIA,
 	},
 	{
-		.id = KONA_ICC_CAM_HF0_TO_MEM,
-		.name = "cam-hf0-ddr",
-		.ab = "CPU_MEM_AB",
-		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
-	},
-	{
-		.id = KONA_ICC_CAM_SF0_TO_MEM,
-		.name = "cam-sf0-ddr",
-		.ab = "CPU_MEM_AB",
-		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
-	},
-	{
-		.id = KONA_ICC_CAM_SF_ICP_TO_MEM,
-		.name = "cam-sf-icp-ddr",
-		.ab = "CPU_MEM_AB",
-		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
-	},
-	{
 		.id = KONA_ICC_DISP_CFG,
 		.name = "disp-cfg",
 		.ab = "CPU_MEM_AB",
@@ -1947,20 +1926,8 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 
 static inline int kona_icc_validate_node_count(void)
 {
-	bool seen[KONA_ICC_NUM_NODES] = { };
-	size_t i;
-
 	if (ARRAY_SIZE(kona_nodes) != KONA_ICC_NUM_NODES)
 		return -EINVAL;
-
-	for (i = 0; i < ARRAY_SIZE(kona_nodes); i++) {
-		if (kona_nodes[i].id >= KONA_ICC_NUM_NODES)
-			return -EINVAL;
-		if (seen[kona_nodes[i].id])
-			return -EINVAL;
-
-		seen[kona_nodes[i].id] = true;
-	}
 
 	return 0;
 }
