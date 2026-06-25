@@ -630,8 +630,6 @@
 					qcom,axi-port-name = "cam_hf_0";
 					ib-bw-voting-needed;
 					qcom,axi-port-mnoc {
-						interconnects = <&kona_icc KONA_ICC_CAM_HF0_TO_MEM>;
-						interconnect-names = "cam_hf_0_mnoc";
 						qcom,msm-bus,name =
 						"cam_hf_0_mnoc";
 						qcom,msm-bus-vector-dyn-vote;
@@ -652,8 +650,6 @@
 					<CAM_CPAS_TRAFFIC_MERGE_SUM>;
 					qcom,axi-port-name = "cam_sf_0";
 					qcom,axi-port-mnoc {
-						interconnects = <&kona_icc KONA_ICC_CAM_SF0_TO_MEM>;
-						interconnect-names = "cam_sf_0_mnoc";
 						qcom,msm-bus,name =
 						"cam_sf_0_mnoc";
 						qcom,msm-bus-vector-dyn-vote;
@@ -674,8 +670,6 @@
 					<CAM_CPAS_TRAFFIC_MERGE_SUM>;
 					qcom,axi-port-name = "cam_sf_icp";
 					qcom,axi-port-mnoc {
-						interconnects = <&kona_icc KONA_ICC_CAM_SF_ICP_TO_MEM>;
-						interconnect-names = "cam_sf_icp_mnoc";
 						qcom,msm-bus,name =
 						"cam_sf_icp_mnoc";
 						qcom,msm-bus-vector-dyn-vote;
