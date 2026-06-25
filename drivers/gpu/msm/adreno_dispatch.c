@@ -9,6 +9,7 @@
 #include "adreno.h"
 #include "adreno_trace.h"
 #include "kgsl_gmu_core.h"
+#include "kgsl_pwrctrl.h"
 #include "kgsl_timeline.h"
 
 /* Number of commands that can be queued in a context before it sleeps */
@@ -1809,6 +1810,7 @@ static void adreno_fault_header(struct kgsl_device *device,
 	adreno_readreg64(adreno_dev, ADRENO_REG_CP_IB2_BASE,
 					   ADRENO_REG_CP_IB2_BASE_HI, &ib2base);
 	adreno_readreg(adreno_dev, ADRENO_REG_CP_IB2_BUFSZ, &ib2sz);
+	kgsl_pwrctrl_log_bus_state(device, type, false);
 
 	if (drawobj != NULL) {
 		drawctxt->base.total_fault_count++;

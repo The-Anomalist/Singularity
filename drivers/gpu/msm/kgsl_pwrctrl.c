@@ -181,6 +181,63 @@ static void _gpu_clk_prepare_enable(struct kgsl_device *device,
 				struct clk *clk, const char *name);
 static void _bimc_clk_prepare_enable(struct kgsl_device *device,
 				struct clk *clk, const char *name);
+static void _ab_buslevel_update(struct kgsl_pwrctrl *pwr,
+				unsigned long *ab);
+
+void kgsl_pwrctrl_log_bus_state(struct kgsl_device *device,
+		const char *reason, bool ratelimited)
+{
+	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
+	struct kgsl_pwrlevel *pwrlevel;
+	unsigned int active = pwr->active_pwrlevel;
+	unsigned long ab = 0, ib = 0;
+	int buslevel = 0;
+
+	if (active >= pwr->num_pwrlevels)
+		return;
+
+	pwrlevel = &pwr->pwrlevels[active];
+
+	if (test_bit(KGSL_PWRFLAGS_AXI_ON, &pwr->power_flags)) {
+		buslevel = min_t(int, pwr->pwrlevels[0].bus_max,
+				pwrlevel->bus_freq + pwr->bus_mod);
+		buslevel = max_t(int, buslevel, 1);
+	}
+
+	if (last_vote_buslevel >= 0 &&
+			last_vote_buslevel < KGSL_MAX_BUSLEVELS)
+		ib = ib_votes[last_vote_buslevel];
+
+	if (last_vote_buslevel >= 0 &&
+			last_vote_buslevel < KGSL_MAX_BUSLEVELS &&
+			max_vote_buslevel >= 0 &&
+			max_vote_buslevel < KGSL_MAX_BUSLEVELS)
+		_ab_buslevel_update(pwr, &ab);
+
+	if (ratelimited)
+		dev_info_ratelimited(device->dev,
+			"KGSL top OPP bus state (%s): active=%u max=%u min=%u gpu_freq=%u bus_mod=%d bus_freq=%u bus_min=%u bus_max=%u requested_buslevel=%d last_buslevel=%d max_buslevel=%d bus_percent_ab=%u bus_ab_mbytes=%lu ab=%lu last_ab=%lu ib=%lu icc_paths=%u icc_levels=%u icc_votes=%lu msm_bus_fallback_votes=%lu axi_on=%d\n",
+			reason, active, pwr->max_pwrlevel, pwr->min_pwrlevel,
+			pwrlevel->gpu_freq, pwr->bus_mod, pwrlevel->bus_freq,
+			pwrlevel->bus_min, pwrlevel->bus_max, buslevel,
+			last_vote_buslevel, max_vote_buslevel, pwr->bus_percent_ab,
+			pwr->bus_ab_mbytes, ab, last_ab, ib, pwr->num_icc_paths,
+			pwr->num_icc_bw_levels, pwr->icc_runtime_votes,
+			pwr->msm_bus_runtime_fallback_votes,
+			test_bit(KGSL_PWRFLAGS_AXI_ON, &pwr->power_flags));
+	else
+		dev_err(device->dev,
+			"KGSL fault bus state (%s): active=%u max=%u min=%u gpu_freq=%u bus_mod=%d bus_freq=%u bus_min=%u bus_max=%u requested_buslevel=%d last_buslevel=%d max_buslevel=%d bus_percent_ab=%u bus_ab_mbytes=%lu ab=%lu last_ab=%lu ib=%lu icc_paths=%u icc_levels=%u icc_votes=%lu msm_bus_fallback_votes=%lu axi_on=%d\n",
+			reason, active, pwr->max_pwrlevel, pwr->min_pwrlevel,
+			pwrlevel->gpu_freq, pwr->bus_mod, pwrlevel->bus_freq,
+			pwrlevel->bus_min, pwrlevel->bus_max, buslevel,
+			last_vote_buslevel, max_vote_buslevel, pwr->bus_percent_ab,
+			pwr->bus_ab_mbytes, ab, last_ab, ib, pwr->num_icc_paths,
+			pwr->num_icc_bw_levels, pwr->icc_runtime_votes,
+			pwr->msm_bus_runtime_fallback_votes,
+			test_bit(KGSL_PWRFLAGS_AXI_ON, &pwr->power_flags));
+}
+EXPORT_SYMBOL(kgsl_pwrctrl_log_bus_state);
 
 /**
  * _record_pwrevent() - Record the history of the new event
@@ -661,6 +718,9 @@ void kgsl_pwrctrl_buslevel_update(struct kgsl_device *device,
 	last_ab = ab;
 
 	kgsl_bus_scale_request(device, buslevel);
+
+	if (on && pwr->active_pwrlevel == pwr->max_pwrlevel)
+		kgsl_pwrctrl_log_bus_state(device, "buslevel_update", true);
 
 	kgsl_pwrctrl_vbif_update();
 }
