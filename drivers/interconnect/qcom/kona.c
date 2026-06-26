@@ -1264,9 +1264,6 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 			*ib = mul_u64_u32_div(*ab, kona_storage_ib_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_VIDEO_CFG:
-	case KONA_ICC_CAM_HF0_TO_MEM:
-	case KONA_ICC_CAM_SF0_TO_MEM:
-	case KONA_ICC_CAM_SF_ICP_TO_MEM:
 		if (active && *ab < KONA_MEDIA_DDR_AB_FLOOR_KB)
 			*ab = KONA_MEDIA_DDR_AB_FLOOR_KB;
 		if (active && *ib < KONA_MEDIA_DDR_IB_FLOOR_KB)
@@ -1835,27 +1832,6 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 	{
 		.id = KONA_ICC_CAM_CFG,
 		.name = "cam-cfg",
-		.ab = "CPU_MEM_AB",
-		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
-	},
-	{
-		.id = KONA_ICC_CAM_HF0_TO_MEM,
-		.name = "cam-hf0-ddr",
-		.ab = "CPU_MEM_AB",
-		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
-	},
-	{
-		.id = KONA_ICC_CAM_SF0_TO_MEM,
-		.name = "cam-sf0-ddr",
-		.ab = "CPU_MEM_AB",
-		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
-	},
-	{
-		.id = KONA_ICC_CAM_SF_ICP_TO_MEM,
-		.name = "cam-sf-icp-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
 		.role = KONA_ROLE_MEDIA,
