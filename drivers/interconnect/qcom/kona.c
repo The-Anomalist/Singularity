@@ -15,6 +15,7 @@
 #include <linux/of_device.h>
 #include <linux/kdev_t.h>
 #include <linux/kernel.h>
+#include <linux/limits.h>
 #include <linux/math64.h>
 #include <linux/minmax.h>
 #include <linux/orion_atlas_link.h>
@@ -72,6 +73,8 @@ struct kona_icc_provider {
 	u64 *eff_ib;
 	u64 *saved_ab;
 	u64 *saved_ib;
+	u16 *id_to_index;
+	u32 max_node_id;
 	unsigned long resume_jiffies;
 	u8 resume_phase;
 	struct delayed_work retry_work;
@@ -2022,17 +2025,61 @@ static int kona_icc_validate_display_nodes(struct kona_icc_provider *qp)
 static const struct kona_icc_node_desc *
 kona_find_desc(struct kona_icc_provider *qp, u32 id, unsigned int *index)
 {
+	u16 mapped;
+
+	if (!qp || !qp->id_to_index || id > qp->max_node_id)
+		return NULL;
+
+	mapped = qp->id_to_index[id];
+	if (mapped == U16_MAX || mapped >= qp->num_nodes)
+		return NULL;
+
+	if (index)
+		*index = mapped;
+
+	return &qp->nodes[mapped];
+}
+
+static int kona_icc_build_id_lookup(struct platform_device *pdev,
+				    struct kona_icc_provider *qp)
+{
 	unsigned int i;
+	u32 max_id = 0;
+
+	if (!qp || !qp->nodes || !qp->num_nodes)
+		return -EINVAL;
+
+	if (qp->num_nodes > U16_MAX)
+		return -E2BIG;
+
+	for (i = 0; i < qp->num_nodes; i++)
+		max_id = max(max_id, qp->nodes[i].id);
+
+	qp->id_to_index = devm_kmalloc_array(&pdev->dev, max_id + 1,
+					       sizeof(*qp->id_to_index), GFP_KERNEL);
+	if (!qp->id_to_index)
+		return -ENOMEM;
+
+	for (i = 0; i <= max_id; i++)
+		qp->id_to_index[i] = U16_MAX;
 
 	for (i = 0; i < qp->num_nodes; i++) {
-		if (qp->nodes[i].id == id) {
-			if (index)
-				*index = i;
-			return &qp->nodes[i];
+		u32 id = qp->nodes[i].id;
+
+		if (qp->id_to_index[id] != U16_MAX) {
+			dev_err(&pdev->dev,
+				"kona-icc: duplicate node id=%u (%s and %s)\n",
+				id, qp->nodes[qp->id_to_index[id]].name,
+				qp->nodes[i].name);
+			return -EINVAL;
 		}
+
+		qp->id_to_index[id] = i;
 	}
 
-	return NULL;
+	qp->max_node_id = max_id;
+
+	return 0;
 }
 
 static struct icc_path *kona_icc_xlate(struct icc_provider *provider,
@@ -3058,6 +3105,10 @@ static int kona_icc_probe(struct platform_device *pdev)
 		qp->num_nodes = ARRAY_SIZE(kona_nodes);
 		qp->boot_floor_vote = true;
 	}
+
+	ret = kona_icc_build_id_lookup(pdev, qp);
+	if (ret)
+		return ret;
 
 	qp->last_ab = devm_kcalloc(&pdev->dev, qp->num_nodes, sizeof(u64),
 				   GFP_KERNEL);

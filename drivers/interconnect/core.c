@@ -152,6 +152,7 @@ return ERR_PTR(-ENOMEM);
 
 path->provider = provider;
 path->id = spec->args[0];
+mutex_init(&path->lock);
 
 return path;
 }
@@ -255,47 +256,56 @@ EXPORT_SYMBOL_GPL(icc_put);
 
 int icc_set_tag(struct icc_path *path, u32 tag)
 {
-if (IS_ERR_OR_NULL(path))
-return -EINVAL;
+	if (IS_ERR_OR_NULL(path))
+		return -EINVAL;
 
-path->tag = tag;
-return 0;
+	mutex_lock(&path->lock);
+	path->tag = tag;
+	mutex_unlock(&path->lock);
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(icc_set_tag);
 
 int icc_set_bw(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 {
-        unsigned long seq;
-        u32 prev_avg, prev_peak;
-        bool need_reapply;
+	unsigned long seq;
+	u32 prev_avg, prev_peak;
+	bool need_reapply;
+	int ret = 0;
 
-        if (IS_ERR_OR_NULL(path))
-                return -EINVAL;
+	if (IS_ERR_OR_NULL(path))
+		return -EINVAL;
 
-        seq = atomic_long_read(&icc_resume_seq);
-        prev_avg = path->avg_bw;
-        prev_peak = path->peak_bw;
-        need_reapply = path->resume_seq != seq;
+	mutex_lock(&path->lock);
 
-        if (!need_reapply && prev_avg == avg_bw && prev_peak == peak_bw)
-                return 0;
+	seq = atomic_long_read(&icc_resume_seq);
+	prev_avg = path->avg_bw;
+	prev_peak = path->peak_bw;
+	need_reapply = path->resume_seq != seq;
 
-        /*
-         * Keep zero-bandwidth paths in the fast path after resume. There is
-         * no vote to restore, so avoid an unnecessary provider callback.
-         */
-        if (need_reapply && !avg_bw && !peak_bw && !prev_avg && !prev_peak) {
-                path->resume_seq = seq;
-                return 0;
-        }
+	if (!need_reapply && prev_avg == avg_bw && prev_peak == peak_bw)
+		goto out_unlock;
 
-        path->avg_bw = avg_bw;
-        path->peak_bw = peak_bw;
-        path->resume_seq = seq;
+	/*
+	 * Keep zero-bandwidth paths in the fast path after resume. There is
+	 * no vote to restore, so avoid an unnecessary provider callback.
+	 */
+	if (need_reapply && !avg_bw && !peak_bw && !prev_avg && !prev_peak) {
+		path->resume_seq = seq;
+		goto out_unlock;
+	}
 
-        if (!path->provider || !path->provider->set)
-                return 0;
+	path->avg_bw = avg_bw;
+	path->peak_bw = peak_bw;
+	path->resume_seq = seq;
 
-        return path->provider->set(path, avg_bw, peak_bw);
+	if (path->provider && path->provider->set)
+		ret = path->provider->set(path, avg_bw, peak_bw);
+
+out_unlock:
+	mutex_unlock(&path->lock);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(icc_set_bw);
