@@ -4,8 +4,7 @@
 
 #include <linux/list.h>
 #include <linux/types.h>
-#include <linux/mutex.h>
-#include <linux/of.h>
+#include <linux/of.h>      // ADD: bring in struct of_phandle_args definition
 
 struct class;
 struct device;
@@ -31,7 +30,6 @@ struct icc_path {
         u32 tag;
         u32 avg_bw;
         u32 peak_bw;
-        struct mutex lock;
         /*
          * Tracks the last system resume generation this path synced
          * against. When the system resumes from suspend we bump a
