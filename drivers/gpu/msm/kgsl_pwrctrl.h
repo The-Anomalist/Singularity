@@ -284,8 +284,6 @@ void kgsl_pwrctrl_pwrlevel_change(struct kgsl_device *device,
 	unsigned int level);
 void kgsl_pwrctrl_buslevel_update(struct kgsl_device *device,
 	bool on);
-void kgsl_pwrctrl_log_bus_state(struct kgsl_device *device,
-	const char *reason, bool ratelimited);
 int kgsl_pwrctrl_init_sysfs(struct kgsl_device *device);
 void kgsl_pwrctrl_uninit_sysfs(struct kgsl_device *device);
 int kgsl_pwrctrl_change_state(struct kgsl_device *device, int state);
