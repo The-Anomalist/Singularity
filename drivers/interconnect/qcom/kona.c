@@ -3084,7 +3084,8 @@ static int kona_icc_probe(struct platform_device *pdev)
 	} else {
 		qp->nodes = kona_nodes;
 		qp->num_nodes = ARRAY_SIZE(kona_nodes);
-		qp->boot_floor_vote = true;
+		/* Never issue one-shot RPMh floor votes from provider probe by default. */
+		qp->boot_floor_vote = false;
 	}
 
 	qp->last_ab = devm_kcalloc(&pdev->dev, qp->num_nodes, sizeof(u64),

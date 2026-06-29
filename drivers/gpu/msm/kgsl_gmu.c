@@ -88,6 +88,11 @@ module_param_named(gmu_cmd_db_bwtable, kgsl_gmu_cmd_db_bwtable, bool, 0644);
 MODULE_PARM_DESC(gmu_cmd_db_bwtable,
 	"Verify GMU DDR HFI bandwidth table against cmd-db bridge before use");
 
+static bool kgsl_gmu_icc_strict;
+module_param_named(gmu_icc_strict, kgsl_gmu_icc_strict, bool, 0644);
+MODULE_PARM_DESC(gmu_icc_strict,
+	"Require GMU ICC attach/votes when DT describes GMU interconnects");
+
 static void gmu_snapshot(struct kgsl_device *device);
 static void gmu_remove(struct kgsl_device *device);
 
@@ -1182,22 +1187,34 @@ static int gmu_icc_probe(struct gmu_device *gmu)
 {
 	const char *icc_name;
 	int i;
-	int ret;
+	int ret = 0;
 	int num_icc_paths;
 	struct device *dev = &gmu->pdev->dev;
+
+	/*
+	 * Probe can be retried after -EPROBE_DEFER. Always start from a clean
+	 * ICC state so stale paths/strict flags do not leak between attempts.
+	 */
+	gmu->icc_required = false;
+	gmu->num_icc_paths = 0;
+	for (i = 0; i < ARRAY_SIZE(gmu->icc_paths); i++)
+		gmu->icc_paths[i] = NULL;
 
 	num_icc_paths = of_count_phandle_with_args(dev->of_node,
 						   "interconnects",
 						   "#interconnect-cells");
-	gmu->icc_required = num_icc_paths > 0;
 	if (num_icc_paths <= 0)
 		return 0;
+
+	/* DT requested GMU ICC. Strict mode decides whether attach failure is fatal. */
+	gmu->icc_required = true;
 
 	if (num_icc_paths > ARRAY_SIZE(gmu->icc_paths)) {
 		dev_err(dev,
 			"Unexpected number of GMU ICC paths: %d\n",
 			num_icc_paths);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto fallback_or_fail;
 	}
 
 	if (of_find_property(dev->of_node, "interconnect-names", NULL)) {
@@ -1226,11 +1243,14 @@ static int gmu_icc_probe(struct gmu_device *gmu)
 		dev_err(dev,
 			"Missing interconnect-names for %d GMU ICC paths\n",
 			num_icc_paths);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto fallback_or_fail;
 	}
 
 	gmu->num_icc_paths = num_icc_paths;
-	dev_info(dev, "Enabled %u GMU ICC path(s)\n", gmu->num_icc_paths);
+	dev_info(dev, "Enabled %u GMU ICC path(s)%s\n",
+		 gmu->num_icc_paths,
+		 kgsl_gmu_icc_strict ? " in strict mode" : "");
 	return 0;
 
 clear_icc:
@@ -1239,11 +1259,24 @@ clear_icc:
 	gmu->num_icc_paths = 0;
 
 	if (ret == -EPROBE_DEFER)
-		dev_dbg(dev, "GMU ICC provider not ready, deferring probe\n");
+		dev_dbg(dev, "GMU ICC provider not ready (%d)\n", ret);
 	else
 		dev_err(dev, "Failed to attach GMU ICC paths (%d)\n", ret);
 
-	return ret;
+fallback_or_fail:
+	if (kgsl_gmu_icc_strict)
+		return ret;
+
+	/*
+	 * Boot-safe staging: keep the GMU ICC DT and provider work in place, but
+	 * never let a staged ICC attach problem stop GMU from using the proven
+	 * msm_bus path. Enable kgsl.gmu_icc_strict=1 when validating ICC-only.
+	 */
+	dev_warn(dev,
+		 "GMU ICC unavailable (%d), using msm_bus fallback for boot\n",
+		 ret);
+	gmu->icc_required = false;
+	return 0;
 }
 
 static int gmu_bootstrap_bw_vote(struct gmu_device *gmu, unsigned int level)
@@ -1266,8 +1299,8 @@ static int gmu_bootstrap_bw_vote(struct gmu_device *gmu, unsigned int level)
 
 		dev_err(&gmu->pdev->dev,
 			"GMU ICC vote failed (%d)%s\n", ret,
-			gmu->icc_required ? "" : ", falling back to msm_bus");
-		if (gmu->icc_required)
+			kgsl_gmu_icc_strict ? "" : ", falling back to msm_bus");
+		if (kgsl_gmu_icc_strict)
 			return ret;
 	}
 
@@ -1548,12 +1581,6 @@ static int gmu_gpu_bw_probe(struct kgsl_device *device, struct gmu_device *gmu)
 			"Ignoring GMU ICC BW table because no ICC paths were attached\n");
 
 	if (bus_scale_table == NULL) {
-		if (gmu->num_icc_paths) {
-			dev_warn(&gmu->pdev->dev,
-				"dt: legacy GMU msm_bus table missing, keeping ICC as primary path\n");
-			return 0;
-		}
-
 		dev_err(&gmu->pdev->dev, "dt: cannot get bus table\n");
 		return -ENODEV;
 	}
@@ -1563,12 +1590,6 @@ static int gmu_gpu_bw_probe(struct kgsl_device *device, struct gmu_device *gmu)
 
 	gmu->pcl = msm_bus_scale_register_client(bus_scale_table);
 	if (!gmu->pcl) {
-		if (gmu->num_icc_paths) {
-			dev_warn(&gmu->pdev->dev,
-				"dt: cannot register GMU msm_bus client, using ICC-first mode\n");
-			return 0;
-		}
-
 		dev_err(&gmu->pdev->dev, "dt: cannot register bus client\n");
 		return -ENODEV;
 	}

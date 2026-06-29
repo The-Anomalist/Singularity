@@ -265,37 +265,57 @@ EXPORT_SYMBOL_GPL(icc_set_tag);
 
 int icc_set_bw(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 {
-        unsigned long seq;
-        u32 prev_avg, prev_peak;
-        bool need_reapply;
+	unsigned long seq;
+	u32 prev_avg, prev_peak;
+	unsigned long prev_seq;
+	bool need_reapply;
+	int ret;
 
-        if (IS_ERR_OR_NULL(path))
-                return -EINVAL;
+	if (IS_ERR_OR_NULL(path))
+		return -EINVAL;
 
-        seq = atomic_long_read(&icc_resume_seq);
-        prev_avg = path->avg_bw;
-        prev_peak = path->peak_bw;
-        need_reapply = path->resume_seq != seq;
+	seq = atomic_long_read(&icc_resume_seq);
+	prev_avg = path->avg_bw;
+	prev_peak = path->peak_bw;
+	prev_seq = path->resume_seq;
+	need_reapply = path->resume_seq != seq;
 
-        if (!need_reapply && prev_avg == avg_bw && prev_peak == peak_bw)
-                return 0;
+	if (!need_reapply && prev_avg == avg_bw && prev_peak == peak_bw)
+		return 0;
 
-        /*
-         * Keep zero-bandwidth paths in the fast path after resume. There is
-         * no vote to restore, so avoid an unnecessary provider callback.
-         */
-        if (need_reapply && !avg_bw && !peak_bw && !prev_avg && !prev_peak) {
-                path->resume_seq = seq;
-                return 0;
-        }
+	/*
+	 * Keep zero-bandwidth paths in the fast path after resume. There is
+	 * no vote to restore, so avoid an unnecessary provider callback.
+	 */
+	if (need_reapply && !avg_bw && !peak_bw && !prev_avg && !prev_peak) {
+		path->resume_seq = seq;
+		return 0;
+	}
 
-        path->avg_bw = avg_bw;
-        path->peak_bw = peak_bw;
-        path->resume_seq = seq;
+	if (!path->provider || !path->provider->set) {
+		path->avg_bw = avg_bw;
+		path->peak_bw = peak_bw;
+		path->resume_seq = seq;
+		return 0;
+	}
 
-        if (!path->provider || !path->provider->set)
-                return 0;
+	ret = path->provider->set(path, avg_bw, peak_bw);
+	if (ret) {
+		/*
+		 * Do not cache a vote that the provider rejected or deferred. This
+		 * is critical for early boot because Kona may return -EAGAIN while
+		 * cmd-db/RPMh is not ready; the next caller must still reprogram it.
+		 */
+		path->avg_bw = prev_avg;
+		path->peak_bw = prev_peak;
+		path->resume_seq = prev_seq;
+		return ret;
+	}
 
-        return path->provider->set(path, avg_bw, peak_bw);
+	path->avg_bw = avg_bw;
+	path->peak_bw = peak_bw;
+	path->resume_seq = seq;
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(icc_set_bw);
