@@ -164,6 +164,8 @@ struct kgsl_mailbox {
  * @num_cnocbwlevel: number CNOC BW levels
  * @icc_paths: optional ICC paths used for early GMU bootstrap votes
  * @num_icc_paths: number of valid ICC paths in @icc_paths
+ * @icc_required: true when DT describes GMU ICC paths; do not silently fall
+ *		back to msm_bus if the ICC provider is not ready or a vote fails
  * @num_icc_bwlevels: entries available in GMU ICC BW level tables
  * @icc_ab_mbytes: optional AB vote table (MB/s) for GMU ICC levels
  * @icc_ib_mbytes: optional IB vote table (MB/s) for GMU ICC levels
@@ -212,6 +214,7 @@ struct gmu_device {
 	unsigned int num_cnocbwlevels;
 	struct icc_path *icc_paths[2];
 	unsigned int num_icc_paths;
+	bool icc_required;
 	unsigned int num_icc_bwlevels;
 	u32 *icc_ab_mbytes;
 	u32 *icc_ib_mbytes;

@@ -1189,14 +1189,15 @@ static int gmu_icc_probe(struct gmu_device *gmu)
 	num_icc_paths = of_count_phandle_with_args(dev->of_node,
 						   "interconnects",
 						   "#interconnect-cells");
+	gmu->icc_required = num_icc_paths > 0;
 	if (num_icc_paths <= 0)
 		return 0;
 
 	if (num_icc_paths > ARRAY_SIZE(gmu->icc_paths)) {
-		dev_warn(dev,
-			"Ignoring unexpected number of ICC paths: %d\n",
+		dev_err(dev,
+			"Unexpected number of GMU ICC paths: %d\n",
 			num_icc_paths);
-		return 0;
+		return -EINVAL;
 	}
 
 	if (of_find_property(dev->of_node, "interconnect-names", NULL)) {
@@ -1222,10 +1223,10 @@ static int gmu_icc_probe(struct gmu_device *gmu)
 			goto clear_icc;
 		}
 	} else {
-		dev_warn(dev,
-			"Missing interconnect-names for %d paths, disabling GMU ICC votes\n",
+		dev_err(dev,
+			"Missing interconnect-names for %d GMU ICC paths\n",
 			num_icc_paths);
-		return 0;
+		return -EINVAL;
 	}
 
 	gmu->num_icc_paths = num_icc_paths;
@@ -1233,13 +1234,16 @@ static int gmu_icc_probe(struct gmu_device *gmu)
 	return 0;
 
 clear_icc:
-	dev_warn(dev,
-		"Failed to attach GMU ICC paths (%d), using msm_bus fallback\n",
-		ret);
 	for (i = 0; i < ARRAY_SIZE(gmu->icc_paths); i++)
 		gmu->icc_paths[i] = NULL;
 	gmu->num_icc_paths = 0;
-	return 0;
+
+	if (ret == -EPROBE_DEFER)
+		dev_dbg(dev, "GMU ICC provider not ready, deferring probe\n");
+	else
+		dev_err(dev, "Failed to attach GMU ICC paths (%d)\n", ret);
+
+	return ret;
 }
 
 static int gmu_bootstrap_bw_vote(struct gmu_device *gmu, unsigned int level)
@@ -1250,11 +1254,7 @@ static int gmu_bootstrap_bw_vote(struct gmu_device *gmu, unsigned int level)
 
 	if (gmu->num_icc_paths) {
 		ret = gmu_icc_set_vote(gmu, level);
-		if (ret)
-			dev_warn(&gmu->pdev->dev,
-				"GMU ICC vote failed (%d), falling back to msm_bus\n",
-				ret);
-		else {
+		if (!ret) {
 			gmu->icc_bootstrap_votes++;
 			gmu->bootstrap_bw_vote_icc = true;
 			dev_dbg_ratelimited(&gmu->pdev->dev,
@@ -1263,6 +1263,12 @@ static int gmu_bootstrap_bw_vote(struct gmu_device *gmu, unsigned int level)
 				gmu->icc_bootstrap_votes);
 			return 0;
 		}
+
+		dev_err(&gmu->pdev->dev,
+			"GMU ICC vote failed (%d)%s\n", ret,
+			gmu->icc_required ? "" : ", falling back to msm_bus");
+		if (gmu->icc_required)
+			return ret;
 	}
 
 	if (!gmu->pcl)
@@ -1529,9 +1535,7 @@ static int gmu_gpu_bw_probe(struct kgsl_device *device, struct gmu_device *gmu)
 
 	ret = gmu_icc_probe(gmu);
 	if (ret)
-		dev_warn(&gmu->pdev->dev,
-			"Failed probing GMU ICC paths (%d), using msm_bus fallback\n",
-			ret);
+		return ret;
 
 	ret = gmu_icc_bw_table_init(gmu,
 		"qcom,gmu-icc-bw-avg-kbps",
