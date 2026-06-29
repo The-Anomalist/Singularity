@@ -3290,18 +3290,7 @@ static struct platform_driver kona_icc_driver = {
 		.pm = &kona_icc_pm_ops,
 	},
 };
-
-static int __init kona_icc_init(void)
-{
-	return platform_driver_register(&kona_icc_driver);
-}
-subsys_initcall(kona_icc_init);
-
-static void __exit kona_icc_exit(void)
-{
-	platform_driver_unregister(&kona_icc_driver);
-}
-module_exit(kona_icc_exit);
+module_platform_driver(kona_icc_driver);
 
 MODULE_DESCRIPTION("Qualcomm Kona interconnect driver with BW floors");
 MODULE_LICENSE("GPL v2");
