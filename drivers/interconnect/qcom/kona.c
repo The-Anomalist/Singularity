@@ -2102,46 +2102,73 @@ static int kona_icc_send_bw(struct device *dev, const char *res, u32 kbps, bool 
 	return ret;
 }
 
+static bool kona_icc_vote_component_unchanged(u64 *last, unsigned int index, u64 vote)
+{
+	return last && last[index] != U64_MAX && last[index] == vote;
+}
+
+static int kona_icc_send_vote_component(struct kona_icc_provider *qp,
+					unsigned int index, const char *res,
+					u64 vote, u64 *last, bool wait)
+{
+	int ret;
+
+	if (kona_icc_vote_component_unchanged(last, index, vote))
+		return 0;
+
+	ret = kona_icc_send_bw(qp->provider.dev, res,
+			       min_t(u64, vote, U32_MAX), wait);
+	if (ret)
+		return ret;
+
+	if (last)
+		last[index] = vote;
+
+	return 0;
+}
+
 static int kona_icc_send_node_votes(struct kona_icc_provider *qp,
 				    unsigned int index, u64 ab, u64 ib,
 				    bool *retry)
 {
+	const struct kona_icc_node_desc *desc = &qp->nodes[index];
 	int ret;
 	bool wait = false;
 
 	if (retry)
 		*retry = false;
 
-	if (qp->nodes[index].id == KONA_ICC_GPU_TO_MEM) {
-		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ib, ib, wait);
+	/*
+	 * Only touch RPMh resources whose component changed. Many consumers
+	 * adjust AB and IB independently, and replay can revisit nodes after one
+	 * side was already accepted. Skipping identical components cuts redundant
+	 * ACTIVE_ONLY writes while preserving the GPU-before-AB ordering quirk.
+	 */
+	if (desc->id == KONA_ICC_GPU_TO_MEM) {
+		ret = kona_icc_send_vote_component(qp, index, desc->ib, ib, qp->last_ib, wait);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
 			return ret;
 
-		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ab, ab, wait);
+		ret = kona_icc_send_vote_component(qp, index, desc->ab, ab, qp->last_ab, wait);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
 			return ret;
 	} else {
-		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ab, ab, wait);
+		ret = kona_icc_send_vote_component(qp, index, desc->ab, ab, qp->last_ab, wait);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
 			return ret;
 
-		ret = kona_icc_send_bw(qp->provider.dev, qp->nodes[index].ib, ib, wait);
+		ret = kona_icc_send_vote_component(qp, index, desc->ib, ib, qp->last_ib, wait);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
 			return ret;
 	}
-
-	if (qp->last_ab)
-		qp->last_ab[index] = ab;
-	if (qp->last_ib)
-		qp->last_ib[index] = ib;
 
 	return 0;
 
@@ -2517,6 +2544,7 @@ static void kona_icc_retry_workfn(struct work_struct *work)
 static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 {
 	struct kona_icc_provider *qp;
+	const struct kona_icc_node_desc *desc;
 	u64 prev_req_ab = U64_MAX, prev_req_ib = U64_MAX;
 	u64 prev_eff_ab = U64_MAX, prev_eff_ib = U64_MAX;
 	u64 ab, ib;
@@ -2532,6 +2560,8 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	index = (unsigned int)(uintptr_t)path->data;
 	if (index >= qp->num_nodes)
 		return -EINVAL;
+
+	desc = &qp->nodes[index];
 
 	/*
 	 * Kona v2 RPMh BCMs expect interconnect votes in KB/s (decimal 1000)
@@ -2555,8 +2585,6 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	 * are treated as truly idle and are allowed to collapse.
 	 */
 	if (ab || ib) {
-		const struct kona_icc_node_desc *desc = &qp->nodes[index];
-
 		kona_icc_apply_floor(qp, desc, avg_bw, peak_bw, &ab, &ib);
 		kona_icc_apply_hysteresis(qp, desc, index, &ab, &ib);
 	}
@@ -2567,7 +2595,7 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	 */
 	kona_icc_apply_keepalive_vote(qp, index, &ab, &ib);
 
-	if (qp->nodes[index].id == KONA_ICC_GPU_TO_MEM) {
+	if (desc->id == KONA_ICC_GPU_TO_MEM) {
 		kona_icc_update_gpu_llcc_turbo(qp, ib);
 	} else if (qp->last_ib) {
 		unsigned int gpu_mem_index = 0;
@@ -2576,19 +2604,19 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 			kona_icc_update_gpu_llcc_turbo(qp, qp->last_ib[gpu_mem_index]);
 	}
 
-	kona_icc_apply_gpu_llcc_turbo(qp, &qp->nodes[index], &ab, &ib);
+	kona_icc_apply_gpu_llcc_turbo(qp, desc, &ab, &ib);
 
-	if (kona_icc_is_npu_coupled_path(&qp->nodes[index]))
+	if (kona_icc_is_npu_coupled_path(desc))
 		kona_update_npu_atlas(qp, index, ab, ib);
 
 skip_perf_floor:
 #endif
 
 #ifdef DEBUG
-	if (qp->nodes[index].role == KONA_ROLE_CPU ||
-	    qp->nodes[index].role == KONA_ROLE_CPU_PRIME)
+	if (desc->role == KONA_ROLE_CPU ||
+	    desc->role == KONA_ROLE_CPU_PRIME)
 		pr_info("kona-icc: %s avg=%uKB/s peak=%uKB/s -> ab=%lluKB/s ib=%lluKB/s prev ab/ib=%llu/%llu\n",
-			qp->nodes[index].name, avg_bw, peak_bw,
+			desc->name, avg_bw, peak_bw,
 			ab, ib,
 			qp->last_ab ? qp->last_ab[index] : 0,
 			qp->last_ib ? qp->last_ib[index] : 0);
@@ -2599,7 +2627,7 @@ skip_perf_floor:
 	 * transiently vote 0/0 during panel re-enable sequencing. On battery
 	 * this can collapse interconnect too early and wedge panel bring-up.
 	 */
-	if (qp->nodes[index].role == KONA_ROLE_DISPLAY && !ab && !ib &&
+	if (desc->role == KONA_ROLE_DISPLAY && !ab && !ib &&
 	    kona_icc_display_runtime_active(qp) &&
 	    !atomic_read(&qp->votes_paused) &&
 	    kona_display_resume_hold_ms &&
@@ -2617,21 +2645,21 @@ skip_perf_floor:
 		if (kona_resume_debug)
 			dev_info_ratelimited(qp->provider.dev,
 				"kona-icc: hold DISPLAY vote for %s during resume grace: ab=%llu ib=%llu\n",
-				qp->nodes[index].name, ab, ib);
+				desc->name, ab, ib);
 	}
 
 	/*
 	 * Hard non-zero fallback for DISPLAY paths: avoid 0/0 collapse on ddr and
 	 * config-path links where panel/SDE/dispcc sequences can stall.
 	 */
-	if (qp->nodes[index].role == KONA_ROLE_DISPLAY && !ab && !ib &&
+	if (desc->role == KONA_ROLE_DISPLAY && !ab && !ib &&
 	    kona_display_nonzero_floor_enable &&
 	    kona_icc_display_runtime_active(qp)) {
-		kona_icc_get_display_nonzero_floor(qp->nodes[index].id, &ab, &ib);
+		kona_icc_get_display_nonzero_floor(desc->id, &ab, &ib);
 		if (kona_resume_debug)
 			dev_info_ratelimited(qp->provider.dev,
 				"kona-icc: fallback non-zero DISPLAY floor for %s: ab=%llu ib=%llu\n",
-				qp->nodes[index].name, ab, ib);
+				desc->name, ab, ib);
 	}
 
 	/*
@@ -2671,7 +2699,7 @@ skip_perf_floor:
 	 * synthesize a temporary fallback floor; otherwise a transient 0/0
 	 * would overwrite the remembered active vote with the tiny fallback.
 	 */
-	if (qp->nodes[index].role == KONA_ROLE_DISPLAY && (ab || ib) &&
+	if (desc->role == KONA_ROLE_DISPLAY && (ab || ib) &&
 	    (avg_bw || peak_bw)) {
 		qp->saved_ab[index] = ab;
 		qp->saved_ib[index] = ib;
@@ -2715,7 +2743,7 @@ skip_perf_floor:
 			if (kona_resume_debug && (ab || ib))
 				dev_info_ratelimited(qp->provider.dev,
 					"kona-icc: deferred vote node=%s reason=%s ab=%llu ib=%llu\n",
-					qp->nodes[index].name, reason, ab, ib);
+					desc->name, reason, ab, ib);
 
 			return 0;
 		}
