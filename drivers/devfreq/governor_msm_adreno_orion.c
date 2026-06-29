@@ -245,6 +245,7 @@ static inline void orion_clear_boost_window(
 	spin_lock(&boost_lock);
 	priv->orion_boost_end = 0;
 	priv->orion_downscale_blocked_till = 0;
+	priv->orion_top_freq_allowed_after = 0;
 	spin_unlock(&boost_lock);
 }
 
@@ -269,17 +270,30 @@ orion_predicted_busy_pct_show(struct device *dev,
 		priv->orion_predicted_busy_pct);
 }
 
+static ssize_t
+orion_top_freq_guard_ms_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
+{
+	struct devfreq *devfreq = to_devfreq(dev);
+	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
+
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+		priv->orion_top_freq_guard_ms);
+}
+
 static DEVICE_ATTR_RO(gpu_load);
 
 static DEVICE_ATTR_RO(suspend_time);
 static DEVICE_ATTR_RO(orion_effective_busy_pct);
 static DEVICE_ATTR_RO(orion_predicted_busy_pct);
+static DEVICE_ATTR_RO(orion_top_freq_guard_ms);
 
 static const struct device_attribute *orion_attr_list[] = {
 		&dev_attr_gpu_load,
 		&dev_attr_suspend_time,
 		&dev_attr_orion_effective_busy_pct,
 		&dev_attr_orion_predicted_busy_pct,
+		&dev_attr_orion_top_freq_guard_ms,
 		NULL
 };
 
@@ -496,6 +510,53 @@ static void orion_apply_atlas_cpu_sync(
 		*boost_end = max_t(unsigned long, *boost_end,
 				   jiffies + msecs_to_jiffies(max_t(u32, 1,
 								    priv->orion_boost_ms / 3)));
+}
+
+static int orion_apply_top_freq_guard(struct devfreq_msm_adreno_tz_data *priv,
+				      struct devfreq *devfreq, int level,
+				      unsigned int demand_pct,
+				      unsigned int context_count,
+				      unsigned int cpu_thermal_pct,
+				      unsigned int npu_thermal_pct,
+				      unsigned int mem_pressure_pct)
+{
+	unsigned int top_busy, top_contexts;
+	unsigned long allow_after;
+
+	if (!priv->orion_top_freq_guard_ms || level != 0 ||
+	    devfreq->profile->max_state < 2)
+		return level;
+
+	/*
+	 * The highest GPU OPP is the least stable point on affected builds.
+	 * Keep it available for real sustained Vulkan/game demand, but reject
+	 * short boost spikes into the top bin and avoid it when another rail or
+	 * memory pressure is already likely to make the frame miss anyway.
+	 */
+	if (cpu_thermal_pct >= 65 || npu_thermal_pct >= 65 ||
+	    mem_pressure_pct >= 85) {
+		priv->orion_top_freq_allowed_after = 0;
+		return 1;
+	}
+
+	top_busy = clamp_t(unsigned int, priv->orion_top_freq_busy_pct, 70, 100);
+	top_contexts = max_t(unsigned int, 1, priv->orion_top_freq_contexts);
+	if (demand_pct < top_busy || context_count < top_contexts) {
+		priv->orion_top_freq_allowed_after = 0;
+		return 1;
+	}
+
+	allow_after = priv->orion_top_freq_allowed_after;
+	if (!allow_after) {
+		priv->orion_top_freq_allowed_after = jiffies +
+			msecs_to_jiffies(priv->orion_top_freq_guard_ms);
+		return 1;
+	}
+
+	if (time_before(jiffies, allow_after))
+		return 1;
+
+	return level;
 }
 
 /* Trap into the TrustZone, and call funcs there. */
@@ -962,6 +1023,12 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 		}
 	}
 
+	level = orion_apply_top_freq_guard(priv, devfreq, level,
+					   max(effective_busy_pct,
+					       predicted_busy_pct),
+					   context_count, cpu_thermal_pct,
+					   npu_thermal_pct, mem_pressure_pct);
+
 	*freq = devfreq->profile->freq_table[level];
 	return 0;
 }
@@ -1068,6 +1135,7 @@ static int tz_start(struct devfreq *devfreq)
 	priv->nb.notifier_call = tz_notify;
 	priv->orion_boost_end = 0;
 	priv->orion_downscale_blocked_till = 0;
+	priv->orion_top_freq_allowed_after = 0;
 	priv->orion_smoothed_busy_pct = 0;
 	priv->orion_predicted_busy_pct = 0;
 	priv->orion_busy_trend_pct = 0;
@@ -1135,6 +1203,7 @@ static int tz_suspend(struct devfreq *devfreq)
 	priv->bin.total_time = 0;
 	priv->bin.busy_time = 0;
 	priv->orion_downscale_blocked_till = 0;
+	priv->orion_top_freq_allowed_after = 0;
 	priv->orion_smoothed_busy_pct = 0;
 	priv->orion_predicted_busy_pct = 0;
 	priv->orion_busy_trend_pct = 0;

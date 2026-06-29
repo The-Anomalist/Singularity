@@ -53,6 +53,9 @@ static struct devfreq_msm_adreno_tz_data adreno_tz_data = {
 	.orion_hispeed_load = 82,
 	.orion_hispeed_level = 0,
 	.orion_perf_boost_level = 0,
+	.orion_top_freq_guard_ms = 45,
+	.orion_top_freq_busy_pct = 92,
+	.orion_top_freq_contexts = 2,
 };
 
 /*
