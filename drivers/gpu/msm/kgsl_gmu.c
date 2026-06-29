@@ -1186,12 +1186,19 @@ static int gmu_icc_probe(struct gmu_device *gmu)
 	int num_icc_paths;
 	struct device *dev = &gmu->pdev->dev;
 
+	gmu->icc_required = false;
+	gmu->num_icc_paths = 0;
+
+	for (i = 0; i < ARRAY_SIZE(gmu->icc_paths); i++)
+		gmu->icc_paths[i] = NULL;
+
 	num_icc_paths = of_count_phandle_with_args(dev->of_node,
 						   "interconnects",
 						   "#interconnect-cells");
-	gmu->icc_required = num_icc_paths > 0;
 	if (num_icc_paths <= 0)
 		return 0;
+
+	gmu->icc_required = true;
 
 	if (num_icc_paths > ARRAY_SIZE(gmu->icc_paths)) {
 		dev_err(dev,
