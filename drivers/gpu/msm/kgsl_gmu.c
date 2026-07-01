@@ -93,6 +93,11 @@ module_param_named(gmu_icc_strict, kgsl_gmu_icc_strict, bool, 0644);
 MODULE_PARM_DESC(gmu_icc_strict,
 	"Require GMU ICC attach/votes when DT describes GMU interconnects");
 
+static bool kgsl_gmu_icc_bootstrap;
+module_param_named(gmu_icc_bootstrap, kgsl_gmu_icc_bootstrap, bool, 0644);
+MODULE_PARM_DESC(gmu_icc_bootstrap,
+	"Use GMU ICC for early bootstrap bandwidth votes; default keeps msm_bus bootstrap for staged bring-up");
+
 static void gmu_snapshot(struct kgsl_device *device);
 static void gmu_remove(struct kgsl_device *device);
 
@@ -1248,9 +1253,10 @@ static int gmu_icc_probe(struct gmu_device *gmu)
 	}
 
 	gmu->num_icc_paths = num_icc_paths;
-	dev_info(dev, "Enabled %u GMU ICC path(s)%s\n",
+	dev_info(dev, "Enabled %u GMU ICC path(s)%s%s\n",
 		 gmu->num_icc_paths,
-		 kgsl_gmu_icc_strict ? " in strict mode" : "");
+		 kgsl_gmu_icc_strict ? " in strict mode" : "",
+		 kgsl_gmu_icc_bootstrap ? " with ICC bootstrap" : " with msm_bus bootstrap");
 	return 0;
 
 clear_icc:
@@ -1268,9 +1274,9 @@ fallback_or_fail:
 		return ret;
 
 	/*
-	 * Boot-safe staging: keep the GMU ICC DT and provider work in place, but
-	 * never let a staged ICC attach problem stop GMU from using the proven
-	 * msm_bus path. Enable kgsl.gmu_icc_strict=1 when validating ICC-only.
+	 * Boot-safe staging: keep the GMU ICC DT/provider work in place, but do
+	 * not let staged ICC attach issues stop GMU from using msm_bus. Enable
+	 * kgsl.gmu_icc_strict=1 only after the normal boot path is proven stable.
 	 */
 	dev_warn(dev,
 		 "GMU ICC unavailable (%d), using msm_bus fallback for boot\n",
@@ -1285,7 +1291,13 @@ static int gmu_bootstrap_bw_vote(struct gmu_device *gmu, unsigned int level)
 
 	gmu->bootstrap_bw_vote_icc = false;
 
-	if (gmu->num_icc_paths) {
+	/*
+	 * Unlock freezes showed that GMU ICC bootstrap is still too early for the
+	 * interactive path on this tree. Keep ICC attach visible, but use the known
+	 * good msm_bus bootstrap vote unless explicitly enabled or strict mode is
+	 * requested for validation.
+	 */
+	if (gmu->num_icc_paths && (kgsl_gmu_icc_bootstrap || kgsl_gmu_icc_strict)) {
 		ret = gmu_icc_set_vote(gmu, level);
 		if (!ret) {
 			gmu->icc_bootstrap_votes++;
@@ -1581,6 +1593,12 @@ static int gmu_gpu_bw_probe(struct kgsl_device *device, struct gmu_device *gmu)
 			"Ignoring GMU ICC BW table because no ICC paths were attached\n");
 
 	if (bus_scale_table == NULL) {
+		if (gmu->num_icc_paths) {
+			dev_warn(&gmu->pdev->dev,
+				"dt: legacy GMU msm_bus table missing, keeping ICC as primary path\n");
+			return 0;
+		}
+
 		dev_err(&gmu->pdev->dev, "dt: cannot get bus table\n");
 		return -ENODEV;
 	}
@@ -1590,6 +1608,12 @@ static int gmu_gpu_bw_probe(struct kgsl_device *device, struct gmu_device *gmu)
 
 	gmu->pcl = msm_bus_scale_register_client(bus_scale_table);
 	if (!gmu->pcl) {
+		if (gmu->num_icc_paths) {
+			dev_warn(&gmu->pdev->dev,
+				"dt: cannot register GMU msm_bus client, using ICC-first mode\n");
+			return 0;
+		}
+
 		dev_err(&gmu->pdev->dev, "dt: cannot register bus client\n");
 		return -ENODEV;
 	}

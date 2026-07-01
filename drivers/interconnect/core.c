@@ -302,9 +302,9 @@ int icc_set_bw(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	ret = path->provider->set(path, avg_bw, peak_bw);
 	if (ret) {
 		/*
-		 * Do not cache a vote that the provider rejected or deferred. This
-		 * is critical for early boot because Kona may return -EAGAIN while
-		 * cmd-db/RPMh is not ready; the next caller must still reprogram it.
+		 * Do not cache a vote that the provider rejected or deferred. Kona can
+		 * return -EAGAIN while cmd-db/RPMh is not ready; the next caller must
+		 * still reprogram the vote instead of being skipped as unchanged.
 		 */
 		path->avg_bw = prev_avg;
 		path->peak_bw = prev_peak;
@@ -318,4 +318,5 @@ int icc_set_bw(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 
 	return 0;
 }
+
 EXPORT_SYMBOL_GPL(icc_set_bw);

@@ -61,5 +61,6 @@
 #define KONA_ICC_IPA_TO_IMEM	52
 #define KONA_ICC_IPA_CFG		53
 #define KONA_ICC_IPA_CORE	54
+/* Staged provider exposes 52 active nodes; CAM data IDs remain defined for DTS compatibility. */
 #define KONA_ICC_NUM_NODES 55
 #endif

@@ -175,10 +175,30 @@ module_param_named(kona_display_bootstrap_floor_enable, kona_display_bootstrap_f
 MODULE_PARM_DESC(kona_display_bootstrap_floor_enable,
 	"Allow one-shot DISPLAY floor during phase-0 replay when no saved/requested vote exists");
 
+static bool kona_display_notifier_enable;
+module_param_named(kona_display_notifier_enable, kona_display_notifier_enable, bool, 0644);
+MODULE_PARM_DESC(kona_display_notifier_enable,
+	"Enable Kona ICC display notifier policy hints (default: off during staged bring-up)");
+
 static bool kona_display_topology_strict;
 module_param_named(kona_display_topology_strict, kona_display_topology_strict, bool, 0644);
 MODULE_PARM_DESC(kona_display_topology_strict,
 	"Fail probe if DISPLAY-critical ICC nodes are missing or not tagged DISPLAY");
+
+
+/*
+ * Staged Kona ICC bring-up.  Stage 0 intentionally leaves the provider
+ * unregistered so legacy msm_bus fallback remains the rescue path.  Higher
+ * stages expose only the IDs that have been selected for that stage; all other
+ * IDs fail xlate with -ENODEV so hybrid consumers can keep using msm_bus
+ * instead of switching every path to RPMh ICC at once.
+ */
+static unsigned int kona_icc_stage;
+module_param_named(kona_icc_stage, kona_icc_stage, uint, 0644);
+MODULE_PARM_DESC(kona_icc_stage,
+	"Kona ICC bring-up stage: 0=provider off, 1=GPU/GMU, 2=CPU/devbw, 3=storage/peripheral, 4=display, 5=media/camera/video, 6=IPA, 7=all");
+
+#define KONA_ICC_STAGE_MAX	7
 
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
@@ -1853,6 +1873,31 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.role = KONA_ROLE_MEDIA,
 	},
 	{
+		.id = KONA_ICC_CAM_HF0_TO_MEM,
+		.name = "cam-hf0-ddr",
+		/*
+		 * Staged camera bring-up: keep these on verified generic DDR votes
+		 * until board-specific camera BCM/cmd-db names are proven safe.
+		 */
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
+	{
+		.id = KONA_ICC_CAM_SF0_TO_MEM,
+		.name = "cam-sf0-ddr",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
+	{
+		.id = KONA_ICC_CAM_SF_ICP_TO_MEM,
+		.name = "cam-sf-icp-ddr",
+		.ab = "CPU_MEM_AB",
+		.ib = "CPU_MEM_IB",
+		.role = KONA_ROLE_GENERIC,
+	},
+	{
 		.id = KONA_ICC_PCIE0_TO_MEM,
 		.name = "pcie0-ddr",
 		.ab = "CPU_MEM_AB",
@@ -1924,13 +1969,136 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 	},
 };
 
-static inline int kona_icc_validate_node_count(void)
+static bool kona_icc_stage_allows_id(u32 id)
 {
-	if (ARRAY_SIZE(kona_nodes) != KONA_ICC_NUM_NODES)
-		return -EINVAL;
+	unsigned int stage = min_t(unsigned int, kona_icc_stage, KONA_ICC_STAGE_MAX);
+
+	if (stage >= KONA_ICC_STAGE_MAX)
+		return true;
+
+	switch (id) {
+	case KONA_ICC_GPU_TO_LLCC:
+	case KONA_ICC_GPU_TO_MEM:
+	case KONA_ICC_GMU_TO_LLCC:
+	case KONA_ICC_GMU_TO_MEM:
+		return stage >= 1;
+	case KONA_ICC_CPU_TO_LLCC:
+	case KONA_ICC_CPU_TO_MEM:
+	case KONA_ICC_CPU0_TO_LLCC:
+	case KONA_ICC_CPU0_TO_MEM:
+	case KONA_ICC_CPU1_TO_LLCC:
+	case KONA_ICC_CPU1_TO_MEM:
+	case KONA_ICC_CPU2_TO_LLCC:
+	case KONA_ICC_CPU2_TO_MEM:
+	case KONA_ICC_CPU3_TO_LLCC:
+	case KONA_ICC_CPU3_TO_MEM:
+	case KONA_ICC_CPU4_TO_LLCC:
+	case KONA_ICC_CPU4_TO_MEM:
+	case KONA_ICC_CPU5_TO_LLCC:
+	case KONA_ICC_CPU5_TO_MEM:
+	case KONA_ICC_CPU6_TO_LLCC:
+	case KONA_ICC_CPU6_TO_MEM:
+	case KONA_ICC_CPU7_TO_LLCC:
+	case KONA_ICC_CPU7_TO_MEM:
+	case KONA_ICC_CPU_TO_GPU_CFG:
+	case KONA_ICC_CPU_TO_PRNG:
+	case KONA_ICC_NPU_TO_LLCC:
+	case KONA_ICC_NPU_TO_MEM:
+	case KONA_ICC_NPUDSP_TO_MEM:
+		return stage >= 2;
+	case KONA_ICC_UFS_TO_LLCC:
+	case KONA_ICC_UFS_TO_MEM:
+	case KONA_ICC_USB0_TO_MEM:
+	case KONA_ICC_USB1_TO_MEM:
+	case KONA_ICC_QUP_TO_MEM:
+	case KONA_ICC_SDHC2_TO_MEM:
+	case KONA_ICC_PCIE0_TO_MEM:
+	case KONA_ICC_PCIE1_TO_MEM:
+	case KONA_ICC_PCIE2_TO_MEM:
+	case KONA_ICC_CRYPTO_TO_MEM:
+	case KONA_ICC_TSIF_TO_MEM:
+		return stage >= 3;
+	case KONA_ICC_DISP0_TO_MEM:
+	case KONA_ICC_DISP1_TO_MEM:
+	case KONA_ICC_DISP_CFG:
+		return stage >= 4;
+	case KONA_ICC_CAM_CFG:
+	case KONA_ICC_VIDEO_CFG:
+	case KONA_ICC_VIDEO_TO_LLCC:
+	case KONA_ICC_VIDEO_TO_MEM:
+	case KONA_ICC_CVP_TO_MEM:
+	case KONA_ICC_PAS_TO_MEM:
+	case KONA_ICC_CAM_HF0_TO_MEM:
+	case KONA_ICC_CAM_SF0_TO_MEM:
+	case KONA_ICC_CAM_SF_ICP_TO_MEM:
+		return stage >= 5;
+	case KONA_ICC_IPA_TO_LLCC:
+	case KONA_ICC_IPA_TO_MEM:
+	case KONA_ICC_IPA_TO_IMEM:
+	case KONA_ICC_IPA_CFG:
+	case KONA_ICC_IPA_CORE:
+		return stage >= 6;
+	default:
+		return false;
+	}
+}
+
+static size_t kona_icc_enabled_node_count(struct kona_icc_provider *qp)
+{
+	size_t count = 0;
+	int i;
+
+	for (i = 0; i < qp->num_nodes; i++)
+		if (kona_icc_stage_allows_id(qp->nodes[i].id))
+			count++;
+
+	return count;
+}
+
+static int kona_icc_validate_nodes(struct device *dev,
+				   const struct kona_icc_node_desc *nodes,
+				   size_t num_nodes)
+{
+	DECLARE_BITMAP(seen, KONA_ICC_NUM_NODES);
+	static const u32 stage1_ids[] = {
+		KONA_ICC_GPU_TO_LLCC, KONA_ICC_GPU_TO_MEM,
+		KONA_ICC_GMU_TO_LLCC, KONA_ICC_GMU_TO_MEM,
+	};
+	int i, j;
+
+	bitmap_zero(seen, KONA_ICC_NUM_NODES);
+
+	for (i = 0; i < num_nodes; i++) {
+		if (nodes[i].id >= KONA_ICC_NUM_NODES) {
+			dev_err(dev, "kona-icc: node %s has invalid id=%u (max=%u)\n",
+				nodes[i].name ?: "?", nodes[i].id, KONA_ICC_NUM_NODES - 1);
+			return -EINVAL;
+		}
+		if (test_and_set_bit(nodes[i].id, seen)) {
+			dev_err(dev, "kona-icc: duplicate node id=%u (%s)\n",
+				nodes[i].id, nodes[i].name ?: "?");
+			return -EINVAL;
+		}
+		if (!nodes[i].name || !nodes[i].ab || !nodes[i].ib) {
+			dev_err(dev, "kona-icc: node id=%u has missing name/ab/ib resource\n",
+				nodes[i].id);
+			return -EINVAL;
+		}
+	}
+
+	if (kona_icc_stage >= 1) {
+		for (j = 0; j < ARRAY_SIZE(stage1_ids); j++) {
+			if (!test_bit(stage1_ids[j], seen)) {
+				dev_err(dev, "kona-icc: missing required stage-1 id=%u\n",
+					stage1_ids[j]);
+				return -EINVAL;
+			}
+		}
+	}
 
 	return 0;
 }
+
 
 
 static const struct kona_icc_data kona_data = {
@@ -2051,6 +2219,13 @@ static struct icc_path *kona_icc_xlate(struct icc_provider *provider,
 	desc = kona_find_desc(qp, spec->args[0], &index);
 	if (!desc)
 		return ERR_PTR(-EINVAL);
+	if (!kona_icc_stage_allows_id(desc->id)) {
+		dev_info_ratelimited(provider->dev,
+			"kona-icc: stage %u rejects disabled id=%u (%s); msm_bus fallback expected for hybrid clients\n",
+			min_t(unsigned int, kona_icc_stage, KONA_ICC_STAGE_MAX),
+			desc->id, desc->name);
+		return ERR_PTR(-ENODEV);
+	}
 
 	path = icc_of_xlate_onecell(provider, spec);
 	if (IS_ERR(path))
@@ -2584,7 +2759,7 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	 * Apply per-path and global floors for non-zero votes. 0/0 votes
 	 * are treated as truly idle and are allowed to collapse.
 	 */
-	if (ab || ib) {
+	if ((ab || ib) && kona_perf_floor_enable && kona_icc_stage >= 4) {
 		kona_icc_apply_floor(qp, desc, avg_bw, peak_bw, &ab, &ib);
 		kona_icc_apply_hysteresis(qp, desc, index, &ab, &ib);
 	}
@@ -3065,13 +3240,21 @@ static int kona_icc_probe(struct platform_device *pdev)
 	u64 __maybe_unused ab, ib;
 	int ret, i;
 
-	ret = kona_icc_validate_node_count();
-	if (ret) {
-		dev_err(&pdev->dev,
-			"kona-icc: node table count mismatch (table=%zu binding=%u)\n",
-			ARRAY_SIZE(kona_nodes), KONA_ICC_NUM_NODES);
-		return ret;
+	if (!kona_icc_stage) {
+		dev_warn(&pdev->dev,
+			 "kona-icc: stage 0 rescue mode; provider disabled so consumers use msm_bus fallback\n");
+		return -ENODEV;
 	}
+
+	if (kona_icc_stage > KONA_ICC_STAGE_MAX) {
+		dev_warn(&pdev->dev, "kona-icc: clamping stage %u to %u (full)\n",
+			 kona_icc_stage, KONA_ICC_STAGE_MAX);
+		kona_icc_stage = KONA_ICC_STAGE_MAX;
+	}
+
+	ret = kona_icc_validate_nodes(&pdev->dev, kona_nodes, ARRAY_SIZE(kona_nodes));
+	if (ret)
+		return ret;
 
 	qp = devm_kzalloc(&pdev->dev, sizeof(*qp), GFP_KERNEL);
 	if (!qp)
@@ -3193,7 +3376,15 @@ static int kona_icc_probe(struct platform_device *pdev)
 		goto err_free_bitmaps;
         }
 
-	ret = msm_drm_register_client(&qp->display_nb);
+	if (!kona_display_notifier_enable || kona_icc_stage < 4) {
+		dev_info(&pdev->dev,
+			 "kona-icc: display notifier disabled (param=%d stage=%u)\n",
+			 kona_display_notifier_enable, kona_icc_stage);
+		ret = -ENODEV;
+	} else {
+		ret = msm_drm_register_client(&qp->display_nb);
+	}
+
 	if (ret) {
 		/*
 		 * Display notifications are policy hints, not a hard dependency for
@@ -3213,7 +3404,7 @@ static int kona_icc_probe(struct platform_device *pdev)
 	}
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
-	if (qp->boot_floor_vote) {
+	if (qp->boot_floor_vote && kona_icc_stage >= 4) {
 		for (i = 0; i < qp->num_nodes; i++) {
 			int r_ab, r_ib;
 
@@ -3242,9 +3433,12 @@ static int kona_icc_probe(struct platform_device *pdev)
 	}
 #endif
 
-        dev_info(&pdev->dev,
-                 "Kona interconnect provider registered (%zu nodes)\n",
-                 qp->num_nodes);
+	dev_info(&pdev->dev,
+		 "kona-icc: provider registered stage=%u implemented=%zu enabled=%zu gpu/gmu=%s display_notifier=%d boot_floor=%d perf_floor=%d\n",
+		 kona_icc_stage, qp->num_nodes, kona_icc_enabled_node_count(qp),
+		 (kona_icc_stage >= 1) ? "enabled" : "disabled",
+		 qp->display_nb_registered, qp->boot_floor_vote,
+		 kona_perf_floor_enable && kona_icc_stage >= 4);
 
         return 0;
 
