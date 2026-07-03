@@ -193,10 +193,10 @@ MODULE_PARM_DESC(kona_display_topology_strict,
  * IDs fail xlate with -ENODEV so hybrid consumers can keep using msm_bus
  * instead of switching every path to RPMh ICC at once.
  */
-static unsigned int kona_icc_stage = 1;
+static unsigned int kona_icc_stage = 2;
 module_param_named(kona_icc_stage, kona_icc_stage, uint, 0644);
 MODULE_PARM_DESC(kona_icc_stage,
-	"Kona ICC bring-up stage: 0=provider off, 1=GPU/GMU, 2=CPU/devbw, 3=storage/peripheral, 4=display, 5=media/camera/video, 6=IPA, 7=all");
+	"Kona ICC bring-up stage: 0=provider off, 1=GPU/GMU, 2=CPU/devbw, 3=storage/peripheral, 4=display, 5=NPU/media/camera/video, 6=IPA, 7=all");
 
 #define KONA_ICC_STAGE_MAX	7
 
@@ -2002,10 +2002,11 @@ static bool kona_icc_stage_allows_id(u32 id)
 	case KONA_ICC_CPU7_TO_MEM:
 	case KONA_ICC_CPU_TO_GPU_CFG:
 	case KONA_ICC_CPU_TO_PRNG:
+		return stage >= 2;
 	case KONA_ICC_NPU_TO_LLCC:
 	case KONA_ICC_NPU_TO_MEM:
 	case KONA_ICC_NPUDSP_TO_MEM:
-		return stage >= 2;
+		return stage >= 5;
 	case KONA_ICC_UFS_TO_LLCC:
 	case KONA_ICC_UFS_TO_MEM:
 	case KONA_ICC_USB0_TO_MEM:
