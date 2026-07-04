@@ -193,12 +193,17 @@ MODULE_PARM_DESC(kona_display_topology_strict,
  * IDs fail xlate with -ENODEV so hybrid consumers can keep using msm_bus
  * instead of switching every path to RPMh ICC at once.
  */
-static unsigned int kona_icc_stage = 2;
+static unsigned int kona_icc_stage = 7;
 module_param_named(kona_icc_stage, kona_icc_stage, uint, 0644);
 MODULE_PARM_DESC(kona_icc_stage,
-	"Kona ICC bring-up stage: 0=provider off, 1=GPU/GMU, 2=CPU/devbw, 3=storage/peripheral, 4=display, 5=NPU/media/camera/video, 6=IPA, 7=all");
+	"Kona ICC bring-up stage: 0=provider off, 1=GPU/GMU, 2=CPU/devbw, 3=storage/peripheral, 4=display, 5=NPU/media/camera/video, 6=IPA, 7=all ICC except CRYPTO by default");
 
 #define KONA_ICC_STAGE_MAX	7
+
+static bool kona_crypto_icc_enable;
+module_param_named(kona_crypto_icc_enable, kona_crypto_icc_enable, bool, 0644);
+MODULE_PARM_DESC(kona_crypto_icc_enable,
+	"Enable CRYPTO ICC path; default off so crypto-ddr stays on legacy msm_bus fallback");
 
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
@@ -1973,6 +1978,14 @@ static bool kona_icc_stage_allows_id(u32 id)
 {
 	unsigned int stage = min_t(unsigned int, kona_icc_stage, KONA_ICC_STAGE_MAX);
 
+	/*
+	 * CRYPTO_TO_MEM no-booted when exposed through this virtual ICC path.
+	 * Keep it on legacy msm_bus fallback even at stage 7 unless explicitly
+	 * enabled for a focused retest.
+	 */
+	if (id == KONA_ICC_CRYPTO_TO_MEM && !kona_crypto_icc_enable)
+		return false;
+
 	if (stage >= KONA_ICC_STAGE_MAX)
 		return true;
 
@@ -2009,15 +2022,15 @@ static bool kona_icc_stage_allows_id(u32 id)
 		return stage >= 5;
 	case KONA_ICC_UFS_TO_LLCC:
 	case KONA_ICC_UFS_TO_MEM:
+	case KONA_ICC_SDHC2_TO_MEM:
+	case KONA_ICC_TSIF_TO_MEM:
+	case KONA_ICC_QUP_TO_MEM:
 	case KONA_ICC_USB0_TO_MEM:
 	case KONA_ICC_USB1_TO_MEM:
-	case KONA_ICC_QUP_TO_MEM:
-	case KONA_ICC_SDHC2_TO_MEM:
 	case KONA_ICC_PCIE0_TO_MEM:
 	case KONA_ICC_PCIE1_TO_MEM:
 	case KONA_ICC_PCIE2_TO_MEM:
 	case KONA_ICC_CRYPTO_TO_MEM:
-	case KONA_ICC_TSIF_TO_MEM:
 		return stage >= 3;
 	case KONA_ICC_DISP0_TO_MEM:
 	case KONA_ICC_DISP1_TO_MEM:
