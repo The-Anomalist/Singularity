@@ -12,6 +12,8 @@
 #include <linux/bitmap.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
+#include <linux/msm-bus.h>
+#include <linux/mutex.h>
 #include <linux/of_device.h>
 #include <linux/kdev_t.h>
 #include <linux/kernel.h>
@@ -209,6 +211,69 @@ static bool kona_crypto_raw_icc_enable;
 module_param_named(kona_crypto_raw_icc_enable, kona_crypto_raw_icc_enable, bool, 0644);
 MODULE_PARM_DESC(kona_crypto_raw_icc_enable,
 	"Program CRYPTO RPMh votes instead of accepting the ICC path as a no-op during bring-up");
+
+/*
+ * Real Kona CRYPTO bandwidth uses the legacy msm-bus CE0 BCM path:
+ *   MSM_BUS_MASTER_CRYPTO_CORE_0 (125) -> MSM_BUS_SLAVE_EBI_CH0 (512)
+ *   qcom,msm-bus vectors-KBps: 0/0 and 393600/393600
+ *
+ * Do not program CE0 through raw cmd-db aliases from this virtual ICC
+ * provider. Instead, bridge the CRYPTO ICC path to the exported msm-bus
+ * client API so the existing Qualcomm RPMh/BCM backend encodes CE0 safely.
+ */
+#define KONA_CRYPTO_CE0_MASTER          125
+#define KONA_CRYPTO_CE0_SLAVE           512
+#define KONA_CRYPTO_CE0_BW_KBPS         393600ULL
+
+static bool kona_crypto_ce0_msm_bus_enable = true;
+module_param_named(kona_crypto_ce0_msm_bus_enable,
+		   kona_crypto_ce0_msm_bus_enable, bool, 0644);
+MODULE_PARM_DESC(kona_crypto_ce0_msm_bus_enable,
+	"Bridge KONA_ICC_CRYPTO_TO_MEM votes to the legacy CE0 msm_bus BCM client");
+
+static bool kona_crypto_ce0_msm_bus_debug;
+module_param_named(kona_crypto_ce0_msm_bus_debug,
+		   kona_crypto_ce0_msm_bus_debug, bool, 0644);
+MODULE_PARM_DESC(kona_crypto_ce0_msm_bus_debug,
+	"Log CRYPTO ICC to CE0 msm_bus bridge votes");
+
+static struct msm_bus_vectors kona_crypto_ce0_vectors[] = {
+	{
+		.src = KONA_CRYPTO_CE0_MASTER,
+		.dst = KONA_CRYPTO_CE0_SLAVE,
+		.ab = 0,
+		.ib = 0,
+	},
+	{
+		.src = KONA_CRYPTO_CE0_MASTER,
+		.dst = KONA_CRYPTO_CE0_SLAVE,
+		.ab = KONA_CRYPTO_CE0_BW_KBPS,
+		.ib = KONA_CRYPTO_CE0_BW_KBPS,
+	},
+};
+
+static struct msm_bus_paths kona_crypto_ce0_paths[] = {
+	{
+		.num_paths = 1,
+		.vectors = &kona_crypto_ce0_vectors[0],
+	},
+	{
+		.num_paths = 1,
+		.vectors = &kona_crypto_ce0_vectors[1],
+	},
+};
+
+static struct msm_bus_scale_pdata kona_crypto_ce0_pdata = {
+	.usecase = kona_crypto_ce0_paths,
+	.num_usecases = ARRAY_SIZE(kona_crypto_ce0_paths),
+	.name = "kona-icc-crypto-ce0",
+	.active_only = 1,
+};
+
+static DEFINE_MUTEX(kona_crypto_ce0_lock);
+static u32 kona_crypto_ce0_client;
+static bool kona_crypto_ce0_last_valid;
+static unsigned int kona_crypto_ce0_last_idx;
 
 static bool kona_npu_raw_safe_mode = true;
 module_param_named(kona_npu_raw_safe_mode, kona_npu_raw_safe_mode, bool, 0644);
@@ -2328,6 +2393,72 @@ static int kona_icc_send_bw(struct device *dev, const char *res, u32 kbps, bool 
 	return ret;
 }
 
+static int kona_icc_register_crypto_ce0_client(struct device *dev)
+{
+	if (kona_crypto_ce0_client)
+		return 0;
+
+	kona_crypto_ce0_client =
+		msm_bus_scale_register_client(&kona_crypto_ce0_pdata);
+	if (!kona_crypto_ce0_client) {
+		dev_warn(dev,
+			 "kona-icc: failed to register CRYPTO CE0 msm_bus client\n");
+		return -EPROBE_DEFER;
+	}
+
+	dev_info(dev,
+		 "kona-icc: registered CRYPTO CE0 msm_bus bridge client\n");
+	return 0;
+}
+
+static int kona_icc_send_crypto_ce0_vote(struct kona_icc_provider *qp,
+					 unsigned int index, u64 ab, u64 ib)
+{
+	struct device *dev = qp->provider.dev;
+	unsigned int vote_idx = (ab || ib) ? 1 : 0;
+	int ret;
+
+	if (!kona_crypto_ce0_msm_bus_enable)
+		return 0;
+
+	mutex_lock(&kona_crypto_ce0_lock);
+
+	ret = kona_icc_register_crypto_ce0_client(dev);
+	if (ret)
+		goto out_unlock;
+
+	if (kona_crypto_ce0_last_valid && kona_crypto_ce0_last_idx == vote_idx) {
+		ret = 0;
+		goto out_cache;
+	}
+
+	ret = msm_bus_scale_client_update_request(kona_crypto_ce0_client,
+						    vote_idx);
+	if (ret) {
+		dev_warn_ratelimited(dev,
+			"kona-icc: CRYPTO CE0 msm_bus vote idx=%u failed ret=%d\n",
+			vote_idx, ret);
+		goto out_unlock;
+	}
+
+	kona_crypto_ce0_last_idx = vote_idx;
+	kona_crypto_ce0_last_valid = true;
+
+	if (kona_crypto_ce0_msm_bus_debug)
+		dev_info_ratelimited(dev,
+			"kona-icc: CRYPTO ICC -> CE0 msm_bus idx=%u ab=%llu ib=%llu\n",
+			vote_idx, ab, ib);
+
+out_cache:
+	if (qp->last_ab)
+		qp->last_ab[index] = ab;
+	if (qp->last_ib)
+		qp->last_ib[index] = ib;
+out_unlock:
+	mutex_unlock(&kona_crypto_ce0_lock);
+	return ret;
+}
+
 static bool kona_icc_vote_component_unchanged(u64 *last, unsigned int index, u64 vote)
 {
 	return last && last[index] != U64_MAX && last[index] == vote;
@@ -2957,11 +3088,21 @@ skip_perf_floor:
 	}
 
 	/*
-	 * Let CRYPTO clients acquire and vote an ICC path, but do not program
-	 * RPMh for CRYPTO by default. This isolates xlate/path exposure from
-	 * the actual BCM vote that previously no-booted the all-ICC build.
+	 * CRYPTO is special on Kona: the real bandwidth path is the legacy CE0
+	 * BCM, not CPU_MEM_AB/CPU_MEM_IB and not raw CE0 cmd-db programming from
+	 * this virtual provider. When enabled, bridge ICC votes to a dedicated
+	 * msm_bus CE0 client so Qualcomm's existing RPMh/BCM backend encodes the
+	 * CE0 vote safely. If the bridge is disabled, keep the previous safe no-op.
 	 */
 	if (kona_icc_is_crypto_path(desc) && !kona_crypto_raw_icc_enable) {
+		int ret;
+
+		if (kona_crypto_ce0_msm_bus_enable) {
+			ret = kona_icc_send_crypto_ce0_vote(qp, index, ab, ib);
+			if (ret)
+				return ret;
+		}
+
 		kona_icc_clear_dirty(qp, index);
 		return 0;
 	}
@@ -3538,6 +3679,15 @@ static int kona_icc_remove(struct platform_device *pdev)
 
 	kona_icc_unregister_sysfs(qp);
 	icc_provider_unregister(&qp->provider);
+
+	mutex_lock(&kona_crypto_ce0_lock);
+	if (kona_crypto_ce0_client) {
+		msm_bus_scale_unregister_client(kona_crypto_ce0_client);
+		kona_crypto_ce0_client = 0;
+		kona_crypto_ce0_last_valid = false;
+	}
+	mutex_unlock(&kona_crypto_ce0_lock);
+
 	bitmap_free(qp->replay_scan_nodes);
 	bitmap_free(qp->dirty_nodes);
 
