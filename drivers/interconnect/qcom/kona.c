@@ -196,15 +196,51 @@ MODULE_PARM_DESC(kona_display_topology_strict,
 static unsigned int kona_icc_stage = 7;
 module_param_named(kona_icc_stage, kona_icc_stage, uint, 0644);
 MODULE_PARM_DESC(kona_icc_stage,
-	"Kona ICC bring-up stage: 0=provider off, 1=GPU/GMU, 2=CPU/devbw, 3=storage/peripheral, 4=display, 5=NPU/media/camera/video, 6=IPA, 7=all ICC except CRYPTO by default");
+	"Kona ICC bring-up stage: 0=provider off, 1=GPU/GMU, 2=CPU/devbw, 3=storage/peripheral, 4=display, 5=NPU/media/camera/video, 6=IPA, 7=all ICC with CRYPTO no-op and NPU raw by default");
 
 #define KONA_ICC_STAGE_MAX	7
 
-static bool kona_crypto_icc_enable;
+static bool kona_crypto_icc_enable = true;
 module_param_named(kona_crypto_icc_enable, kona_crypto_icc_enable, bool, 0644);
 MODULE_PARM_DESC(kona_crypto_icc_enable,
-	"Enable CRYPTO ICC path; default off so crypto-ddr stays on legacy msm_bus fallback");
+	"Expose CRYPTO ICC path while qcedev/qcrypto remain on legacy msm_bus");
 
+static bool kona_crypto_raw_icc_enable;
+module_param_named(kona_crypto_raw_icc_enable, kona_crypto_raw_icc_enable, bool, 0644);
+MODULE_PARM_DESC(kona_crypto_raw_icc_enable,
+	"Program CRYPTO RPMh votes instead of accepting the ICC path as a no-op during bring-up");
+
+static bool kona_npu_raw_safe_mode = true;
+module_param_named(kona_npu_raw_safe_mode, kona_npu_raw_safe_mode, bool, 0644);
+MODULE_PARM_DESC(kona_npu_raw_safe_mode,
+	"Keep NPU/NPUDSP ICC votes raw: no floors, keepalive, telemetry, or resume replay");
+
+static bool kona_icc_is_crypto_path(const struct kona_icc_node_desc *desc)
+{
+	return desc->id == KONA_ICC_CRYPTO_TO_MEM;
+}
+
+static bool kona_icc_is_raw_npu_path(const struct kona_icc_node_desc *desc)
+{
+	switch (desc->id) {
+	case KONA_ICC_NPU_TO_MEM:
+	case KONA_ICC_NPU_TO_LLCC:
+	case KONA_ICC_NPUDSP_TO_MEM:
+		return kona_npu_raw_safe_mode;
+	default:
+		return false;
+	}
+}
+
+static bool kona_icc_is_replay_suppressed_path(const struct kona_icc_node_desc *desc)
+{
+	return kona_icc_is_crypto_path(desc) || kona_icc_is_raw_npu_path(desc);
+}
+
+static bool kona_icc_is_policy_suppressed_path(const struct kona_icc_node_desc *desc)
+{
+	return kona_icc_is_crypto_path(desc) || kona_icc_is_raw_npu_path(desc);
+}
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
 /*
@@ -1083,6 +1119,7 @@ static bool kona_icc_is_npu_coupled_path(const struct kona_icc_node_desc *desc)
 		return desc->role == KONA_ROLE_NPU;
 	}
 }
+
 
 static void kona_update_npu_atlas(struct kona_icc_provider *qp, unsigned int index, u64 ab, u64 ib)
 {
@@ -1979,9 +2016,9 @@ static bool kona_icc_stage_allows_id(u32 id)
 	unsigned int stage = min_t(unsigned int, kona_icc_stage, KONA_ICC_STAGE_MAX);
 
 	/*
-	 * CRYPTO_TO_MEM no-booted when exposed through this virtual ICC path.
-	 * Keep it on legacy msm_bus fallback even at stage 7 unless explicitly
-	 * enabled for a focused retest.
+	 * qcedev/qcrypto are forced to legacy msm_bus by default, so this
+	 * can be exposed for DT/ICC compatibility without programming RPMh
+	 * unless kona_crypto_raw_icc_enable is explicitly enabled.
 	 */
 	if (id == KONA_ICC_CRYPTO_TO_MEM && !kona_crypto_icc_enable)
 		return false;
@@ -2511,6 +2548,11 @@ static bool kona_icc_replay_req_votes(struct kona_icc_provider *qp)
 			continue;
 		}
 
+		if (kona_icc_is_replay_suppressed_path(&qp->nodes[i])) {
+			kona_icc_clear_dirty(qp, i);
+			continue;
+		}
+
 		if (kona_icc_vote_is_unchanged(qp, i, ab, ib)) {
 			kona_icc_clear_dirty(qp, i);
 			continue;
@@ -2557,6 +2599,10 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 			continue;
 		if (!kona_icc_is_dirty(qp, i))
 			continue;
+		if (kona_icc_is_replay_suppressed_path(&qp->nodes[i])) {
+			kona_icc_clear_dirty(qp, i);
+			continue;
+		}
 
 		/*
 		 * Never synthesize votes for nodes that have never received a request.
@@ -2773,7 +2819,8 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	 * Apply per-path and global floors for non-zero votes. 0/0 votes
 	 * are treated as truly idle and are allowed to collapse.
 	 */
-	if ((ab || ib) && kona_perf_floor_enable && kona_icc_stage >= 4) {
+	if ((ab || ib) && kona_perf_floor_enable && kona_icc_stage >= 4 &&
+	    !kona_icc_is_policy_suppressed_path(desc)) {
 		kona_icc_apply_floor(qp, desc, avg_bw, peak_bw, &ab, &ib);
 		kona_icc_apply_hysteresis(qp, desc, index, &ab, &ib);
 	}
@@ -2781,8 +2828,12 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	/*
 	 * Keep-alive vote for CPU/GPU/NPU paths when clients briefly request 0/0
 	 * between bursts; this avoids repeated collapses into deep bus idle states.
+	 *
+	 * Raw-only clients must preserve exact 0/0 collapse semantics while their
+	 * ICC exposure is validated.
 	 */
-	kona_icc_apply_keepalive_vote(qp, index, &ab, &ib);
+	if (!kona_icc_is_policy_suppressed_path(desc))
+		kona_icc_apply_keepalive_vote(qp, index, &ab, &ib);
 
 	if (desc->id == KONA_ICC_GPU_TO_MEM) {
 		kona_icc_update_gpu_llcc_turbo(qp, ib);
@@ -2795,7 +2846,8 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 
 	kona_icc_apply_gpu_llcc_turbo(qp, desc, &ab, &ib);
 
-	if (kona_icc_is_npu_coupled_path(desc))
+	if (kona_icc_is_npu_coupled_path(desc) &&
+	    !kona_icc_is_policy_suppressed_path(desc))
 		kona_update_npu_atlas(qp, index, ab, ib);
 
 skip_perf_floor:
@@ -2904,6 +2956,15 @@ skip_perf_floor:
 		return 0;
 	}
 
+	/*
+	 * Let CRYPTO clients acquire and vote an ICC path, but do not program
+	 * RPMh for CRYPTO by default. This isolates xlate/path exposure from
+	 * the actual BCM vote that previously no-booted the all-ICC build.
+	 */
+	if (kona_icc_is_crypto_path(desc) && !kona_crypto_raw_icc_enable) {
+		kona_icc_clear_dirty(qp, index);
+		return 0;
+	}
 
 	/*
 	 * Best-effort synchronous programming:

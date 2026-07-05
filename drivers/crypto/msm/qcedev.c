@@ -89,6 +89,14 @@ static const struct of_device_id qcedev_match[] = {
 
 MODULE_DEVICE_TABLE(of, qcedev_match);
 
+
+static bool qcedev_force_legacy_msm_bus = true;
+module_param_named(qcedev_force_legacy_msm_bus,
+		   qcedev_force_legacy_msm_bus, bool, 0644);
+MODULE_PARM_DESC(qcedev_force_legacy_msm_bus,
+		 "Force QCEDEV to use legacy msm_bus instead of crypto-ddr ICC");
+
+
 static uint32_t qcedev_get_block_size(enum qcedev_sha_alg_enum alg)
 {
 	switch (alg) {
@@ -145,7 +153,7 @@ static int qcedev_update_bw_vote(struct qcedev_control *podev, bool high_bw)
 {
 	int vote = high_bw ? 1 : 0;
 
-	if (podev->use_icc && podev->icc_path) {
+	if (!qcedev_force_legacy_msm_bus && podev->use_icc && podev->icc_path) {
 		u32 avg_bw = 0, peak_bw = 0;
 		int ret;
 
@@ -2225,11 +2233,20 @@ static int qcedev_probe_device(struct platform_device *pdev)
 
 	tasklet_init(&podev->done_tasklet, req_done, (unsigned long)podev);
 
-	podev->icc_path = devm_of_icc_get(&pdev->dev, "crypto-ddr");
-	if (!IS_ERR(podev->icc_path))
-		podev->use_icc = true;
-	else
+	if (qcedev_force_legacy_msm_bus) {
+		dev_info(&pdev->dev,
+			 "forcing legacy msm_bus for crypto-ddr ICC path\n");
 		podev->icc_path = NULL;
+		podev->use_icc = false;
+	} else {
+		podev->icc_path = devm_of_icc_get(&pdev->dev, "crypto-ddr");
+		if (!IS_ERR(podev->icc_path))
+			podev->use_icc = true;
+		else {
+			podev->icc_path = NULL;
+			podev->use_icc = false;
+		}
+	}
 
 	podev->platform_support.bus_scale_table = (struct msm_bus_scale_pdata *)
 					msm_bus_cl_get_pdata(pdev);

@@ -122,6 +122,13 @@ static struct crypto_stat _qcrypto_stat;
 static struct dentry *_debug_dent;
 static char _debug_read_buf[DEBUG_MAX_RW_BUF];
 static bool _qcrypto_init_assign;
+
+static bool qcrypto_force_legacy_msm_bus = true;
+module_param_named(qcrypto_force_legacy_msm_bus,
+		   qcrypto_force_legacy_msm_bus, bool, 0644);
+MODULE_PARM_DESC(qcrypto_force_legacy_msm_bus,
+		 "Force QCRYPTO to use legacy msm_bus instead of crypto-ddr ICC");
+
 struct crypto_priv;
 struct qcrypto_req_control {
 	unsigned int index;
@@ -615,7 +622,7 @@ static int qcrypto_update_bw_vote(struct crypto_engine *pengine, bool high_bw_re
 {
 	int vote = high_bw_req ? 1 : 0;
 
-	if (pengine->use_icc && pengine->icc_path) {
+	if (!qcrypto_force_legacy_msm_bus && pengine->use_icc && pengine->icc_path) {
 		u32 avg_bw = 0, peak_bw = 0;
 		int ret;
 
@@ -4988,11 +4995,20 @@ static int  _qcrypto_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	pengine->pdev = pdev;
 
-	pengine->icc_path = devm_of_icc_get(&pdev->dev, "crypto-ddr");
-	if (!IS_ERR(pengine->icc_path))
-		pengine->use_icc = true;
-	else
+	if (qcrypto_force_legacy_msm_bus) {
+		dev_info(&pdev->dev,
+			 "forcing legacy msm_bus for crypto-ddr ICC path\n");
 		pengine->icc_path = NULL;
+		pengine->use_icc = false;
+	} else {
+		pengine->icc_path = devm_of_icc_get(&pdev->dev, "crypto-ddr");
+		if (!IS_ERR(pengine->icc_path))
+			pengine->use_icc = true;
+		else {
+			pengine->icc_path = NULL;
+			pengine->use_icc = false;
+		}
+	}
 
 	cp->platform_support.bus_scale_table = (struct msm_bus_scale_pdata *)
 					msm_bus_cl_get_pdata(pdev);
