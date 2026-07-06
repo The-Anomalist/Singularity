@@ -332,23 +332,23 @@ static bool kona_icc_is_policy_suppressed_path(const struct kona_icc_node_desc *
  * Keep enough headroom for GPU/CPU ramp latency, but avoid pinning every
  * active vote near peak DDR/LLCC corners during sustained Antutu/gaming loads.
  */
-#define KONA_CPU_DDR_AB_FLOOR_KB	(9000000ULL)  /* ~9 GB/s */
-#define KONA_CPU_DDR_IB_FLOOR_KB	(18000000ULL) /* ~18 GB/s */
-#define KONA_CPU_LLCC_AB_FLOOR_KB	(6000000ULL)  /* ~6 GB/s */
-#define KONA_CPU_LLCC_IB_FLOOR_KB	(12000000ULL) /* ~12 GB/s */
+#define KONA_CPU_DDR_AB_FLOOR_KB	(13500000ULL) /* ~13.5 GB/s */
+#define KONA_CPU_DDR_IB_FLOOR_KB	(23500000ULL) /* ~23.5 GB/s */
+#define KONA_CPU_LLCC_AB_FLOOR_KB	(10500000ULL) /* ~10.5 GB/s */
+#define KONA_CPU_LLCC_IB_FLOOR_KB	(17500000ULL) /* ~17.5 GB/s */
 /*
  * CPU0 commonly carries foreground/scheduler work and can oscillate around
  * 1.804 GHz in short bursts. Keep its baseline lower than generic CPU floors
  * to avoid over-voting memory, then apply a targeted uplift near that corner.
  */
-#define KONA_CPU0_DDR_AB_FLOOR_KB	(5000000ULL)  /* ~5 GB/s */
-#define KONA_CPU0_DDR_IB_FLOOR_KB	(10000000ULL) /* ~10 GB/s */
-#define KONA_CPU0_LLCC_AB_FLOOR_KB	(3500000ULL)  /* ~3.5 GB/s */
-#define KONA_CPU0_LLCC_IB_FLOOR_KB	(7000000ULL)  /* ~7 GB/s */
-#define KONA_CPU_PRIME_DDR_AB_FLOOR_KB	(11000000ULL) /* ~11 GB/s */
-#define KONA_CPU_PRIME_DDR_IB_FLOOR_KB	(22000000ULL) /* ~22 GB/s */
-#define KONA_CPU_PRIME_LLCC_AB_FLOOR_KB	(7000000ULL)  /* ~7 GB/s */
-#define KONA_CPU_PRIME_LLCC_IB_FLOOR_KB	(14000000ULL) /* ~14 GB/s */
+#define KONA_CPU0_DDR_AB_FLOOR_KB	(9500000ULL)  /* ~9.5 GB/s */
+#define KONA_CPU0_DDR_IB_FLOOR_KB	(15500000ULL) /* ~15.5 GB/s */
+#define KONA_CPU0_LLCC_AB_FLOOR_KB	(7700000ULL)  /* ~7.7 GB/s */
+#define KONA_CPU0_LLCC_IB_FLOOR_KB	(11900000ULL) /* ~11.9 GB/s */
+#define KONA_CPU_PRIME_DDR_AB_FLOOR_KB	(15500000ULL) /* ~15.5 GB/s */
+#define KONA_CPU_PRIME_DDR_IB_FLOOR_KB	(27500000ULL) /* ~27.5 GB/s */
+#define KONA_CPU_PRIME_LLCC_AB_FLOOR_KB	(11500000ULL) /* ~11.5 GB/s */
+#define KONA_CPU_PRIME_LLCC_IB_FLOOR_KB	(19500000ULL) /* ~19.5 GB/s */
 #define KONA_GPU_DDR_AB_FLOOR_KB	(12000000ULL) /* ~12 GB/s */
 #define KONA_GPU_DDR_IB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
 #define KONA_GPU_LLCC_AB_FLOOR_KB	(8000000ULL)  /* ~8 GB/s */
@@ -356,31 +356,33 @@ static bool kona_icc_is_policy_suppressed_path(const struct kona_icc_node_desc *
 /*
  * Keep GMU floors at least as high as GPU by default.
  *
- * GMU traffic can be bursty around perf-level transitions, so leave explicit
- * constants in place to allow easy tuning above GPU floors if needed later.
+ * GMU traffic can be bursty around perf-level transitions, so keep it
+ * slightly above regular GPU floors while staying around 75% of the older
+ * aggressive GMU defaults. Optional BIMC pinning below can still raise this
+ * for boards that prove they need it.
  */
-#define KONA_GMU_DDR_AB_FLOOR_KB	(23000000ULL) /* ~23 GB/s */
-#define KONA_GMU_DDR_IB_FLOOR_KB	(37000000ULL) /* ~37 GB/s */
-#define KONA_GMU_LLCC_AB_FLOOR_KB	(17000000ULL) /* ~17 GB/s */
-#define KONA_GMU_LLCC_IB_FLOOR_KB	(27000000ULL) /* ~27 GB/s */
+#define KONA_GMU_DDR_AB_FLOOR_KB	(17250000ULL) /* ~17.25 GB/s */
+#define KONA_GMU_DDR_IB_FLOOR_KB	(27750000ULL) /* ~27.75 GB/s */
+#define KONA_GMU_LLCC_AB_FLOOR_KB	(12750000ULL) /* ~12.75 GB/s */
+#define KONA_GMU_LLCC_IB_FLOOR_KB	(20250000ULL) /* ~20.25 GB/s */
 #define KONA_NPU_DDR_AB_FLOOR_KB	(15000000ULL) /* ~15 GB/s */
 #define KONA_NPU_DDR_IB_FLOOR_KB	(28000000ULL) /* ~28 GB/s */
 #define KONA_NPU_LLCC_AB_FLOOR_KB	(12000000ULL)  /* ~12 GB/s */
 #define KONA_NPU_LLCC_IB_FLOOR_KB	(22000000ULL) /* ~22 GB/s */
-#define KONA_MEDIA_DDR_AB_FLOOR_KB	(18000000ULL) /* ~18 GB/s */
-#define KONA_MEDIA_DDR_IB_FLOOR_KB	(34000000ULL) /* ~34 GB/s */
-#define KONA_MEDIA_LLCC_AB_FLOOR_KB	(13000000ULL) /* ~13 GB/s */
-#define KONA_MEDIA_LLCC_IB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
-#define KONA_UX_DDR_AB_FLOOR_KB	(12000000ULL)  /* ~12 GB/s */
-#define KONA_UX_DDR_IB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
+#define KONA_MEDIA_DDR_AB_FLOOR_KB	(20000000ULL) /* ~20 GB/s */
+#define KONA_MEDIA_DDR_IB_FLOOR_KB	(36000000ULL) /* ~36 GB/s */
+#define KONA_MEDIA_LLCC_AB_FLOOR_KB	(14500000ULL) /* ~14.5 GB/s */
+#define KONA_MEDIA_LLCC_IB_FLOOR_KB	(26000000ULL) /* ~26 GB/s */
+#define KONA_UX_DDR_AB_FLOOR_KB	(15000000ULL)  /* ~15 GB/s */
+#define KONA_UX_DDR_IB_FLOOR_KB	(30000000ULL) /* ~30 GB/s */
 /*
  * Storage paths need sustained AB for sequential transfers and enough IB to
  * prevent command/data bursts from waiting on a low DDR or LLCC corner.
  */
-#define KONA_STORAGE_DDR_AB_FLOOR_KB	(24000000ULL) /* ~24 GB/s */
-#define KONA_STORAGE_DDR_IB_FLOOR_KB	(42000000ULL) /* ~42 GB/s */
-#define KONA_STORAGE_LLCC_AB_FLOOR_KB	(16000000ULL) /* ~16 GB/s */
-#define KONA_STORAGE_LLCC_IB_FLOOR_KB	(26000000ULL) /* ~26 GB/s */
+#define KONA_STORAGE_DDR_AB_FLOOR_KB	(25500000ULL) /* ~25.5 GB/s */
+#define KONA_STORAGE_DDR_IB_FLOOR_KB	(43500000ULL) /* ~43.5 GB/s */
+#define KONA_STORAGE_LLCC_AB_FLOOR_KB	(17500000ULL) /* ~17.5 GB/s */
+#define KONA_STORAGE_LLCC_IB_FLOOR_KB	(27500000ULL) /* ~27.5 GB/s */
 
 /*
  * Global minimum floors for any non-zero bandwidth vote. This protects
@@ -541,7 +543,7 @@ static unsigned long kona_npu_telemetry_full_bw_kb = 38000000; /* 38 GB/s */
 static unsigned int kona_storage_ab_boost_percent = 130;
 static unsigned int kona_storage_ib_boost_percent = 150;
 static unsigned int kona_storage_ib_min_ratio_percent = 180;
-static bool kona_npu_oc_mem_pinning_enable = true;
+static bool kona_npu_oc_mem_pinning_enable = false;
 static unsigned long kona_npu_oc_pin_threshold_kb = 8000000; /* 8 GB/s */
 static unsigned int kona_npu_oc_pin_exit_percent = 75;
 static unsigned int kona_npu_oc_pin_hold_ms = 200;
@@ -549,7 +551,7 @@ static unsigned long kona_npu_oc_floor_ab_kb = 20000000;      /* 20 GB/s */
 static unsigned long kona_npu_oc_floor_ib_kb = 38000000;      /* 38 GB/s */
 static unsigned long kona_npu_oc_llcc_floor_ab_kb = 16000000; /* 16 GB/s */
 static unsigned long kona_npu_oc_llcc_floor_ib_kb = 28000000; /* 28 GB/s */
-static bool kona_gpu_bimc_pinning_enable = true;
+static bool kona_gpu_bimc_pinning_enable = false;
 static bool kona_gpu_bimc_no_hyst_enable = false;
 static unsigned long kona_gpu_bimc_floor_ab_kb = 16000000; /* 16 GB/s */
 static unsigned long kona_gpu_bimc_floor_ib_kb = 32000000; /* 32 GB/s */
@@ -562,7 +564,7 @@ static unsigned long kona_gpu_llcc_turbo_enter_ib_kb = 16000000; /* 16 GB/s */
 static unsigned long kona_gpu_llcc_turbo_exit_ib_kb = 11000000;  /* 11 GB/s */
 static unsigned long kona_gpu_llcc_turbo_ab_kb = 12000000;       /* 12 GB/s */
 static unsigned long kona_gpu_llcc_turbo_ib_kb = 24000000;       /* 24 GB/s */
-static bool kona_cpu_prime_oc_mem_pinning_enable = true;
+static bool kona_cpu_prime_oc_mem_pinning_enable = false;
 static unsigned long kona_cpu_prime_oc_pin_threshold_kb = 20000000; /* 20 GB/s */
 static unsigned int kona_cpu_prime_oc_pin_exit_percent = 75;
 static unsigned int kona_cpu_prime_oc_pin_hold_ms = 240;
@@ -579,8 +581,8 @@ static bool kona_ux_turbo_enable = true;
 static unsigned long kona_ux_turbo_threshold_kb = 900000;      /* 900 MB/s */
 static unsigned int kona_ux_turbo_exit_percent = 45;
 static unsigned int kona_ux_turbo_hold_ms = 180;
-static unsigned long kona_ux_turbo_ab_kb = 20000000;           /* 20 GB/s */
-static unsigned long kona_ux_turbo_ib_kb = 40000000;           /* 40 GB/s */
+static unsigned long kona_ux_turbo_ab_kb = 15000000;           /* 15 GB/s */
+static unsigned long kona_ux_turbo_ib_kb = 30000000;           /* 30 GB/s */
 module_param(kona_gpu_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_gpu_keepalive_enable,
         "Keep non-zero floor for gpu-ddr AB/IB between short idle gaps");
@@ -698,7 +700,7 @@ MODULE_PARM_DESC(kona_storage_ib_min_ratio_percent,
 		 "Minimum storage IB as percent of AB (default: 180)");
 module_param(kona_npu_oc_mem_pinning_enable, bool, 0644);
 MODULE_PARM_DESC(kona_npu_oc_mem_pinning_enable,
-	"Pin elevated NPU AB/IB floors when sustained high NPU bandwidth suggests overclocked operation");
+	"Pin elevated NPU AB/IB floors when sustained high NPU bandwidth suggests overclocked operation (default: off)");
 module_param(kona_npu_oc_pin_threshold_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_npu_oc_pin_threshold_kb,
 	"Enable NPU OC pinning above this max(AB,IB) threshold in KB/s");
@@ -722,7 +724,7 @@ MODULE_PARM_DESC(kona_npu_oc_llcc_floor_ib_kb,
 	"Pinned npu-llcc IB floor in KB/s while NPU OC pinning is active");
 module_param(kona_gpu_bimc_pinning_enable, bool, 0644);
 MODULE_PARM_DESC(kona_gpu_bimc_pinning_enable,
-        "Force aggressive gpu-ddr BIMC AB/IB floor to avoid starvation at high GPU clocks");
+        "Force aggressive gpu-ddr BIMC AB/IB floor to avoid starvation at high GPU clocks (default: off)");
 module_param(kona_gpu_bimc_no_hyst_enable, bool, 0644);
 MODULE_PARM_DESC(kona_gpu_bimc_no_hyst_enable,
         "Disable downvote hysteresis for gpu-ddr votes to remove ramp-down/ramp-up lag");
@@ -761,7 +763,7 @@ MODULE_PARM_DESC(kona_gpu_llcc_turbo_ib_kb,
         "Forced gpu-llcc IB vote in KB/s while turbo pinning is active");
 module_param(kona_cpu_prime_oc_mem_pinning_enable, bool, 0644);
 MODULE_PARM_DESC(kona_cpu_prime_oc_mem_pinning_enable,
-	"Pin higher CPU-prime DDR/LLCC floors when prime-core bandwidth indicates overclocked operation");
+	"Pin higher CPU-prime DDR/LLCC floors when prime-core bandwidth indicates overclocked operation (default: off)");
 module_param(kona_cpu_prime_oc_pin_threshold_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_cpu_prime_oc_pin_threshold_kb,
 	"Enable CPU-prime OC pinning above this max(AB,IB) threshold in KB/s");
@@ -800,7 +802,7 @@ MODULE_PARM_DESC(kona_cpu0_1804_min_ratio_percent,
 	"Minimum CPU0 IB as percent of AB once the 1.804 GHz trigger is reached");
 module_param(kona_ux_turbo_enable, bool, 0644);
 MODULE_PARM_DESC(kona_ux_turbo_enable,
-	"Enable automatic 40GB/s-class UX bandwidth floor for app/screen transitions");
+	"Enable automatic UX bandwidth floor for app/screen transitions");
 module_param(kona_ux_turbo_threshold_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_ux_turbo_threshold_kb,
 	"UX request threshold in KB/s that enables the transition turbo floor");
@@ -812,10 +814,10 @@ MODULE_PARM_DESC(kona_ux_turbo_hold_ms,
 	"Hold UX turbo floor for N ms after a qualifying transition request");
 module_param(kona_ux_turbo_ab_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_ux_turbo_ab_kb,
-	"Pinned UX AB floor in KB/s while transition turbo is active");
+	"Pinned UX AB floor in KB/s while transition turbo is active (default: 15000000)");
 module_param(kona_ux_turbo_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_ux_turbo_ib_kb,
-	"Pinned UX IB floor in KB/s while transition turbo is active");
+	"Pinned UX IB floor in KB/s while transition turbo is active (default: 30000000)");
 
 static void kona_icc_update_gpu_llcc_turbo(struct kona_icc_provider *qp, u64 ib)
 {
