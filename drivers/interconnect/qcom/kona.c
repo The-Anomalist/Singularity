@@ -43,12 +43,16 @@ enum kona_icc_role {
         KONA_ROLE_CPU,
         KONA_ROLE_CPU_PRIME,
         KONA_ROLE_GPU,
+	KONA_ROLE_GMU,
         KONA_ROLE_NPU,
         KONA_ROLE_DSP,
         KONA_ROLE_MEDIA,
 	KONA_ROLE_STORAGE,
+	KONA_ROLE_IPA,
+	KONA_ROLE_PERIPHERAL,
+	KONA_ROLE_CONFIG,
+	KONA_ROLE_RAW,
         KONA_ROLE_DISPLAY,
-        KONA_ROLE_GENERIC,
 };
 
 struct kona_icc_node_desc {
@@ -326,9 +330,23 @@ static bool kona_icc_is_storage_path(const struct kona_icc_node_desc *desc)
 	}
 }
 
+static bool kona_icc_is_raw_role(const struct kona_icc_node_desc *desc)
+{
+	switch (desc->role) {
+	case KONA_ROLE_IPA:
+	case KONA_ROLE_PERIPHERAL:
+	case KONA_ROLE_CONFIG:
+	case KONA_ROLE_RAW:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static bool kona_icc_is_replay_suppressed_path(const struct kona_icc_node_desc *desc)
 {
-	return kona_icc_is_crypto_path(desc) || kona_icc_is_raw_npu_path(desc);
+	return kona_icc_is_crypto_path(desc) || kona_icc_is_raw_npu_path(desc) ||
+	       kona_icc_is_raw_role(desc);
 }
 
 static bool kona_icc_is_policy_suppressed_path(const struct kona_icc_node_desc *desc)
@@ -336,6 +354,7 @@ static bool kona_icc_is_policy_suppressed_path(const struct kona_icc_node_desc *
 	return kona_icc_is_crypto_path(desc) ||
 	       kona_icc_is_raw_npu_path(desc) ||
 	       kona_icc_is_storage_path(desc) ||
+	       kona_icc_is_raw_role(desc) ||
 	       (kona_gmu_policy_bypass_enable && kona_icc_is_gmu_path(desc));
 }
 
@@ -999,7 +1018,12 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 		keepalive_ab = kona_disp_keepalive_ab_kb;
 		keepalive_ib = kona_disp_keepalive_ib_kb;
 		break;
-	case KONA_ROLE_GENERIC:
+	case KONA_ROLE_GMU:
+	case KONA_ROLE_STORAGE:
+	case KONA_ROLE_IPA:
+	case KONA_ROLE_PERIPHERAL:
+	case KONA_ROLE_CONFIG:
+	case KONA_ROLE_RAW:
 	default:
 		break;
 	}
@@ -1072,8 +1096,6 @@ static unsigned int kona_icc_pick_bias(const struct kona_icc_node_desc *desc,
         case KONA_ROLE_NPU:
         case KONA_ROLE_DSP:
         case KONA_ROLE_MEDIA:
-	case KONA_ROLE_STORAGE:
-        case KONA_ROLE_GENERIC:
                 if (vote >= kona_perf_turbo_kb)
                         bias = kona_perf_bias_turbo;
                 else if (vote <= kona_perf_light_kb)
@@ -1715,21 +1737,21 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.name = "gmu-llcc",
 		.ab = "GPU_LLCC_AB",
 		.ib = "GPU_LLCC_IB",
-		.role = KONA_ROLE_GPU,
+		.role = KONA_ROLE_GMU,
 	},
 	{
 		.id = KONA_ICC_GMU_TO_MEM,
 		.name = "gmu-ddr",
 		.ab = "GPU_MEM_AB",
 		.ib = "GPU_MEM_IB",
-		.role = KONA_ROLE_GPU,
+		.role = KONA_ROLE_GMU,
 	},
 	{
 		.id = KONA_ICC_CPU_TO_GPU_CFG,
 		.name = "cpu-gpu-cfg",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_CPU,
+		.role = KONA_ROLE_CONFIG,
 	},
 	{
 		.id = KONA_ICC_NPU_TO_LLCC,
@@ -1925,28 +1947,28 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.name = "cpu-prng",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_PERIPHERAL,
 	},
 	{
 		.id = KONA_ICC_USB0_TO_MEM,
 		.name = "usb0-ddr",
 		.ab = "USB0_MEM_AB",
 		.ib = "USB0_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_PERIPHERAL,
 	},
 	{
 		.id = KONA_ICC_USB1_TO_MEM,
 		.name = "usb1-ddr",
 		.ab = "USB1_MEM_AB",
 		.ib = "USB1_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_PERIPHERAL,
 	},
 	{
 		.id = KONA_ICC_QUP_TO_MEM,
 		.name = "qup-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_CPU,
+		.role = KONA_ROLE_PERIPHERAL,
 	},
 	{
 		.id = KONA_ICC_SDHC2_TO_MEM,
@@ -1996,96 +2018,96 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.id = KONA_ICC_CAM_HF0_TO_MEM,
 		.name = "cam-hf0-ddr",
 		/*
-		 * Staged camera bring-up: keep these on verified generic DDR votes
-		 * until board-specific camera BCM/cmd-db names are proven safe.
+		 * Camera high-frequency path: keep the conservative CPU_MEM BCM
+		 * mapping until board-specific camera cmd-db names are proven safe.
 		 */
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_MEDIA,
 	},
 	{
 		.id = KONA_ICC_CAM_SF0_TO_MEM,
 		.name = "cam-sf0-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_MEDIA,
 	},
 	{
 		.id = KONA_ICC_CAM_SF_ICP_TO_MEM,
 		.name = "cam-sf-icp-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_MEDIA,
 	},
 	{
 		.id = KONA_ICC_PCIE0_TO_MEM,
 		.name = "pcie0-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_PERIPHERAL,
 	},
 	{
 		.id = KONA_ICC_PCIE1_TO_MEM,
 		.name = "pcie1-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_PERIPHERAL,
 	},
 	{
 		.id = KONA_ICC_PCIE2_TO_MEM,
 		.name = "pcie2-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_PERIPHERAL,
 	},
 	{
 		.id = KONA_ICC_CRYPTO_TO_MEM,
 		.name = "crypto-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_RAW,
 	},
 	{
 		.id = KONA_ICC_TSIF_TO_MEM,
 		.name = "tsif-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_PERIPHERAL,
 	},
 	{
 		.id = KONA_ICC_IPA_TO_LLCC,
 		.name = "ipa-llcc",
 		.ab = "CPU_LLCC_AB",
 		.ib = "CPU_LLCC_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_IPA,
 	},
 	{
 		.id = KONA_ICC_IPA_TO_MEM,
 		.name = "ipa-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_IPA,
 	},
 	{
 		.id = KONA_ICC_IPA_TO_IMEM,
 		.name = "ipa-imem",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_IPA,
 	},
 	{
 		.id = KONA_ICC_IPA_CFG,
 		.name = "ipa-cfg",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_IPA,
 	},
 	{
 		.id = KONA_ICC_IPA_CORE,
 		.name = "ipa-core",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_GENERIC,
+		.role = KONA_ROLE_IPA,
 	},
 };
 
@@ -2877,7 +2899,7 @@ static bool kona_icc_replay_req_votes_phased(struct kona_icc_provider *qp)
 		return need_retry;
 	case 2:
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_GPU, false);
-		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_GENERIC, false);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_GMU, false);
 		qp->resume_phase = 3; /* done */
 		return need_retry;
 	default:
@@ -3637,7 +3659,8 @@ static int kona_icc_probe(struct platform_device *pdev)
 		for (i = 0; i < qp->num_nodes; i++) {
 			int r_ab, r_ib;
 
-			if (qp->nodes[i].role == KONA_ROLE_DISPLAY)
+			if (qp->nodes[i].role == KONA_ROLE_DISPLAY ||
+			    kona_icc_is_policy_suppressed_path(&qp->nodes[i]))
 				continue;
 
 			ab = KONA_ICC_MIN_AB_FLOOR_KB;
