@@ -172,7 +172,7 @@ comp_algorithm    	RW	show and change the compression algorithm
 compact           	WO	trigger memory compaction
 debug_stat        	RO	this file is used for zram debugging purposes
 backing_dev	  	RW	set up backend storage for zram to write out
-idle		  	WO	mark allocated slot as idle
+idle		  	WO	mark allocated slots as idle
 use_dedup		RW	show and set deduplication feature
 
 User space is advised to use the following files to read the device statistics.
@@ -273,6 +273,15 @@ as idle.
 From now on, any pages on zram are idle pages. The idle mark
 will be removed until someone request access of the block.
 IOW, unless there is access request, those pages are still idle pages.
+
+If CONFIG_ZRAM_MEMORY_TRACKING is enabled, only pages that have not
+been accessed for a configured number of seconds can be marked idle:
+
+	"echo 3600 > /sys/block/zramX/idle"
+
+The example above only marks slots that have been cold for at least
+one hour, which lets userspace reclaim genuinely cold zram pages without
+first idling the whole device.
 
 Admin can request writeback of those idle pages at right timing via
 

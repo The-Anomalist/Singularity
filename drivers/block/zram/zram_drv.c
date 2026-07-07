@@ -294,9 +294,13 @@ static ssize_t idle_store(struct device *dev,
 {
 	struct zram *zram = dev_to_zram(dev);
 	unsigned long nr_pages = zram->disksize >> PAGE_SHIFT;
-	int index;
+	unsigned long index;
 	char mode_buf[8];
 	ssize_t sz;
+#ifdef CONFIG_ZRAM_MEMORY_TRACKING
+	u64 age_sec = 0;
+	ktime_t cutoff = 0;
+#endif
 
 	sz = strscpy(mode_buf, buf, sizeof(mode_buf));
 	if (sz <= 0)
@@ -306,8 +310,19 @@ static ssize_t idle_store(struct device *dev,
 	if (mode_buf[sz - 1] == '\n')
 		mode_buf[sz - 1] = 0x00;
 
-	if (strcmp(mode_buf, "all"))
+	if (strcmp(mode_buf, "all")) {
+#ifdef CONFIG_ZRAM_MEMORY_TRACKING
+		if (kstrtou64(mode_buf, 10, &age_sec))
+			return -EINVAL;
+		if (age_sec > U64_MAX / NSEC_PER_SEC)
+			return -EINVAL;
+
+		cutoff = ktime_sub_ns(ktime_get_boottime(),
+				      age_sec * NSEC_PER_SEC);
+#else
 		return -EINVAL;
+#endif
+	}
 
 	down_read(&zram->init_lock);
 	if (!init_done(zram)) {
@@ -316,13 +331,22 @@ static ssize_t idle_store(struct device *dev,
 	}
 
 	for (index = 0; index < nr_pages; index++) {
+		bool mark_idle;
+
 		/*
 		 * Do not mark ZRAM_UNDER_WB slot as ZRAM_IDLE to close race.
 		 * See the comment in writeback_store.
 		 */
 		zram_slot_lock(zram, index);
-		if (zram_allocated(zram, index) &&
-				!zram_test_flag(zram, index, ZRAM_UNDER_WB))
+		mark_idle = zram_allocated(zram, index) &&
+				!zram_test_flag(zram, index, ZRAM_UNDER_WB);
+#ifdef CONFIG_ZRAM_MEMORY_TRACKING
+		if (mark_idle && age_sec &&
+		    !ktime_before(zram->table[index].ac_time, cutoff))
+			mark_idle = false;
+#endif
+
+		if (mark_idle)
 			zram_set_flag(zram, index, ZRAM_IDLE);
 		zram_slot_unlock(zram, index);
 	}
