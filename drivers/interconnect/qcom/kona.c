@@ -198,7 +198,7 @@ MODULE_PARM_DESC(kona_display_topology_strict,
 static unsigned int kona_icc_stage = 7;
 module_param_named(kona_icc_stage, kona_icc_stage, uint, 0644);
 MODULE_PARM_DESC(kona_icc_stage,
-	"Kona ICC bring-up stage: 0=provider off, 1=GPU/GMU, 2=CPU/devbw, 3=storage/peripheral, 4=display, 5=NPU/media/camera/video, 6=IPA, 7=all ICC with CRYPTO no-op and NPU raw by default");
+	"Kona ICC bring-up stage: 0=provider off, 1=GPU/GMU, 2=CPU/devbw, 3=storage/peripheral, 4=display, 5=NPU/media/camera/video, 6=IPA, 7=all ICC with CRYPTO no-op plus raw NPU/storage policy by default");
 
 #define KONA_ICC_STAGE_MAX	7
 
@@ -314,6 +314,18 @@ static bool kona_icc_is_gmu_path(const struct kona_icc_node_desc *desc)
 	}
 }
 
+static bool kona_icc_is_storage_path(const struct kona_icc_node_desc *desc)
+{
+	switch (desc->id) {
+	case KONA_ICC_UFS_TO_MEM:
+	case KONA_ICC_UFS_TO_LLCC:
+	case KONA_ICC_SDHC2_TO_MEM:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static bool kona_icc_is_replay_suppressed_path(const struct kona_icc_node_desc *desc)
 {
 	return kona_icc_is_crypto_path(desc) || kona_icc_is_raw_npu_path(desc);
@@ -323,6 +335,7 @@ static bool kona_icc_is_policy_suppressed_path(const struct kona_icc_node_desc *
 {
 	return kona_icc_is_crypto_path(desc) ||
 	       kona_icc_is_raw_npu_path(desc) ||
+	       kona_icc_is_storage_path(desc) ||
 	       (kona_gmu_policy_bypass_enable && kona_icc_is_gmu_path(desc));
 }
 
@@ -1239,14 +1252,12 @@ static void kona_update_npu_atlas(struct kona_icc_provider *qp, unsigned int ind
 
 static bool kona_icc_is_ux_path(const struct kona_icc_node_desc *desc)
 {
-	switch (desc->id) {
-	case KONA_ICC_DISP_CFG:
-	case KONA_ICC_DISP0_TO_MEM:
-	case KONA_ICC_DISP1_TO_MEM:
-		return true;
-	default:
-		return false;
-	}
+	/*
+	 * Limit UX turbo to display/SDE register traffic. DISP0/1 memory paths
+	 * already carry real bandwidth requests and should not receive synthetic
+	 * multi-GB/s boosts while GPU or storage clients are active.
+	 */
+	return desc->id == KONA_ICC_DISP_CFG;
 }
 
 static void kona_icc_apply_ux_turbo(struct kona_icc_provider *qp,
@@ -1387,28 +1398,8 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 		break;
 	case KONA_ICC_UFS_TO_MEM:
 	case KONA_ICC_SDHC2_TO_MEM:
-		if (active && *ab < KONA_STORAGE_DDR_AB_FLOOR_KB)
-			*ab = KONA_STORAGE_DDR_AB_FLOOR_KB;
-		if (active && *ib < KONA_STORAGE_DDR_IB_FLOOR_KB)
-			*ib = KONA_STORAGE_DDR_IB_FLOOR_KB;
-		if (*ab)
-			*ab = kona_icc_add_headroom(*ab, kona_storage_ab_boost_percent);
-		if (*ib)
-			*ib = kona_icc_add_headroom(*ib, kona_storage_ib_boost_percent);
-		if (*ab && *ib < mul_u64_u32_div(*ab, kona_storage_ib_min_ratio_percent, 100))
-			*ib = mul_u64_u32_div(*ab, kona_storage_ib_min_ratio_percent, 100);
-		break;
 	case KONA_ICC_UFS_TO_LLCC:
-		if (active && *ab < KONA_STORAGE_LLCC_AB_FLOOR_KB)
-			*ab = KONA_STORAGE_LLCC_AB_FLOOR_KB;
-		if (active && *ib < KONA_STORAGE_LLCC_IB_FLOOR_KB)
-			*ib = KONA_STORAGE_LLCC_IB_FLOOR_KB;
-		if (*ab)
-			*ab = kona_icc_add_headroom(*ab, kona_storage_ab_boost_percent);
-		if (*ib)
-			*ib = kona_icc_add_headroom(*ib, kona_storage_ib_boost_percent);
-		if (*ab && *ib < mul_u64_u32_div(*ab, kona_storage_ib_min_ratio_percent, 100))
-			*ib = mul_u64_u32_div(*ab, kona_storage_ib_min_ratio_percent, 100);
+		/* Storage votes are kept raw by kona_icc_is_policy_suppressed_path(). */
 		break;
 	case KONA_ICC_VIDEO_CFG:
 		if (active && *ab < KONA_MEDIA_DDR_AB_FLOOR_KB)
@@ -1418,13 +1409,14 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 		break;
 	case KONA_ICC_DISP_CFG:
 		/*
-		 * UX-sensitive config paths share CPU_* BCMs but often vote low.
-		 * Keep moderate floors so register/config bursts don't collapse DDR.
+		 * Do not turn small display register votes into UX-turbo DDR votes.
+		 * A modest non-zero cfg floor is enough to avoid SDE/dispcc collapse
+		 * without stacking multi-GB/s display traffic on top of GPU votes.
 		 */
-		if (active && *ab < KONA_UX_DDR_AB_FLOOR_KB)
-			*ab = KONA_UX_DDR_AB_FLOOR_KB;
-		if (active && *ib < KONA_UX_DDR_IB_FLOOR_KB)
-			*ib = KONA_UX_DDR_IB_FLOOR_KB;
+		if (active && *ab < kona_display_cfg_nonzero_floor_ab_kBps)
+			*ab = kona_display_cfg_nonzero_floor_ab_kBps;
+		if (active && *ib < kona_display_cfg_nonzero_floor_ib_kBps)
+			*ib = kona_display_cfg_nonzero_floor_ib_kBps;
 		break;
 	case KONA_ICC_CPU_TO_LLCC:
 	case KONA_ICC_CPU1_TO_LLCC:
@@ -1442,10 +1434,11 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 		break;
 	case KONA_ICC_DISP0_TO_MEM:
 	case KONA_ICC_DISP1_TO_MEM:
-		if (active && *ab < KONA_UX_DDR_AB_FLOOR_KB)
-			*ab = KONA_UX_DDR_AB_FLOOR_KB;
-		if (active && *ib < KONA_UX_DDR_IB_FLOOR_KB)
-			*ib = KONA_UX_DDR_IB_FLOOR_KB;
+		/*
+		 * Preserve real display bandwidth requests. The dedicated 0/0 fallback
+		 * and resume hold below cover panel bring-up; applying UX DDR floors here
+		 * can stack badly with concurrent GPU workloads such as Antutu.
+		 */
 		break;
 	case KONA_ICC_CPU7_TO_MEM:
 		if (cpu_prime_pin_active) {
