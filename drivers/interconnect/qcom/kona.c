@@ -202,7 +202,7 @@ MODULE_PARM_DESC(kona_display_topology_strict,
 static unsigned int kona_icc_stage = 7;
 module_param_named(kona_icc_stage, kona_icc_stage, uint, 0644);
 MODULE_PARM_DESC(kona_icc_stage,
-	"Kona ICC bring-up stage: 0=provider off, 1=GPU/GMU, 2=CPU/devbw, 3=storage/peripheral, 4=display, 5=NPU/media/camera/video, 6=IPA, 7=all ICC with CRYPTO no-op plus raw NPU/storage policy by default");
+	"Kona ICC bring-up stage: 0=provider off, 1=GPU/GMU, 2=CPU/devbw, 3=storage/peripheral, 4=display, 5=NPU/media/camera/video, 6=IPA, 7=all ICC with CRYPTO/storage raw programming disabled by default");
 
 #define KONA_ICC_STAGE_MAX	7
 
@@ -215,6 +215,12 @@ static bool kona_crypto_raw_icc_enable;
 module_param_named(kona_crypto_raw_icc_enable, kona_crypto_raw_icc_enable, bool, 0644);
 MODULE_PARM_DESC(kona_crypto_raw_icc_enable,
 	"Program CRYPTO RPMh votes instead of accepting the ICC path as a no-op during bring-up");
+
+static bool kona_storage_raw_icc_enable;
+module_param_named(kona_storage_raw_icc_enable,
+		   kona_storage_raw_icc_enable, bool, 0644);
+MODULE_PARM_DESC(kona_storage_raw_icc_enable,
+	"Program UFS/SDHC RPMh votes instead of accepting storage ICC paths as cached no-ops during bring-up");
 
 /*
  * Real Kona CRYPTO bandwidth uses the legacy msm-bus CE0 BCM path:
@@ -346,6 +352,7 @@ static bool kona_icc_is_raw_role(const struct kona_icc_node_desc *desc)
 static bool kona_icc_is_replay_suppressed_path(const struct kona_icc_node_desc *desc)
 {
 	return kona_icc_is_crypto_path(desc) || kona_icc_is_raw_npu_path(desc) ||
+	       (!kona_storage_raw_icc_enable && kona_icc_is_storage_path(desc)) ||
 	       kona_icc_is_raw_role(desc);
 }
 
@@ -3138,6 +3145,26 @@ skip_perf_floor:
 				return ret;
 		}
 
+		kona_icc_clear_dirty(qp, index);
+		return 0;
+	}
+
+	/*
+	 * UFS/SDHC consumers on Kona issue frequent 0/0 <-> high bandwidth ICC
+	 * updates during sequential read/write bursts. These logical nodes are
+	 * intentionally exposed for DT compatibility at stage 7, but their current
+	 * cmd-db aliases reuse CPU_MEM/CPU_LLCC BCMs instead of a validated storage
+	 * path. Programming those raw aliases concurrently with CPU, display and
+	 * GPU/GMU votes can wedge apps_rsc/RPMh hard enough to leave no pstore.
+	 *
+	 * Mirror the CRYPTO safety model: accept and cache storage ICC requests, but
+	 * do not send raw RPMh storage votes unless explicitly enabled for debug.
+	 */
+	if (kona_icc_is_storage_path(desc) && !kona_storage_raw_icc_enable) {
+		if (qp->last_ab)
+			qp->last_ab[index] = ab;
+		if (qp->last_ib)
+			qp->last_ib[index] = ib;
 		kona_icc_clear_dirty(qp, index);
 		return 0;
 	}
