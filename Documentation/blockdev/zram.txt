@@ -263,7 +263,12 @@ To use the feature, admin should set up backing device via
 before disksize setting. It supports only partition at this moment.
 If admin want to use incompressible page writeback, they could do via
 
-	"echo huge > /sys/block/zramX/write"
+	"echo huge > /sys/block/zramX/writeback"
+
+If admin want to write back only incompressible pages that are also idle,
+they could do via
+
+	"echo huge_idle > /sys/block/zramX/writeback"
 
 To use idle page writeback, first, user need to declare zram pages
 as idle.
@@ -336,6 +341,25 @@ budget in next setting is user's job.
 
 If admin want to measure writeback count in a certain period, he could
 know it via /sys/block/zram0/bd_stat's 3rd column.
+
+= recompression
+
+The recompress interface lets userspace recompress selected slots with a
+secondary compressor. Configure the secondary compressor before setting
+disksize:
+
+	"echo lz4hc > /sys/block/zramX/recompress_algorithm"
+
+After the device is initialized, userspace can recompress pages selected by
+mode:
+
+	"echo huge > /sys/block/zramX/recompress"
+	"echo idle > /sys/block/zramX/recompress"
+	"echo huge_idle > /sys/block/zramX/recompress"
+
+Only pages that become smaller with the secondary compressor are replaced.
+The feature is disabled when zram deduplication is enabled because the dedup
+table stores compressor-agnostic entries.
 
 = memory tracking
 

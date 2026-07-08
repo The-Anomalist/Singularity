@@ -112,7 +112,8 @@ Date:		November 2018
 Contact:	Minchan Kim <minchan@kernel.org>
 Description:
 		The writeback file is write-only and trigger idle and/or
-		huge page writeback to backing device.
+		huge page writeback to backing device. Supported modes are
+		idle, huge, and huge_idle.
 
 What:		/sys/block/zram<id>/bd_stat
 Date:		November 2018
@@ -137,6 +138,23 @@ Description:
 		The writeback_limit file is read-write and specifies the maximum
 		amount of writeback ZRAM can do. The limit could be changed
 		in run time.
+
+What:		/sys/block/zram<id>/recompress_algorithm
+Date:		July 2026
+Contact:	Sergey Senozhatsky <senozhatsky@chromium.org>
+Description:
+		The recompress_algorithm file is read-write and selects the
+		secondary compressor used by recompress. It must be configured
+		before disksize is set.
+
+What:		/sys/block/zram<id>/recompress
+Date:		July 2026
+Contact:	Sergey Senozhatsky <senozhatsky@chromium.org>
+Description:
+		The recompress file is write-only and recompresses selected pages
+		with the secondary compressor. Supported modes are idle, huge,
+		and huge_idle. Recompression keeps a page only when the secondary
+		result is smaller than its current object.
 
 What:		/sys/block/zram<id>/use_dedup
 Date:		March 2017
