@@ -16,6 +16,7 @@ GPU-Aware Schedutil: A refactored governor that synchronizes CPU clusters with G
 3. Efficiency & Reliability
 KernelSU (KSU) Integration: Advanced, kernel-level root support that remains invisible to high-security apps.
 Modern Backports: Critical security patches and performance fixes ported with a focus on stability over feature-creep.
+BBR + fq Networking: The full in-tree TCP congestion-control suite is enabled, with upstream BBR selected by default and Fair Queue pacing for lower-bufferbloat, higher-throughput Wi-Fi and cellular uploads.
 F2FS & Storage Optimization: (Work-in-Progress) Optimized UFS 3.1 data paths to eliminate I/O-related micro-stutter.
  The Philosophy: "Every Level"
 I believe the "Silicon Lottery" is a myth perpetuated by unoptimized code. Singularity treats the SM8250 as a holistic system. By optimizing the Interconnect, Schedulers, and Memory Bus in tandem, 
