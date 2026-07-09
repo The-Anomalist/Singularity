@@ -222,6 +222,18 @@ module_param_named(kona_storage_raw_icc_enable,
 MODULE_PARM_DESC(kona_storage_raw_icc_enable,
 	"Program UFS/SDHC RPMh votes instead of accepting storage ICC paths as cached no-ops during bring-up");
 
+static bool kona_gpu_raw_icc_enable;
+module_param_named(kona_gpu_raw_icc_enable,
+		   kona_gpu_raw_icc_enable, bool, 0644);
+MODULE_PARM_DESC(kona_gpu_raw_icc_enable,
+		 "Program GPU RPMh votes instead of accepting GPU ICC paths as cached no-ops");
+
+static bool kona_gmu_raw_icc_enable;
+module_param_named(kona_gmu_raw_icc_enable,
+		   kona_gmu_raw_icc_enable, bool, 0644);
+MODULE_PARM_DESC(kona_gmu_raw_icc_enable,
+		 "Program GMU RPMh votes instead of accepting GMU ICC paths as cached no-ops");
+
 /*
  * Real Kona CRYPTO bandwidth uses the legacy msm-bus CE0 BCM path:
  *   MSM_BUS_MASTER_CRYPTO_CORE_0 (125) -> MSM_BUS_SLAVE_EBI_CH0 (512)
@@ -290,6 +302,12 @@ module_param_named(kona_npu_raw_safe_mode, kona_npu_raw_safe_mode, bool, 0644);
 MODULE_PARM_DESC(kona_npu_raw_safe_mode,
 	"Keep NPU/NPUDSP ICC votes raw: no floors, keepalive, telemetry, or resume replay");
 
+static bool kona_gpu_policy_bypass_enable = true;
+module_param_named(kona_gpu_policy_bypass_enable,
+		   kona_gpu_policy_bypass_enable, bool, 0644);
+MODULE_PARM_DESC(kona_gpu_policy_bypass_enable,
+		 "Skip Kona floors/boosts/hysteresis for GPU ICC votes before optional RPMh programming");
+
 static bool kona_gmu_policy_bypass_enable = true;
 module_param_named(kona_gmu_policy_bypass_enable,
 		   kona_gmu_policy_bypass_enable, bool, 0644);
@@ -308,6 +326,17 @@ static bool kona_icc_is_raw_npu_path(const struct kona_icc_node_desc *desc)
 	case KONA_ICC_NPU_TO_LLCC:
 	case KONA_ICC_NPUDSP_TO_MEM:
 		return kona_npu_raw_safe_mode;
+	default:
+		return false;
+	}
+}
+
+static bool kona_icc_is_gpu_path(const struct kona_icc_node_desc *desc)
+{
+	switch (desc->id) {
+	case KONA_ICC_GPU_TO_MEM:
+	case KONA_ICC_GPU_TO_LLCC:
+		return true;
 	default:
 		return false;
 	}
@@ -353,6 +382,8 @@ static bool kona_icc_is_replay_suppressed_path(const struct kona_icc_node_desc *
 {
 	return kona_icc_is_crypto_path(desc) || kona_icc_is_raw_npu_path(desc) ||
 	       (!kona_storage_raw_icc_enable && kona_icc_is_storage_path(desc)) ||
+	       (!kona_gpu_raw_icc_enable && kona_icc_is_gpu_path(desc)) ||
+	       (!kona_gmu_raw_icc_enable && kona_icc_is_gmu_path(desc)) ||
 	       kona_icc_is_raw_role(desc);
 }
 
@@ -362,7 +393,10 @@ static bool kona_icc_is_policy_suppressed_path(const struct kona_icc_node_desc *
 	       kona_icc_is_raw_npu_path(desc) ||
 	       kona_icc_is_storage_path(desc) ||
 	       kona_icc_is_raw_role(desc) ||
-	       (kona_gmu_policy_bypass_enable && kona_icc_is_gmu_path(desc));
+	       ((!kona_gpu_raw_icc_enable || kona_gpu_policy_bypass_enable) &&
+		kona_icc_is_gpu_path(desc)) ||
+	       ((!kona_gmu_raw_icc_enable || kona_gmu_policy_bypass_enable) &&
+		kona_icc_is_gmu_path(desc));
 }
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
@@ -3145,6 +3179,32 @@ skip_perf_floor:
 				return ret;
 		}
 
+		kona_icc_clear_dirty(qp, index);
+		return 0;
+	}
+
+	/*
+	 * GPU/GMU bandwidth is primarily controlled by KGSL/GMU HFI/TCS on Kona.
+	 * Expose these ICC paths so clients can probe and vote normally, but do not
+	 * also program the same GPU_MEM/GPU_LLCC RPMh resources from this virtual
+	 * provider unless explicitly enabled for debug. This avoids duplicate or
+	 * racing memory votes during heavy benchmark loads while still caching the
+	 * accepted client vote and suppressing replay storms.
+	 */
+	if (kona_icc_is_gpu_path(desc) && !kona_gpu_raw_icc_enable) {
+		if (qp->last_ab)
+			qp->last_ab[index] = ab;
+		if (qp->last_ib)
+			qp->last_ib[index] = ib;
+		kona_icc_clear_dirty(qp, index);
+		return 0;
+	}
+
+	if (kona_icc_is_gmu_path(desc) && !kona_gmu_raw_icc_enable) {
+		if (qp->last_ab)
+			qp->last_ab[index] = ab;
+		if (qp->last_ib)
+			qp->last_ib[index] = ib;
 		kona_icc_clear_dirty(qp, index);
 		return 0;
 	}
