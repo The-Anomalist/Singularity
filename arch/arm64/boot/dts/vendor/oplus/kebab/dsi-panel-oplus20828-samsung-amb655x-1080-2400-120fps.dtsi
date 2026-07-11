@@ -647,16 +647,17 @@
 
 			timing@2 {
 				qcom,mdss-dsi-panel-framerate = <90>;
-				qcom,mdss-dsi-panel-clockrate = <1100000000>;
+				qcom,mdss-dsi-panel-clockrate = <652800000>;
+				qcom,mdss-mdp-transfer-time-us = <9000>;
 				qcom,mdss-dsi-panel-width = <1080>;
 				qcom,mdss-dsi-panel-height = <2400>;
-				qcom,mdss-dsi-h-front-porch = <52>;
-				qcom,mdss-dsi-h-back-porch = <24>;
+				qcom,mdss-dsi-h-front-porch = <8>;
+				qcom,mdss-dsi-h-back-porch = <8>;
 				qcom,mdss-dsi-h-pulse-width = <24>;
 				qcom,mdss-dsi-h-sync-skew = <0>;
 				qcom,mdss-dsi-h-sync-pulse = <0>;
-				qcom,mdss-dsi-v-back-porch = <8>;
-				qcom,mdss-dsi-v-front-porch = <809>;
+				qcom,mdss-dsi-v-back-porch = <6>;
+				qcom,mdss-dsi-v-front-porch = <8>;
 				qcom,mdss-dsi-v-pulse-width = <4>;
 				qcom,mdss-dsi-h-left-border = <0>;
 				qcom,mdss-dsi-h-right-border = <0>;
@@ -1022,10 +1023,10 @@
 		};
 		timing@2 { /* fhd 90hz */
 			qcom,mdss-dsi-panel-phy-timings = [
-				00 24 0A 0A 26 25 09 0A 06 02 04 00 1E 1A
+				00 1A 06 06 22 20 07 06 04 02 04 00 16 16
 			];
-			qcom,display-topology = <1 1 1>,<2 2 1>;
-			qcom,default-topology-index = <1>;
+			qcom,display-topology = <2 2 1>;
+			qcom,default-topology-index = <0>;
 		};
 	};
 };
