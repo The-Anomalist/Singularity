@@ -311,6 +311,26 @@
 					39 01 00 00 00 00 02 C2 07
 					39 01 00 00 00 00 03 F0 A5 A5
 				];
+				qcom,mdss-dsi-osc-clk-mode0-command = [
+					/* 139.6MHz oscillator */
+					39 01 00 00 00 00 03 F0 5A 5A
+					39 01 00 00 00 00 03 FC 5A 5A
+					15 01 00 00 00 00 02 B0 16
+					15 01 00 00 00 00 02 D1 22
+					15 01 00 00 00 00 02 D6 11
+					39 01 00 00 00 00 03 FC A5 A5
+					39 01 00 00 00 00 03 F0 A5 A5
+				];
+				qcom,mdss-dsi-osc-clk-mode1-command = [
+					/* 136.3MHz oscillator */
+					39 01 00 00 00 00 03 F0 5A 5A
+					39 01 00 00 00 00 03 FC 5A 5A
+					15 01 00 00 00 00 02 B0 16
+					15 01 00 00 00 00 02 D1 20
+					15 01 00 00 00 00 02 D6 11
+					39 01 00 00 00 00 03 FC A5 A5
+					39 01 00 00 00 00 03 F0 A5 A5
+				];
 				qcom,mdss-dsi-panel-read-register-close-command = [
 					39 01 00 00 00 00 03 F0 A5 A5
 				];
@@ -343,6 +363,8 @@
 				qcom,mdss-dsi-loading-effect-1-command-state	= "dsi_hs_mode";
 				qcom,mdss-dsi-loading-effect-2-command-state	= "dsi_hs_mode";
 				qcom,mdss-dsi-loading-effect-off-command-state	= "dsi_hs_mode";
+				qcom,mdss-dsi-osc-clk-mode0-command-state = "dsi_hs_mode";
+				qcom,mdss-dsi-osc-clk-mode1-command-state = "dsi_hs_mode";
 				qcom,mdss-dsi-seed-command-state = "dsi_lp_mode";
 				qcom,mdss-dsi-panel-command-state = "dsi_lp_mode";
 				qcom,mdss-dsi-panel-register-read-command-state = "dsi_lp_mode";
@@ -592,6 +614,26 @@
 					39 01 00 00 00 00 02 C2 07
 					39 01 00 00 00 00 03 F0 A5 A5
 				];
+				qcom,mdss-dsi-osc-clk-mode0-command = [
+					/* 139.6MHz oscillator */
+					39 01 00 00 00 00 03 F0 5A 5A
+					39 01 00 00 00 00 03 FC 5A 5A
+					15 01 00 00 00 00 02 B0 16
+					15 01 00 00 00 00 02 D1 22
+					15 01 00 00 00 00 02 D6 11
+					39 01 00 00 00 00 03 FC A5 A5
+					39 01 00 00 00 00 03 F0 A5 A5
+				];
+				qcom,mdss-dsi-osc-clk-mode1-command = [
+					/* 136.3MHz oscillator */
+					39 01 00 00 00 00 03 F0 5A 5A
+					39 01 00 00 00 00 03 FC 5A 5A
+					15 01 00 00 00 00 02 B0 16
+					15 01 00 00 00 00 02 D1 20
+					15 01 00 00 00 00 02 D6 11
+					39 01 00 00 00 00 03 FC A5 A5
+					39 01 00 00 00 00 03 F0 A5 A5
+				];
 				qcom,mdss-dsi-panel-id1-command = [
 					06 01 00 00 00 00 01 E9
 				];
@@ -627,6 +669,8 @@
 				qcom,mdss-dsi-loading-effect-1-command-state	= "dsi_hs_mode";
 				qcom,mdss-dsi-loading-effect-2-command-state	= "dsi_hs_mode";
 				qcom,mdss-dsi-loading-effect-off-command-state	= "dsi_hs_mode";
+				qcom,mdss-dsi-osc-clk-mode0-command-state = "dsi_hs_mode";
+				qcom,mdss-dsi-osc-clk-mode1-command-state = "dsi_hs_mode";
 				qcom,mdss-dsi-seed-command-state = "dsi_lp_mode";
 				qcom,mdss-dsi-panel-command-state = "dsi_lp_mode";
 				qcom,mdss-dsi-panel-register-read-command-state = "dsi_lp_mode";
@@ -876,6 +920,26 @@
 					39 01 00 00 00 00 02 C2 07
 					39 01 00 00 00 00 03 F0 A5 A5
 				];
+				qcom,mdss-dsi-osc-clk-mode0-command = [
+					/* 139.6MHz oscillator */
+					39 01 00 00 00 00 03 F0 5A 5A
+					39 01 00 00 00 00 03 FC 5A 5A
+					15 01 00 00 00 00 02 B0 16
+					15 01 00 00 00 00 02 D1 22
+					15 01 00 00 00 00 02 D6 11
+					39 01 00 00 00 00 03 FC A5 A5
+					39 01 00 00 00 00 03 F0 A5 A5
+				];
+				qcom,mdss-dsi-osc-clk-mode1-command = [
+					/* 136.3MHz oscillator */
+					39 01 00 00 00 00 03 F0 5A 5A
+					39 01 00 00 00 00 03 FC 5A 5A
+					15 01 00 00 00 00 02 B0 16
+					15 01 00 00 00 00 02 D1 20
+					15 01 00 00 00 00 02 D6 11
+					39 01 00 00 00 00 03 FC A5 A5
+					39 01 00 00 00 00 03 F0 A5 A5
+				];
 				qcom,mdss-dsi-panel-id1-command = [
 					06 01 00 00 00 00 01 E9
 				];
@@ -911,6 +975,8 @@
 				qcom,mdss-dsi-loading-effect-1-command-state	= "dsi_hs_mode";
 				qcom,mdss-dsi-loading-effect-2-command-state	= "dsi_hs_mode";
 				qcom,mdss-dsi-loading-effect-off-command-state	= "dsi_hs_mode";
+				qcom,mdss-dsi-osc-clk-mode0-command-state = "dsi_hs_mode";
+				qcom,mdss-dsi-osc-clk-mode1-command-state = "dsi_hs_mode";
 				qcom,mdss-dsi-seed-command-state = "dsi_lp_mode";
 				qcom,mdss-dsi-panel-command-state = "dsi_lp_mode";
 				qcom,mdss-dsi-panel-register-read-command-state = "dsi_lp_mode";
@@ -951,6 +1017,9 @@
 	oplus,dp-support-customized;
 	oplus,is-oplus-project;
 	oplus,aod_on_fod_off;
+	oplus,osc-support;
+	oplus,mdss-dsi-osc-clk-mode0-rate = <139600>;
+	oplus,mdss-dsi-osc-clk-mode1-rate = <136300>;
 
 	oplus,dsi-fod-brightness = <0 0xff>,
 				   <2 0xf1>,
