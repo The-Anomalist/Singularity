@@ -398,6 +398,7 @@ static const struct qcom_cc_desc gpu_cc_kona_desc = {
 
 static const struct of_device_id gpu_cc_kona_match_table[] = {
 	{ .compatible = "qcom,gpucc-kona" },
+	{ .compatible = "qcom,gpucc-kona-v2" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, gpu_cc_kona_match_table);
