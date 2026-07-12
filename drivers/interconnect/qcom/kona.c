@@ -389,10 +389,16 @@ static bool kona_icc_is_replay_suppressed_path(const struct kona_icc_node_desc *
 
 static bool kona_icc_is_policy_suppressed_path(const struct kona_icc_node_desc *desc)
 {
+	/*
+	 * Keep the paths that recent safety fixes intentionally made raw/no-op
+	 * suppressed. CONFIG/PERIPHERAL/IPA nodes are CPU_MEM/CPU_LLCC-backed on
+	 * this virtual provider, so they may use the bounded floor policy; true RAW
+	 * nodes remain excluded unless they get a dedicated, validated bridge.
+	 */
 	return kona_icc_is_crypto_path(desc) ||
 	       kona_icc_is_raw_npu_path(desc) ||
 	       kona_icc_is_storage_path(desc) ||
-	       kona_icc_is_raw_role(desc) ||
+	       desc->role == KONA_ROLE_RAW ||
 	       ((!kona_gpu_raw_icc_enable || kona_gpu_policy_bypass_enable) &&
 		kona_icc_is_gpu_path(desc)) ||
 	       ((!kona_gmu_raw_icc_enable || kona_gmu_policy_bypass_enable) &&
@@ -573,20 +579,22 @@ MODULE_PARM_DESC(kona_sleep_floor_decay_percent,
 		 "Percent of non-display floors kept after screen-off decay (default: 15)");
 
 /*
- * Keep active scaling enabled, but preserve most of the floor so short UX/GPU
- * bursts do not collapse memory BW between frames.
+ * Keep active scaling enabled, but require a modest request before applying the
+ * large per-path floors. Sub-trigger votes still get the tiny global minimum
+ * clamp inside kona_icc_apply_floor(), avoiding both 0-corner QoS collapse and
+ * multi-GB/s DDR votes for housekeeping traffic.
  */
 static bool kona_active_floor_scaling_enable = true;
-static unsigned long kona_active_floor_trigger_kb = 1000000; /* 1.0 GB/s */
+static unsigned long kona_active_floor_trigger_kb = 512000; /* 512 MB/s */
 static unsigned long kona_active_floor_low_kb = 1500000;   /* 1.5 GB/s */
 static unsigned long kona_active_floor_high_kb = 8000000;  /* 8.0 GB/s */
-static unsigned int kona_active_floor_low_percent = 60;
-static unsigned int kona_active_floor_mid_percent = 82;
+static unsigned int kona_active_floor_low_percent = 70;
+static unsigned int kona_active_floor_mid_percent = 85;
 module_param_named(kona_active_floor_scaling_enable, kona_active_floor_scaling_enable, bool, 0644);
 MODULE_PARM_DESC(kona_active_floor_scaling_enable,
 	"Enable display-on workload-aware downscaling of non-display performance floors");
 module_param_named(kona_active_floor_trigger_kb, kona_active_floor_trigger_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_active_floor_trigger_kb, "Minimum non-display request for active floors");
+MODULE_PARM_DESC(kona_active_floor_trigger_kb, "Minimum non-display request for large active floors (default: 512000 KB/s)");
 module_param_named(kona_active_floor_low_kb, kona_active_floor_low_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_active_floor_low_kb,
 	"Display-on request threshold KB/s for low floor scaling bucket");
@@ -595,10 +603,10 @@ MODULE_PARM_DESC(kona_active_floor_high_kb,
 	"Display-on request threshold KB/s for high floor scaling bucket");
 module_param_named(kona_active_floor_low_percent, kona_active_floor_low_percent, uint, 0644);
 MODULE_PARM_DESC(kona_active_floor_low_percent,
-	"Percent of post-path floor kept for low display-on non-display workload votes");
+	"Percent of post-path floor kept for low display-on non-display workload votes (default: 70)");
 module_param_named(kona_active_floor_mid_percent, kona_active_floor_mid_percent, uint, 0644);
 MODULE_PARM_DESC(kona_active_floor_mid_percent,
-	"Percent of post-path floor kept for medium display-on non-display workload votes");
+	"Percent of post-path floor kept for medium display-on non-display workload votes (default: 85)");
 
 static unsigned int kona_gpu_ib_boost_percent = 125;
 static unsigned int kona_gpu_ib_min_ratio_percent = 200;
