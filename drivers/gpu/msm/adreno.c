@@ -933,11 +933,6 @@ static int adreno_identify_gpu(struct adreno_device *adreno_dev)
 		adreno_dev->uche_gmem_base =
 			ALIGN(adreno_dev->gpucore->gmem_size, SZ_1M);
 
-	/*
-	 * Initialize uninitialzed gpu registers, only needs to be done once
-	 * Make all offsets that are not initialized to ADRENO_REG_UNUSED
-	 */
-
 	gpudev = ADRENO_GPU_DEVICE(adreno_dev);
 	reg_offsets = gpudev->reg_offsets;
 
@@ -949,6 +944,24 @@ static int adreno_identify_gpu(struct adreno_device *adreno_dev)
 	/* Do target specific identification */
 	if (gpudev->platform_setup != NULL)
 		gpudev->platform_setup(adreno_dev);
+
+	/*
+	 * Expose the SP local/private generic memory window to userspace.  Mesa
+	 * Turnip and other Vulkan stacks use this KGSL property to compile
+	 * shaders that address shared/private shader-processor memory directly.
+	 * Keep the window after the UCHE-visible GMEM range and 64K aligned so
+	 * it does not overlap GMEM on targets with larger GMEM sizes (kona/A650
+	 * has 1MB+ GMEM).
+	 */
+	adreno_dev->sp_local_gpuaddr =
+		ALIGN(adreno_dev->uche_gmem_base + adreno_dev->gpucore->gmem_size,
+		      SZ_64K);
+	adreno_dev->sp_pvt_gpuaddr = adreno_dev->sp_local_gpuaddr + SZ_64K;
+
+	/*
+	 * Initialize uninitialzed gpu registers, only needs to be done once
+	 * Make all offsets that are not initialized to ADRENO_REG_UNUSED
+	 */
 
 	return 0;
 }
@@ -2730,6 +2743,18 @@ static int adreno_prop_uche_gmem_addr(struct kgsl_device *device,
 		sizeof(adreno_dev->uche_gmem_base));
 }
 
+static int adreno_prop_sp_generic_mem(struct kgsl_device *device,
+				      struct kgsl_device_getproperty *param)
+{
+	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
+	struct kgsl_sp_generic_mem sp_mem = {
+		.local = adreno_dev->sp_local_gpuaddr,
+		.pvt = adreno_dev->sp_pvt_gpuaddr,
+	};
+
+	return copy_prop(param, &sp_mem, sizeof(sp_mem));
+}
+
 static int adreno_prop_ucode_version(struct kgsl_device *device,
 		struct kgsl_device_getproperty *param)
 {
@@ -2801,6 +2826,7 @@ static const struct {
 	{ KGSL_PROP_MMU_ENABLE, adreno_prop_s32 },
 	{ KGSL_PROP_INTERRUPT_WAITS, adreno_prop_s32 },
 	{ KGSL_PROP_UCHE_GMEM_VADDR, adreno_prop_uche_gmem_addr },
+	{ KGSL_PROP_SP_GENERIC_MEM, adreno_prop_sp_generic_mem },
 	{ KGSL_PROP_UCODE_VERSION, adreno_prop_ucode_version },
 	{ KGSL_PROP_HIGHEST_BANK_BIT, adreno_prop_u32 },
 	{ KGSL_PROP_MIN_ACCESS_LENGTH, adreno_prop_u32 },
