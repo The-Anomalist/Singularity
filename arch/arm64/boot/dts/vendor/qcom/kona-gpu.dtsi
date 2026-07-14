@@ -26,11 +26,11 @@
 		 * after the move to ICC voting.
 		 */
 		qcom,icc-no-split-ab-kbps;
-		qcom,icc-boost-percent = <170>;
-		qcom,polling-ms = <5>;
-		qcom,icc-upscale-percent = <300>;
-		qcom,icc-min-avg-kbps = <4218750>;
-		qcom,icc-min-peak-kbps = <16875000>;
+		qcom,icc-boost-percent = <150>;
+		qcom,polling-ms = <8>;
+		qcom,icc-upscale-percent = <240>;
+		qcom,icc-min-avg-kbps = <2812500>;
+		qcom,icc-min-peak-kbps = <11250000>;
 		qcom,src-dst-ports = <26 512>;
 		operating-points-v2 = <&suspendable_ddr_bw_opp_table>;
 	};
@@ -94,6 +94,8 @@
 		qcom,ca-busy-penalty = <9000>;
 		qcom,ca-target-pwrlevel = <1>;
 		qcom,enable-midframe-timer;
+		qcom,wakeup-boost-ms = <50>;
+		qcom,wakeup-boost-pwrlevel = <1>;
 
 		interconnects = <&kona_icc KONA_ICC_GPU_TO_LLCC>,
 				<&kona_icc KONA_ICC_GPU_TO_MEM>,
@@ -242,7 +244,8 @@
 			qcom,gpu-mempool@2 {
 				reg = <2>;
 				qcom,mempool-page-size = <65536>;
-				qcom,mempool-reserved = <384>;
+				qcom,mempool-reserved = <448>;
+				qcom,mempool-allocate;
 			};
 			/* 1M Page Pool configuration */
 			qcom,gpu-mempool@3 {

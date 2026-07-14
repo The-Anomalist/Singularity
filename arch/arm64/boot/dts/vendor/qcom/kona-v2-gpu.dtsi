@@ -70,6 +70,11 @@
 	qcom,enable-ca-jump;
 	qcom,ca-busy-penalty = <9000>;
 	qcom,enable-midframe-timer;
+	qcom,wakeup-boost-ms = <60>;
+	qcom,wakeup-boost-pwrlevel = <4>;
+	qcom,tz-sample-floor = <2500>;
+	qcom,tz-min-busy = <550>;
+	qcom,tz-busy-ceiling = <28000>;
 
 	/* GPU OPP data */
 	operating-points-v2 = <&gpu_opp_table_v2>;
@@ -833,8 +838,15 @@
 };
 
 &gpubw {
+	/*
+	 * V2 bins can sustain higher clocks than base A650, but keep the
+	 * floor below top DDR/LLCC corners so light GPU work and UI
+	 * composition are not pinned at gaming bandwidth all day.
+	 */
 	qcom,icc-no-split-ab-kbps;
-	qcom,icc-boost-percent = <190>;
-	qcom,icc-min-avg-kbps = <4921875>;
-	qcom,icc-min-peak-kbps = <19687500>;
+	qcom,icc-boost-percent = <160>;
+	qcom,polling-ms = <6>;
+	qcom,icc-upscale-percent = <260>;
+	qcom,icc-min-avg-kbps = <3515625>;
+	qcom,icc-min-peak-kbps = <14062500>;
 };
