@@ -568,11 +568,8 @@ static irqreturn_t dsi_display_panel_te_irq_handler(int irq, void *data)
 #endif /* OPLUS_BUG_STABILITY */
 
 #ifdef OPLUS_FEATURE_ADFR
-	if (oplus_adfr_is_support()) {
-		if (te_refcount.te_calculate_enable) {
-			++te_refcount.te_refcount;
-		}
-	}
+	if (oplus_adfr_is_support())
+		oplus_adfr_te_refcount_inc();
 #endif /*OPLUS_FEATURE_ADFR*/
 
 	return IRQ_HANDLED;

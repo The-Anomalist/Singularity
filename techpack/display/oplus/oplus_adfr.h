@@ -87,6 +87,7 @@ ssize_t oplus_get_vsync_switch(struct kobject *obj,
 			       struct kobj_attribute *attr, char *buf);
 int oplus_enable_te_refcount(void *data);
 int oplus_get_te_fps(void *data);
+void oplus_adfr_te_refcount_inc(void);
 
 /* --------------- msm_drv ---------------*/
 int oplus_adfr_thread_create(void *msm_param, void *msm_priv, void *msm_ddev,

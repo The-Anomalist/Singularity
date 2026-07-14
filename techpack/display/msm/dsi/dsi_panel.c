@@ -4986,7 +4986,11 @@ int dsi_panel_get_mode_count(struct dsi_panel *panel)
 		goto error;
 	}
 
-	count = utils->get_child_count(timings_np);
+	count = 0;
+	dsi_for_each_child_node(timings_np, child_np) {
+		if (!utils->read_bool(child_np, "oplus,experimental-disabled"))
+			count++;
+	}
 	if ((!count && !panel->host_config.ext_bridge_mode) ||
 		count > DSI_MODE_MAX) {
 		DSI_ERR("invalid count of timing nodes: %d\n", count);
@@ -5004,6 +5008,9 @@ int dsi_panel_get_mode_count(struct dsi_panel *panel)
 
 	panel->num_timing_nodes = count;
 	dsi_for_each_child_node(timings_np, child_np) {
+		if (utils->read_bool(child_np, "oplus,experimental-disabled"))
+			continue;
+
 		if (utils->read_bool(child_np, "qcom,mdss-dsi-video-mode"))
 			num_video_modes++;
 		else if (utils->read_bool(child_np,
@@ -5247,7 +5254,11 @@ int dsi_panel_get_mode(struct dsi_panel *panel,
 		goto parse_fail;
 	}
 
-	num_timings = utils->get_child_count(timings_np);
+	num_timings = 0;
+	dsi_for_each_child_node(timings_np, child_np) {
+		if (!utils->read_bool(child_np, "oplus,experimental-disabled"))
+			num_timings++;
+	}
 	if (!num_timings || num_timings > DSI_MODE_MAX) {
 		DSI_ERR("invalid count of timing nodes: %d\n", num_timings);
 		rc = -EINVAL;
@@ -5257,6 +5268,9 @@ int dsi_panel_get_mode(struct dsi_panel *panel,
 	utils_data = utils->data;
 
 	dsi_for_each_child_node(timings_np, child_np) {
+		if (utils->read_bool(child_np, "oplus,experimental-disabled"))
+			continue;
+
 		if (index != child_idx++)
 			continue;
 
@@ -6021,6 +6035,12 @@ int dsi_panel_switch(struct dsi_panel *panel)
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_TIMING_SWITCH cmds, rc=%d\n",
 		       panel->name, rc);
+	else if (panel->cur_mode)
+		DSI_INFO("[%s] timing switch: fps=%u bitclk=%llu mdp_xfer=%u us\n",
+			 panel->name, panel->cur_mode->timing.refresh_rate,
+			 (unsigned long long)panel->cur_mode->timing.clk_rate_hz,
+			 panel->cur_mode->priv_info ?
+			 panel->cur_mode->priv_info->mdp_transfer_time_us : 0);
 
 	if (panel->oplus_priv.is_90fps_switch) {
 		dsi_panel_fps_change(panel);

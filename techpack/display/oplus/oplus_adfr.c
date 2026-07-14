@@ -27,6 +27,8 @@
 
 #include <linux/list.h>
 #include <linux/list_sort.h>
+#include <linux/debugfs.h>
+#include <linux/uaccess.h>
 #include <drm/drm_modes.h>
 
 #define OPLUS_ADFR_CONFIG_GLOBAL (1 << 0)
@@ -67,6 +69,8 @@ static u32 oplus_adfr_debug = 0;
 static bool need_deferred_fakeframe = false;
 bool oplus_adfr_compatibility_mode = false;
 struct oplus_te_refcount te_refcount = { 0, 0, 0, 0 };
+static DEFINE_SPINLOCK(oplus_te_refcount_lock);
+static struct dentry *oplus_adfr_debugfs_root;
 
 /* qsync mode minfps */
 bool oplus_adfr_qsync_mode_minfps_updated = false;
@@ -83,6 +87,8 @@ static u64 oplus_adfr_auto_update_counter = 0;
 bool oplus_adfr_need_filter_auto_on_cmd = false;
 
 /* --------------- adfr misc ---------------*/
+
+static void oplus_adfr_debugfs_init(void);
 
 void oplus_adfr_init(void *panel_node)
 {
@@ -116,6 +122,8 @@ void oplus_adfr_init(void *panel_node)
 		oplus_adfr_compatibility_mode = of_property_read_bool(
 			of_node, "oplus,adfr-compatibility-mode");
 	}
+
+	oplus_adfr_debugfs_init();
 
 	inited = true;
 
@@ -179,52 +187,167 @@ inline bool oplus_adfr_is_support(void)
 
 int oplus_enable_te_refcount(void *data)
 {
-	unsigned int *te_enable = (unsigned int *)data;
+	unsigned int te_enable;
+	unsigned long flags;
 	struct dsi_display *display = NULL;
-	DSI_INFO("%s te_enable = %d", __func__, (*te_enable));
 
-	display = get_main_display();
-	if (display == NULL) {
-		pr_err("%s error :NULL display", __func__);
-		return -1;
+	if (!data) {
+		pr_err("%s error: NULL data\n", __func__);
+		return -EINVAL;
 	}
 
-	if ((*te_enable) == 1) {
+	te_enable = *(unsigned int *)data;
+	if (te_enable != 0 && te_enable != 1) {
+		pr_err("%s error: invalid enable value %u\n", __func__, te_enable);
+		return -EINVAL;
+	}
+
+	DSI_INFO("%s te_enable = %u\n", __func__, te_enable);
+
+	display = get_main_display();
+	if (!display) {
+		pr_err("%s error: NULL display\n", __func__);
+		return -ENODEV;
+	}
+
+	spin_lock_irqsave(&oplus_te_refcount_lock, flags);
+	if (te_enable == 1) {
 		te_refcount.te_calculate_enable = true;
 		te_refcount.start_timeline = ktime_get();
+		te_refcount.end_timeline = ktime_set(0, 0);
 		te_refcount.te_refcount = 0;
-	} else if ((*te_enable) == 0) {
+	} else {
 		te_refcount.te_calculate_enable = false;
 		te_refcount.end_timeline = ktime_get();
 	}
+	spin_unlock_irqrestore(&oplus_te_refcount_lock, flags);
 
 	dsi_display_adfr_change_te_irq_status(display,
-					      te_refcount.te_calculate_enable);
+					      te_enable == 1);
 
 	return 0;
 }
 
 int oplus_get_te_fps(void *data)
 {
-	unsigned int *te_fps = (unsigned int *)data;
+	unsigned int *te_fps = data;
+	unsigned long flags;
+	u64 te_count, fps;
+	ktime_t start_timeline, end_timeline;
+	s64 delta_us;
 
-	unsigned long long end_time, start_time;
-
-	end_time = ktime_to_ms(te_refcount.end_timeline);
-	start_time = ktime_to_ms(te_refcount.start_timeline);
-
-	if (end_time < start_time) {
-		pr_err("%s error :out of time", __func__);
+	if (!te_fps) {
+		pr_err("%s error: NULL data\n", __func__);
+		return -EINVAL;
 	}
 
-	(*te_fps) = te_refcount.te_refcount * 1000 / (end_time - start_time);
+	spin_lock_irqsave(&oplus_te_refcount_lock, flags);
+	if (te_refcount.te_calculate_enable) {
+		spin_unlock_irqrestore(&oplus_te_refcount_lock, flags);
+		pr_err("%s error: TE counting still active\n", __func__);
+		return -EBUSY;
+	}
 
-	DSI_INFO(
-		"%s te count = %d, end_time = %lld, start_time = %lld, te fps = %d",
-		__func__, te_refcount.te_refcount, end_time, start_time,
-		(*te_fps));
+	te_count = te_refcount.te_refcount;
+	start_timeline = te_refcount.start_timeline;
+	end_timeline = te_refcount.end_timeline;
+	spin_unlock_irqrestore(&oplus_te_refcount_lock, flags);
+
+	delta_us = ktime_us_delta(end_timeline, start_timeline);
+	if (delta_us <= 0) {
+		pr_err("%s error: invalid measurement window, delta_us=%lld\n",
+		       __func__, delta_us);
+		return -EINVAL;
+	}
+
+	fps = div64_u64(te_count * USEC_PER_SEC, (u64)delta_us);
+	if (fps > UINT_MAX)
+		fps = UINT_MAX;
+
+	*te_fps = (unsigned int)fps;
+
+	DSI_INFO("%s te_count=%llu delta_us=%lld te_fps=%u\n",
+		 __func__, te_count, delta_us, *te_fps);
 
 	return 0;
+}
+
+void oplus_adfr_te_refcount_inc(void)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&oplus_te_refcount_lock, flags);
+	if (te_refcount.te_calculate_enable)
+		te_refcount.te_refcount++;
+	spin_unlock_irqrestore(&oplus_te_refcount_lock, flags);
+}
+
+static ssize_t oplus_te_refcount_enable_write(struct file *file,
+		const char __user *buf, size_t count, loff_t *ppos)
+{
+	char kbuf[16];
+	unsigned int enable;
+	int rc;
+
+	if (count >= sizeof(kbuf))
+		return -EINVAL;
+
+	if (copy_from_user(kbuf, buf, count))
+		return -EFAULT;
+
+	kbuf[count] = '\0';
+	rc = kstrtouint(kbuf, 0, &enable);
+	if (rc)
+		return rc;
+
+	rc = oplus_enable_te_refcount(&enable);
+	return rc ? rc : count;
+}
+
+static ssize_t oplus_te_refcount_fps_read(struct file *file,
+		char __user *buf, size_t count, loff_t *ppos)
+{
+	char kbuf[32];
+	unsigned int fps = 0;
+	int len, rc;
+
+	rc = oplus_get_te_fps(&fps);
+	if (rc)
+		return rc;
+
+	len = scnprintf(kbuf, sizeof(kbuf), "%u\n", fps);
+	return simple_read_from_buffer(buf, count, ppos, kbuf, len);
+}
+
+static const struct file_operations oplus_te_refcount_enable_fops = {
+	.write = oplus_te_refcount_enable_write,
+	.open = simple_open,
+	.llseek = default_llseek,
+};
+
+static const struct file_operations oplus_te_refcount_fps_fops = {
+	.read = oplus_te_refcount_fps_read,
+	.open = simple_open,
+	.llseek = default_llseek,
+};
+
+static void oplus_adfr_debugfs_init(void)
+{
+	if (oplus_adfr_debugfs_root)
+		return;
+
+	oplus_adfr_debugfs_root = debugfs_create_dir("oplus_adfr", NULL);
+	if (IS_ERR_OR_NULL(oplus_adfr_debugfs_root)) {
+		pr_err("%s failed to create debugfs root\n", __func__);
+		oplus_adfr_debugfs_root = NULL;
+		return;
+	}
+
+	debugfs_create_file("te_refcount_enable", 0200,
+			    oplus_adfr_debugfs_root, NULL,
+			    &oplus_te_refcount_enable_fops);
+	debugfs_create_file("te_fps", 0400, oplus_adfr_debugfs_root, NULL,
+			    &oplus_te_refcount_fps_fops);
 }
 
 /* --------------- msm_drv ---------------*/
