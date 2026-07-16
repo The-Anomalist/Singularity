@@ -123,15 +123,19 @@ static void sing_remove_request(struct sing_data *sd, struct request *rq)
 {
 	unsigned int class = sing_class(rq);
 	unsigned int bucket = sing_bucket(rq);
+	bool was_head;
 
 	if (list_empty(&rq->queuelist))
 		return;
 
+	was_head = class == SING_BG_CLASS &&
+		   rq == list_first_entry_or_null(&sd->q[class][bucket],
+						     struct request, queuelist);
 	list_del_init(&rq->queuelist);
 	if (sd->queued[class])
 		sd->queued[class]--;
 
-	if (class == SING_BG_CLASS) {
+	if (class == SING_BG_CLASS && was_head) {
 		if (list_empty(&sd->q[class][bucket]))
 			sd->bg_head_jiffies[bucket] = 0;
 		else

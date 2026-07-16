@@ -35,6 +35,11 @@ struct atlas_telemetry_snapshot {
 	unsigned int npu_bw_kbps;
 	unsigned int npu_thermal_pct;
 	bool display_active;
+	u64 cpu_timestamp_ns;
+	u64 gpu_timestamp_ns;
+	u64 npu_timestamp_ns;
+	u64 mem_timestamp_ns;
+	u64 display_timestamp_ns;
 	u64 timestamp_ns;
 	unsigned int seq;
 };

@@ -330,17 +330,22 @@ static void orion_update_atlas_telemetry(struct devfreq *devfreq,
 
 struct orion_atlas_decision {
 	struct atlas_telemetry_snapshot snap;
+	unsigned int effective_busy_pct;
+	unsigned int predicted_busy_pct;
 	unsigned int cpu_momentum;
 	unsigned int coupled_pressure;
 };
 
 static void orion_begin_atlas_decision(struct devfreq_msm_adreno_tz_data *priv,
 					       unsigned int effective_busy_pct,
+					       unsigned int predicted_busy_pct,
 					       struct orion_atlas_decision *decision)
 {
 	unsigned int cpu_util_pct, coupled_sum;
 
 	atlas_get_snapshot(&decision->snap);
+	decision->effective_busy_pct = effective_busy_pct;
+	decision->predicted_busy_pct = predicted_busy_pct;
 	cpu_util_pct = decision->snap.cpu_util_pct;
 	decision->cpu_momentum = cpu_util_pct > priv->orion_cpu_util_ema ?
 		cpu_util_pct - priv->orion_cpu_util_ema : 0;
@@ -364,7 +369,14 @@ static void orion_apply_atlas_cpu_sync(
 	unsigned int cpu_util_pct = decision->snap.cpu_util_pct;
 	unsigned int cpu_thermal_pct = decision->snap.cpu_thermal_pct;
 	unsigned int cpu_freq_khz = decision->snap.cpu_freq_khz;
-	unsigned int effective_busy_pct = decision->snap.gpu_util_pct;
+	unsigned int effective_busy_pct = decision->effective_busy_pct;
+	unsigned int predicted_busy_pct = decision->predicted_busy_pct;
+	unsigned int mem_pressure_pct = decision->snap.mem_pressure_pct;
+	unsigned int mem_contention_pct = decision->snap.mem_contention_pct;
+	unsigned int mem_reclaim_pct = decision->snap.mem_reclaim_pct;
+	unsigned int mem_swap_pct = decision->snap.mem_swap_pct;
+	unsigned int mem_refault_pct = decision->snap.mem_workingset_refault_pct;
+	unsigned int cpu_momentum = decision->cpu_momentum;
 	unsigned int coupled_pressure = decision->coupled_pressure;
 
 	/*
@@ -412,7 +424,7 @@ static void orion_apply_atlas_cpu_sync(
 
 	/* CPU leading-edge demand plus active GPU work predicts imminent stalls. */
 	if (upthreshold_pct && transition_boost_pct && cpu_thermal_pct < 68 &&
-	    cpu_momentum >= 18 && effective_busy_pct >= 45) {
+	    cpu_momentum >= 18 && predicted_busy_pct >= 45) {
 		*upthreshold_pct = max_t(unsigned int, 50, *upthreshold_pct - 5);
 		*transition_boost_pct = min_t(unsigned int, 100,
 					      *transition_boost_pct + 6);
@@ -447,7 +459,7 @@ static void orion_apply_atlas_cpu_sync(
 		*boost_end = 0;
 	else if (boost_end && priv->orion_boost_enable && priv->orion_boost_ms &&
 		 mem_pressure_pct >= 85 && cpu_thermal_pct < 70 &&
-		 effective_busy_pct >= 55)
+		 predicted_busy_pct >= 55)
 		*boost_end = max_t(unsigned long, *boost_end,
 				   jiffies + msecs_to_jiffies(max_t(u32, 1,
 								    priv->orion_boost_ms / 3)));
@@ -841,7 +853,8 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 						 context_count, refresh_rate);
 	orion_update_atlas_telemetry(devfreq, effective_busy_pct,
 				     stats->current_frequency, context_count);
-	orion_begin_atlas_decision(priv, predicted_busy_pct, &atlas_decision);
+	orion_begin_atlas_decision(priv, effective_busy_pct, predicted_busy_pct,
+				   &atlas_decision);
 	mem_pressure_pct = atlas_decision.snap.mem_pressure_pct;
 	mem_contention_pct = atlas_decision.snap.mem_contention_pct;
 	orion_build_auto_policy(priv, predicted_busy_pct, context_count,

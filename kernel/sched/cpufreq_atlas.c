@@ -108,6 +108,9 @@ struct sugov_policy {
 	unsigned int		fusion_signal_ema;
 	unsigned int		thermal_signal_ema;
 	unsigned int		thermal_rise_ema;
+	int			atlas_cpu_slot;
+	unsigned int		atlas_policy_capacity;
+	u64			atlas_last_publish_ns;
 	bool			has_prime_cpu;
 
 	/* The next fields are only needed if fast switch cannot be used: */
@@ -166,15 +169,24 @@ static struct atlas_telemetry_snapshot atlas_snapshot = {
 	.display_active = true,
 };
 static struct delayed_work atlas_mem_work;
+static atomic_t atlas_active_policies = ATOMIC_INIT(0);
+static bool atlas_mem_work_initialized;
 static unsigned long atlas_mem_prev_pgscan;
 static unsigned long atlas_mem_prev_pswpout;
 static unsigned long atlas_mem_prev_refault;
+static u64 atlas_mem_prev_sample_ns;
+static unsigned int atlas_mem_prev_interval_ms;
+static bool atlas_mem_baseline_valid;
 #define ATLAS_MEM_ACTIVE_MS 32
 #define ATLAS_MEM_IDLE_MS 250
+#define ATLAS_CPU_PUBLISH_NS (6 * NSEC_PER_MSEC)
 
-static void atlas_publish_snapshot(void)
+static void atlas_publish_domain_timestamp(u64 *timestamp)
 {
-	atlas_snapshot.timestamp_ns = ktime_get_ns();
+	u64 now = ktime_get_ns();
+
+	*timestamp = now;
+	atlas_snapshot.timestamp_ns = now;
 	atlas_snapshot.seq++;
 }
 
@@ -187,12 +199,12 @@ static void atlas_recompute_cpu_aggregate(void)
 		struct atlas_cpu_policy_telemetry *cpu = &atlas_snapshot.cpu[i];
 		unsigned int cap;
 
-		if (!cpu->active)
+		if (!READ_ONCE(cpu->active))
 			continue;
 		cap = cpu->capacity ?: 1;
-		max_util = max(max_util, cpu->util_pct);
-		max_thermal = max(max_thermal, cpu->thermal_pct);
-		weighted_freq += (u64)cpu->freq_khz * cap;
+		max_util = max(max_util, READ_ONCE(cpu->util_pct));
+		max_thermal = max(max_thermal, READ_ONCE(cpu->thermal_pct));
+		weighted_freq += (u64)READ_ONCE(cpu->freq_khz) * cap;
 		weight += cap;
 	}
 
@@ -211,6 +223,100 @@ static int atlas_find_cpu_policy_slot(const struct cpumask *cpus)
 	if (atlas_snapshot.nr_cpu_policies >= ATLAS_MAX_CPU_POLICIES)
 		return -ENOSPC;
 	return atlas_snapshot.nr_cpu_policies++;
+}
+
+static unsigned int atlas_policy_capacity(const struct cpumask *cpus)
+{
+	unsigned int cpu, capacity = 1;
+
+	for_each_cpu(cpu, cpus)
+		capacity = max_t(unsigned int, capacity,
+			arch_scale_cpu_capacity(NULL, cpu));
+
+	return capacity;
+}
+
+static int atlas_register_cpu_policy(const struct cpumask *cpus,
+				     unsigned int capacity)
+{
+	int slot;
+
+	if (!cpus)
+		return -EINVAL;
+
+	write_seqlock(&atlas_snapshot_lock);
+	slot = atlas_find_cpu_policy_slot(cpus);
+	if (slot >= 0) {
+		struct atlas_cpu_policy_telemetry *cpu = &atlas_snapshot.cpu[slot];
+
+		cpumask_copy(&cpu->cpus, cpus);
+		WRITE_ONCE(cpu->util_pct, 0);
+		WRITE_ONCE(cpu->freq_khz, 0);
+		WRITE_ONCE(cpu->thermal_pct, 0);
+		cpu->capacity = capacity ?: 1;
+		WRITE_ONCE(cpu->active, true);
+		atlas_recompute_cpu_aggregate();
+		atlas_publish_domain_timestamp(&atlas_snapshot.cpu_timestamp_ns);
+	}
+	write_sequnlock(&atlas_snapshot_lock);
+
+	if (slot >= 0 && atomic_inc_return(&atlas_active_policies) == 1 &&
+	    atlas_mem_work_initialized)
+		mod_delayed_work(system_power_efficient_wq, &atlas_mem_work, 0);
+
+	return slot;
+}
+
+static void atlas_unregister_cpu_policy(int slot)
+{
+	if (slot < 0 || slot >= ATLAS_MAX_CPU_POLICIES)
+		return;
+
+	write_seqlock(&atlas_snapshot_lock);
+	WRITE_ONCE(atlas_snapshot.cpu[slot].active, false);
+	WRITE_ONCE(atlas_snapshot.cpu[slot].util_pct, 0);
+	WRITE_ONCE(atlas_snapshot.cpu[slot].freq_khz, 0);
+	WRITE_ONCE(atlas_snapshot.cpu[slot].thermal_pct, 0);
+	atlas_recompute_cpu_aggregate();
+	atlas_publish_domain_timestamp(&atlas_snapshot.cpu_timestamp_ns);
+	write_sequnlock(&atlas_snapshot_lock);
+
+	if (atomic_dec_and_test(&atlas_active_policies) && atlas_mem_work_initialized) {
+		cancel_delayed_work_sync(&atlas_mem_work);
+		atlas_mem_baseline_valid = false;
+	}
+}
+
+static void atlas_update_cpu_policy_slot(int slot, unsigned int util_pct,
+					 unsigned int freq_khz,
+					 unsigned int thermal_pct)
+{
+	struct atlas_cpu_policy_telemetry *cpu;
+
+	if (slot < 0 || slot >= ATLAS_MAX_CPU_POLICIES)
+		return;
+
+	cpu = &atlas_snapshot.cpu[slot];
+	if (!READ_ONCE(cpu->active))
+		return;
+
+	WRITE_ONCE(cpu->util_pct, min_t(unsigned int, util_pct, 100));
+	WRITE_ONCE(cpu->freq_khz, freq_khz);
+	WRITE_ONCE(cpu->thermal_pct, min_t(unsigned int, thermal_pct, 100));
+}
+
+static void atlas_maybe_publish_cpu_policy(int slot, u64 time, u64 *last_publish)
+{
+	if (slot < 0 || slot >= ATLAS_MAX_CPU_POLICIES)
+		return;
+	if (*last_publish && time - *last_publish < ATLAS_CPU_PUBLISH_NS)
+		return;
+
+	write_seqlock(&atlas_snapshot_lock);
+	atlas_recompute_cpu_aggregate();
+	atlas_publish_domain_timestamp(&atlas_snapshot.cpu_timestamp_ns);
+	write_sequnlock(&atlas_snapshot_lock);
+	*last_publish = time;
 }
 
 void atlas_get_snapshot(struct atlas_telemetry_snapshot *snapshot)
@@ -233,7 +339,7 @@ void atlas_update_gpu_telemetry(unsigned int util_pct, unsigned int freq_khz,
 	atlas_snapshot.gpu_util_pct = min_t(unsigned int, util_pct, 100);
 	atlas_snapshot.gpu_freq_khz = freq_khz;
 	atlas_snapshot.gpu_thermal_pct = min_t(unsigned int, thermal_pct, 100);
-	atlas_publish_snapshot();
+	atlas_publish_domain_timestamp(&atlas_snapshot.gpu_timestamp_ns);
 	write_sequnlock(&atlas_snapshot_lock);
 }
 EXPORT_SYMBOL_GPL(atlas_update_gpu_telemetry);
@@ -257,7 +363,7 @@ void atlas_update_npu_telemetry(unsigned int util_pct, unsigned int bw_kbps,
 	atlas_snapshot.npu_util_pct = min_t(unsigned int, util_pct, 100);
 	atlas_snapshot.npu_bw_kbps = bw_kbps;
 	atlas_snapshot.npu_thermal_pct = min_t(unsigned int, thermal_pct, 100);
-	atlas_publish_snapshot();
+	atlas_publish_domain_timestamp(&atlas_snapshot.npu_timestamp_ns);
 	write_sequnlock(&atlas_snapshot_lock);
 }
 EXPORT_SYMBOL_GPL(atlas_update_npu_telemetry);
@@ -296,7 +402,7 @@ void atlas_update_cpu_policy_telemetry(const struct cpumask *cpus,
 		cpu->capacity = capacity;
 		cpu->active = true;
 		atlas_recompute_cpu_aggregate();
-		atlas_publish_snapshot();
+		atlas_publish_domain_timestamp(&atlas_snapshot.cpu_timestamp_ns);
 	}
 	write_sequnlock(&atlas_snapshot_lock);
 }
@@ -306,10 +412,12 @@ void atlas_update_cpu_telemetry(unsigned int util_pct, unsigned int freq_khz,
 				unsigned int thermal_pct)
 {
 	write_seqlock(&atlas_snapshot_lock);
-	atlas_snapshot.cpu_util_pct = min_t(unsigned int, util_pct, 100);
-	atlas_snapshot.cpu_freq_khz = freq_khz;
-	atlas_snapshot.cpu_thermal_pct = min_t(unsigned int, thermal_pct, 100);
-	atlas_publish_snapshot();
+	if (!atomic_read(&atlas_active_policies)) {
+		atlas_snapshot.cpu_util_pct = min_t(unsigned int, util_pct, 100);
+		atlas_snapshot.cpu_freq_khz = freq_khz;
+		atlas_snapshot.cpu_thermal_pct = min_t(unsigned int, thermal_pct, 100);
+		atlas_publish_domain_timestamp(&atlas_snapshot.cpu_timestamp_ns);
+	}
 	write_sequnlock(&atlas_snapshot_lock);
 }
 EXPORT_SYMBOL_GPL(atlas_update_cpu_telemetry);
@@ -332,7 +440,7 @@ void atlas_update_mem_telemetry(unsigned int pressure_pct,
 	write_seqlock(&atlas_snapshot_lock);
 	atlas_snapshot.mem_pressure_pct = min_t(unsigned int, pressure_pct, 100);
 	atlas_snapshot.mem_contention_pct = min_t(unsigned int, contention_pct, 100);
-	atlas_publish_snapshot();
+	atlas_publish_domain_timestamp(&atlas_snapshot.mem_timestamp_ns);
 	write_sequnlock(&atlas_snapshot_lock);
 }
 EXPORT_SYMBOL_GPL(atlas_update_mem_telemetry);
@@ -355,7 +463,7 @@ void atlas_update_mem_stats(unsigned int reclaim_pct, unsigned int swap_pct,
 	atlas_snapshot.mem_reclaim_pct = min_t(unsigned int, reclaim_pct, 100);
 	atlas_snapshot.mem_swap_pct = min_t(unsigned int, swap_pct, 100);
 	atlas_snapshot.mem_workingset_refault_pct = min_t(unsigned int, workingset_refault_pct, 100);
-	atlas_publish_snapshot();
+	atlas_publish_domain_timestamp(&atlas_snapshot.mem_timestamp_ns);
 	write_sequnlock(&atlas_snapshot_lock);
 }
 EXPORT_SYMBOL_GPL(atlas_update_mem_stats);
@@ -376,9 +484,10 @@ void atlas_update_display_state(bool active)
 {
 	write_seqlock(&atlas_snapshot_lock);
 	atlas_snapshot.display_active = active;
-	atlas_publish_snapshot();
+	atlas_publish_domain_timestamp(&atlas_snapshot.display_timestamp_ns);
 	write_sequnlock(&atlas_snapshot_lock);
-	mod_delayed_work(system_power_efficient_wq, &atlas_mem_work, 0);
+	if (atlas_mem_work_initialized && atomic_read(&atlas_active_policies))
+		mod_delayed_work(system_power_efficient_wq, &atlas_mem_work, 0);
 }
 EXPORT_SYMBOL_GPL(atlas_update_display_state);
 
@@ -391,13 +500,32 @@ bool atlas_display_state_active(void)
 }
 EXPORT_SYMBOL_GPL(atlas_display_state_active);
 
+static unsigned int atlas_delta_pct(unsigned long now, unsigned long prev,
+					 unsigned int shift, u64 elapsed_ns)
+{
+	u64 delta;
+
+	if (now <= prev || !elapsed_ns)
+		return 0;
+
+	delta = now - prev;
+	delta = div64_u64(delta * ATLAS_MEM_ACTIVE_MS * NSEC_PER_MSEC,
+			elapsed_ns);
+	return min_t(unsigned int, 100, delta >> shift);
+}
+
 static void atlas_mem_sample_work(struct work_struct *work)
 {
 	long mem_total = totalram_pages, mem_avail;
 	unsigned long pgscan_now, pswpout_now, refault_now;
 	unsigned long vm_events[NR_VM_EVENT_ITEMS] = { 0 };
 	unsigned int pressure, contention, reclaim, swap, refault;
+	unsigned int interval_ms;
 	bool active;
+	u64 now, elapsed_ns;
+
+	if (!atomic_read(&atlas_active_policies))
+		return;
 
 	mem_avail = si_mem_available();
 	pressure = (!mem_total || mem_avail >= mem_total) ? 0 :
@@ -407,32 +535,45 @@ static void atlas_mem_sample_work(struct work_struct *work)
 	all_vm_events(vm_events);
 	pswpout_now = vm_events[PSWPOUT];
 	refault_now = global_node_page_state(WORKINGSET_REFAULT);
-	reclaim = min_t(unsigned int, 100,
-		(pgscan_now > atlas_mem_prev_pgscan) ?
-		(pgscan_now - atlas_mem_prev_pgscan) >> 7 : 0);
-	swap = min_t(unsigned int, 100,
-		(pswpout_now > atlas_mem_prev_pswpout) ?
-		(pswpout_now - atlas_mem_prev_pswpout) >> 4 : 0);
-	refault = min_t(unsigned int, 100,
-		(refault_now > atlas_mem_prev_refault) ?
-		(refault_now - atlas_mem_prev_refault) >> 5 : 0);
+	now = ktime_get_ns();
+
+	write_seqlock(&atlas_snapshot_lock);
+	active = atlas_snapshot.display_active;
+	interval_ms = active ? ATLAS_MEM_ACTIVE_MS : ATLAS_MEM_IDLE_MS;
+	if (!atlas_mem_baseline_valid ||
+	    atlas_mem_prev_interval_ms != interval_ms) {
+		reclaim = 0;
+		swap = 0;
+		refault = 0;
+		atlas_mem_baseline_valid = true;
+	} else {
+		elapsed_ns = now - atlas_mem_prev_sample_ns;
+		reclaim = atlas_delta_pct(pgscan_now, atlas_mem_prev_pgscan, 7,
+					 elapsed_ns);
+		swap = atlas_delta_pct(pswpout_now, atlas_mem_prev_pswpout, 4,
+				      elapsed_ns);
+		refault = atlas_delta_pct(refault_now, atlas_mem_prev_refault, 5,
+					 elapsed_ns);
+	}
 	atlas_mem_prev_pgscan = pgscan_now;
 	atlas_mem_prev_pswpout = pswpout_now;
 	atlas_mem_prev_refault = refault_now;
-	contention = max3(pressure, reclaim, max(swap, refault));
-
-	write_seqlock(&atlas_snapshot_lock);
+	atlas_mem_prev_sample_ns = now;
+	atlas_mem_prev_interval_ms = interval_ms;
+	contention = min_t(unsigned int, 100,
+		((atlas_snapshot.cpu_util_pct + atlas_snapshot.gpu_util_pct) / 2) +
+		(atlas_snapshot.gpu_util_pct >= 50 ? 10 : 0));
 	atlas_snapshot.mem_pressure_pct = pressure;
 	atlas_snapshot.mem_contention_pct = contention;
 	atlas_snapshot.mem_reclaim_pct = reclaim;
 	atlas_snapshot.mem_swap_pct = swap;
 	atlas_snapshot.mem_workingset_refault_pct = refault;
-	atlas_publish_snapshot();
-	active = atlas_snapshot.display_active;
+	atlas_publish_domain_timestamp(&atlas_snapshot.mem_timestamp_ns);
 	write_sequnlock(&atlas_snapshot_lock);
 
-	queue_delayed_work(system_power_efficient_wq, &atlas_mem_work,
-		msecs_to_jiffies(active ? ATLAS_MEM_ACTIVE_MS : ATLAS_MEM_IDLE_MS));
+	if (atomic_read(&atlas_active_policies))
+		queue_delayed_work(system_power_efficient_wq, &atlas_mem_work,
+			msecs_to_jiffies(interval_ms));
 }
 
 static unsigned int atlas_cpu_thermal_pct_for_cpu(int cpu)
@@ -1313,7 +1454,8 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	if (!auto_cfg->auto_boost || !max)
 		return;
 
-	if (!atlas_display_state_active()) {
+	atlas_get_snapshot(&snap);
+	if (!snap.display_active) {
 		sugov_clear_display_off_boosts(sg_policy);
 		return;
 	}
@@ -1327,7 +1469,6 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	util_pct = mult_frac(*util, 100, max);
 	cpu_signal = util_pct;
 	gpu_signal = transition ? 100 : 0;
-	atlas_get_snapshot(&snap);
 	gpu_util_pct = snap.gpu_util_pct;
 	gpu_freq_khz = snap.gpu_freq_khz;
 	gpu_thermal_pct = snap.gpu_thermal_pct;
@@ -1338,8 +1479,10 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 	cpu_freq_khz = sg_policy->policy->cur;
 	cpu_thermal_pct =
 		atlas_cpu_thermal_pct_for_cpu(cpumask_first(sg_policy->policy->cpus));
-	atlas_update_cpu_policy_telemetry(sg_policy->policy->cpus, util_pct,
-		cpu_freq_khz, cpu_thermal_pct, sg_policy->avg_cap ?: max);
+	atlas_update_cpu_policy_slot(sg_policy->atlas_cpu_slot, util_pct,
+		cpu_freq_khz, cpu_thermal_pct);
+	atlas_maybe_publish_cpu_policy(sg_policy->atlas_cpu_slot, time,
+		&sg_policy->atlas_last_publish_ns);
 	shared_mem_contention_pct = snap.mem_contention_pct;
 	mem_signal = snap.mem_pressure_pct;
 	reclaim_signal = snap.mem_reclaim_pct;
@@ -2605,6 +2748,7 @@ static struct sugov_policy *sugov_policy_alloc(struct cpufreq_policy *policy)
 		return NULL;
 
 	sg_policy->policy = policy;
+	sg_policy->atlas_cpu_slot = -1;
 	raw_spin_lock_init(&sg_policy->update_lock);
 	return sg_policy;
 }
@@ -2931,6 +3075,10 @@ static int sugov_start(struct cpufreq_policy *policy)
 	sg_policy->fusion_signal_ema		= 0;
 	sg_policy->thermal_signal_ema		= 0;
 	sg_policy->thermal_rise_ema		= 0;
+	sg_policy->atlas_policy_capacity	= atlas_policy_capacity(policy->cpus);
+	sg_policy->atlas_last_publish_ns	= 0;
+	sg_policy->atlas_cpu_slot		= atlas_register_cpu_policy(policy->cpus,
+							 sg_policy->atlas_policy_capacity);
 	sg_policy->has_prime_cpu		= sugov_policy_has_prime_cpu(sg_policy);
 #ifdef OPLUS_FEATURE_POWER_CPUFREQ
 	sg_policy->hispeed_validate_time	= 0;
@@ -2972,6 +3120,8 @@ static void sugov_stop(struct cpufreq_policy *policy)
 		cpufreq_remove_update_util_hook(cpu);
 
 	synchronize_sched();
+	atlas_unregister_cpu_policy(sg_policy->atlas_cpu_slot);
+	sg_policy->atlas_cpu_slot = -1;
 
 	if (!policy->fast_switch_enabled) {
 		irq_work_sync(&sg_policy->irq_work);
@@ -3052,8 +3202,15 @@ static struct cpufreq_governor atlas_gov = {
 
 static int __init sugov_register(void)
 {
+	int ret;
+
 	INIT_DELAYED_WORK(&atlas_mem_work, atlas_mem_sample_work);
-	queue_delayed_work(system_power_efficient_wq, &atlas_mem_work, 0);
-	return cpufreq_register_governor(&atlas_gov);
+	atlas_mem_work_initialized = true;
+	ret = cpufreq_register_governor(&atlas_gov);
+	if (ret) {
+		atlas_mem_work_initialized = false;
+		cancel_delayed_work_sync(&atlas_mem_work);
+	}
+	return ret;
 }
 fs_initcall(sugov_register);
