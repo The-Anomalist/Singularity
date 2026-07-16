@@ -89,6 +89,9 @@ struct devfreq_msm_adreno_tz_data {
 	u32 orion_predicted_busy_pct;
 	s32 orion_busy_trend_pct;
 	u32 orion_last_busy_pct;
+	u32 orion_cpu_util_ema;
+	u32 orion_cpu_momentum;
+	u32 orion_coupled_pressure;
 };
 
 struct msm_adreno_extended_profile {

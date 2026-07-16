@@ -323,108 +323,49 @@ static void orion_update_atlas_telemetry(struct devfreq *devfreq,
 					 unsigned long current_freq,
 					 unsigned int context_count)
 {
-	unsigned long max_freq;
-	unsigned int thermal_pct = 0;
-	long mem_total, mem_avail;
-	unsigned int mem_pressure_pct, mem_contention_pct;
-	unsigned int reclaim_pct, swap_pct, refault_pct;
-	static unsigned long prev_pgscan;
-	static unsigned long prev_pswpout;
-	static unsigned long prev_refault;
-	static unsigned long next_mem_sample;
-	unsigned long pgscan_now, pswpout_now, refault_now;
-
-	if (!devfreq || !devfreq->profile || !devfreq->profile->freq_table)
-		return;
-
-	max_freq = devfreq->profile->freq_table[0];
-	if (!max_freq)
-		return;
-
-	/*
-	 * We infer thermal pressure from sustained high load at reduced clocks,
-	 * which tracks throttling behavior without requiring thermal hooks.
-	 */
-	if (busy_pct >= 70 && current_freq < max_freq)
-		thermal_pct = 100 - mult_frac(current_freq, 100, max_freq);
-
+	/* GPU thermal pressure is reported only from real constraints. */
 	atlas_update_gpu_telemetry(min_t(unsigned int, busy_pct, 100),
-				   (unsigned int)(current_freq / 1000),
-				   thermal_pct);
+				   (unsigned int)(current_freq / 1000), 0);
+}
 
-	/*
-	 * Keep the cheap GPU feed per sample, but avoid walking VM counters on
-	 * every devfreq poll. Those counters are global and comparatively costly
-	 * in this hot path; a 20ms cadence is enough for Atlas policy decisions
-	 * while avoiding avoidable scheduler/devfreq overhead.
-	 */
-	if (time_before(jiffies, READ_ONCE(next_mem_sample)))
-		return;
-	WRITE_ONCE(next_mem_sample,
-		   jiffies + msecs_to_jiffies(ORION_ATLAS_MEM_SAMPLE_MS));
+struct orion_atlas_decision {
+	struct atlas_telemetry_snapshot snap;
+	unsigned int cpu_momentum;
+	unsigned int coupled_pressure;
+};
 
-	mem_total = totalram_pages;
-	mem_avail = si_mem_available();
-	mem_pressure_pct = (!mem_total || mem_avail >= mem_total) ? 0 :
-		100 - mult_frac(mem_avail, 100, mem_total);
+static void orion_begin_atlas_decision(struct devfreq_msm_adreno_tz_data *priv,
+					       unsigned int effective_busy_pct,
+					       struct orion_atlas_decision *decision)
+{
+	unsigned int cpu_util_pct, coupled_sum;
 
-	mem_contention_pct = busy_pct;
-	if (context_count >= 2)
-		mem_contention_pct = min_t(unsigned int, 100,
-					   mem_contention_pct + 10);
-	if (busy_pct >= 75 && current_freq < mult_frac(max_freq, 80, 100))
-		mem_contention_pct = min_t(unsigned int, 100,
-					   mem_contention_pct + 12);
-
-	atlas_update_mem_telemetry(mem_pressure_pct, mem_contention_pct);
-	pgscan_now = global_node_page_state(NR_VMSCAN_WRITE) +
-		     global_node_page_state(NR_VMSCAN_IMMEDIATE);
-	{
-		unsigned long vm_events[NR_VM_EVENT_ITEMS] = { 0 };
-
-		all_vm_events(vm_events);
-		pswpout_now = vm_events[PSWPOUT];
-	}
-	refault_now = global_node_page_state(WORKINGSET_REFAULT);
-	reclaim_pct = min_t(unsigned int, 100,
-			    (pgscan_now > prev_pgscan) ?
-			    (pgscan_now - prev_pgscan) >> 7 : 0);
-	swap_pct = min_t(unsigned int, 100,
-			 (pswpout_now > prev_pswpout) ?
-			 (pswpout_now - prev_pswpout) >> 4 : 0);
-	refault_pct = min_t(unsigned int, 100,
-			    (refault_now > prev_refault) ?
-			    (refault_now - prev_refault) >> 5 : 0);
-	prev_pgscan = pgscan_now;
-	prev_pswpout = pswpout_now;
-	prev_refault = refault_now;
-	atlas_update_mem_stats(reclaim_pct, swap_pct, refault_pct);
+	atlas_get_snapshot(&decision->snap);
+	cpu_util_pct = decision->snap.cpu_util_pct;
+	decision->cpu_momentum = cpu_util_pct > priv->orion_cpu_util_ema ?
+		cpu_util_pct - priv->orion_cpu_util_ema : 0;
+	priv->orion_cpu_util_ema = ((priv->orion_cpu_util_ema * 7) +
+		cpu_util_pct) >> 3;
+	coupled_sum = cpu_util_pct * 3 + effective_busy_pct * 3 +
+		decision->snap.mem_contention_pct + decision->cpu_momentum * 2;
+	decision->coupled_pressure = min_t(unsigned int, 100, coupled_sum / 9);
+	priv->orion_cpu_momentum = decision->cpu_momentum;
+	priv->orion_coupled_pressure = decision->coupled_pressure;
 }
 
 static void orion_apply_atlas_cpu_sync(
 	struct devfreq_msm_adreno_tz_data *priv,
+	const struct orion_atlas_decision *decision,
 	unsigned int *upthreshold_pct,
 	unsigned int *downthreshold_pct,
 	unsigned int *transition_boost_pct,
-	unsigned long *boost_end,
-	unsigned int effective_busy_pct)
+	unsigned long *boost_end)
 {
-	unsigned int cpu_util_pct = 0, cpu_freq_khz = 0, cpu_thermal_pct = 0;
-	unsigned int mem_pressure_pct = 0, mem_contention_pct = 0;
-	unsigned int mem_reclaim_pct = 0, mem_swap_pct = 0, mem_refault_pct = 0;
-	static unsigned int cpu_util_ema;
-	unsigned int cpu_momentum, coupled_pressure, coupled_sum;
-
-	atlas_get_cpu_telemetry(&cpu_util_pct, &cpu_freq_khz, &cpu_thermal_pct);
-	atlas_get_mem_telemetry(&mem_pressure_pct, &mem_contention_pct);
-	atlas_get_mem_stats(&mem_reclaim_pct, &mem_swap_pct, &mem_refault_pct);
-
-	cpu_momentum = cpu_util_pct > cpu_util_ema ?
-		cpu_util_pct - cpu_util_ema : 0;
-	cpu_util_ema = ((cpu_util_ema * 7) + cpu_util_pct) >> 3;
-	coupled_sum = cpu_util_pct * 3 + effective_busy_pct * 3 +
-		mem_contention_pct + cpu_momentum * 2;
-	coupled_pressure = min_t(unsigned int, 100, coupled_sum / 9);
+	unsigned int cpu_util_pct = decision->snap.cpu_util_pct;
+	unsigned int cpu_thermal_pct = decision->snap.cpu_thermal_pct;
+	unsigned int cpu_freq_khz = decision->snap.cpu_freq_khz;
+	unsigned int effective_busy_pct = decision->snap.gpu_util_pct;
+	unsigned int coupled_pressure = decision->coupled_pressure;
 
 	/*
 	 * Atlas can ask Orion to be more eager during CPU-heavy bursts while
@@ -782,6 +723,7 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	unsigned int refresh_rate = dsi_panel_get_refresh_rate();
 	unsigned long block_until;
 	bool force_max_perf = false;
+	struct orion_atlas_decision atlas_decision;
 
 	/* keeps stats.private_data == NULL   */
 	result = devfreq_update_stats(devfreq);
@@ -872,10 +814,7 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 				100);
 		if (adjusted_busy > (u64)priv->bin.total_time)
 			adjusted_busy = (u64)priv->bin.total_time;
-		if (refresh_rate > 60)
-			scm_data[2] = adjusted_busy * refresh_rate / 60;
-		else
-			scm_data[2] = adjusted_busy;
+		scm_data[2] = adjusted_busy;
 		scm_data[3] = context_count;
 		__secure_tz_update_entry3(scm_data, sizeof(scm_data),
 					&val, sizeof(val), priv);
@@ -902,18 +841,23 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 						 context_count, refresh_rate);
 	orion_update_atlas_telemetry(devfreq, effective_busy_pct,
 				     stats->current_frequency, context_count);
-	atlas_get_mem_telemetry(&mem_pressure_pct, &mem_contention_pct);
+	orion_begin_atlas_decision(priv, predicted_busy_pct, &atlas_decision);
+	mem_pressure_pct = atlas_decision.snap.mem_pressure_pct;
+	mem_contention_pct = atlas_decision.snap.mem_contention_pct;
 	orion_build_auto_policy(priv, predicted_busy_pct, context_count,
 				mem_pressure_pct, mem_contention_pct,
 				&upthreshold_pct, &downthreshold_pct,
 				&transition_boost_pct, &hispeed_load,
 				&boost_ms, &force_max_perf);
-	orion_apply_atlas_cpu_sync(priv, &upthreshold_pct, &downthreshold_pct,
-				   &transition_boost_pct, NULL,
-				   predicted_busy_pct);
-	atlas_get_npu_telemetry(&npu_util_pct, NULL, &npu_thermal_pct);
-	atlas_get_cpu_telemetry(&cpu_util_pct, NULL, &cpu_thermal_pct);
-	atlas_get_mem_stats(&mem_reclaim_pct, &mem_swap_pct, &mem_refault_pct);
+	orion_apply_atlas_cpu_sync(priv, &atlas_decision, &upthreshold_pct,
+				   &downthreshold_pct, &transition_boost_pct, NULL);
+	npu_util_pct = atlas_decision.snap.npu_util_pct;
+	npu_thermal_pct = atlas_decision.snap.npu_thermal_pct;
+	cpu_util_pct = atlas_decision.snap.cpu_util_pct;
+	cpu_thermal_pct = atlas_decision.snap.cpu_thermal_pct;
+	mem_reclaim_pct = atlas_decision.snap.mem_reclaim_pct;
+	mem_swap_pct = atlas_decision.snap.mem_swap_pct;
+	mem_refault_pct = atlas_decision.snap.mem_workingset_refault_pct;
 	if (npu_util_pct >= 60 && predicted_busy_pct < 50) {
 		upthreshold_pct = min_t(unsigned int, 100, upthreshold_pct + 5);
 		downthreshold_pct = min_t(unsigned int, 50, downthreshold_pct + 3);
@@ -989,8 +933,8 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 
 		spin_lock(&boost_lock);
 		boost_end = priv->orion_boost_end;
-		orion_apply_atlas_cpu_sync(priv, NULL, NULL, NULL,
-					   &boost_end, predicted_busy_pct);
+		orion_apply_atlas_cpu_sync(priv, &atlas_decision, NULL, NULL, NULL,
+					   &boost_end);
 		priv->orion_boost_end = boost_end;
 		spin_unlock(&boost_lock);
 

@@ -131,8 +131,12 @@ static void sing_remove_request(struct sing_data *sd, struct request *rq)
 	if (sd->queued[class])
 		sd->queued[class]--;
 
-	if (class == SING_BG_CLASS && list_empty(&sd->q[class][bucket]))
-		sd->bg_head_jiffies[bucket] = 0;
+	if (class == SING_BG_CLASS) {
+		if (list_empty(&sd->q[class][bucket]))
+			sd->bg_head_jiffies[bucket] = 0;
+		else
+			sd->bg_head_jiffies[bucket] = jiffies;
+	}
 }
 
 static void sing_merged_requests(struct request_queue *q, struct request *rq,
