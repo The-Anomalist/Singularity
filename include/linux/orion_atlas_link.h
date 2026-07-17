@@ -3,17 +3,37 @@
 #define _LINUX_ORION_ATLAS_LINK_H
 
 #include <linux/types.h>
-#include <linux/cpumask.h>
 #include <linux/string.h>
 
 #define ATLAS_MAX_CPU_POLICIES 8
 
+struct cpumask;
+
+enum atlas_orion_bottleneck {
+	AO_BOTTLENECK_IDLE,
+	AO_BOTTLENECK_CPU_FEED,
+	AO_BOTTLENECK_GPU_COMPUTE,
+	AO_BOTTLENECK_GPU_MEMORY,
+	AO_BOTTLENECK_SYNC_BLOCKED,
+	AO_BOTTLENECK_THERMAL_LIMITED,
+};
+
+struct atlas_orion_frame_contract {
+	u32 refresh_rate, frame_budget_us, queue_age_us, service_time_us;
+	s32 frame_slack_us;
+	u16 queued, inflight;
+	u8 api, gpu_busy_pct, ram_wait_pct, confidence;
+	s16 submit_cpu;
+	enum atlas_orion_bottleneck bottleneck;
+};
+
+/* Compact published data only. CPU masks remain producer-side metadata. */
 struct atlas_cpu_policy_telemetry {
-	cpumask_t cpus;
-	unsigned int util_pct;
-	unsigned int freq_khz;
-	unsigned int thermal_pct;
-	unsigned int capacity;
+	u16 util_pct;
+	u16 thermal_pct;
+	u32 freq_khz;
+	u32 capacity;
+	u64 timestamp_ns;
 	bool active;
 };
 

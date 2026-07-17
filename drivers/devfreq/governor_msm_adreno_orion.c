@@ -20,6 +20,8 @@
 #include <soc/qcom/qtee_shmbridge.h>
 #include <linux/of_platform.h>
 #include <linux/orion_atlas_link.h>
+#include "../gpu/msm/kgsl_pwrscale.h"
+#include "../gpu/msm/kgsl_device.h"
 #include "governor.h"
 
 static DEFINE_SPINLOCK(tz_lock);
@@ -317,6 +319,53 @@ void compute_work_load(struct devfreq_dev_status *stats,
 	spin_unlock(&sample_lock);
 }
 
+
+static void orion_build_frame_contract(struct devfreq *devfreq,
+	unsigned int refresh_rate, unsigned int busy_pct,
+	struct atlas_orion_frame_contract *frame)
+{
+	struct kgsl_device *device = dev_get_drvdata(devfreq->dev.parent);
+	struct kgsl_pipeline_snapshot pipe = { };
+	u64 now = ktime_get_ns(), age_ns = 0, remaining_ns;
+
+	memset(frame, 0, sizeof(*frame));
+	frame->submit_cpu = -1;
+	if (!device)
+		return;
+	kgsl_pwrscale_get_pipeline_snapshot(device, &pipe);
+	/* A stale producer is explicitly not graphics demand. */
+	if (!pipe.timestamp_ns || now < pipe.timestamp_ns ||
+		now - pipe.timestamp_ns > 50 * NSEC_PER_MSEC)
+		return;
+	frame->refresh_rate = clamp_t(unsigned int, refresh_rate, 1, 240);
+	frame->frame_budget_us = div_u64(1000000ULL, frame->refresh_rate);
+	if (pipe.last_submit_ns && now >= pipe.last_submit_ns)
+		age_ns = now - pipe.last_submit_ns;
+	frame->queue_age_us = min_t(u64, U32_MAX, div_u64(age_ns, NSEC_PER_USEC));
+	frame->service_time_us = min_t(u64, U32_MAX,
+		div_u64(pipe.service_time_ema_ns, NSEC_PER_USEC));
+	remaining_ns = pipe.service_time_ema_ns > age_ns ?
+		pipe.service_time_ema_ns - age_ns : 0;
+	frame->frame_slack_us = (s32)frame->frame_budget_us -
+		(s32)min_t(u64, INT_MAX, div_u64(age_ns + remaining_ns, NSEC_PER_USEC));
+	frame->queued = pipe.queued_commands;
+	frame->inflight = pipe.inflight_commands;
+	frame->api = pipe.dominant_api;
+	frame->gpu_busy_pct = busy_pct;
+	frame->ram_wait_pct = pipe.ram_wait_pct;
+	frame->submit_cpu = pipe.submit_cpu;
+	frame->confidence = pipe.submit_seq ? 80 : 0;
+	if (!pipe.queued_commands && !pipe.inflight_commands)
+		frame->bottleneck = AO_BOTTLENECK_IDLE;
+	else if (pipe.ram_wait_pct >= 35)
+		frame->bottleneck = AO_BOTTLENECK_GPU_MEMORY;
+	else if (busy_pct >= 70)
+		frame->bottleneck = AO_BOTTLENECK_GPU_COMPUTE;
+	else if (pipe.queued_commands <= 1 && pipe.inflight_commands == 0)
+		frame->bottleneck = AO_BOTTLENECK_CPU_FEED;
+	else
+		frame->bottleneck = AO_BOTTLENECK_SYNC_BLOCKED;
+}
 
 static void orion_update_atlas_telemetry(struct devfreq *devfreq,
 					 unsigned int busy_pct,
@@ -736,6 +785,7 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	unsigned long block_until;
 	bool force_max_perf = false;
 	struct orion_atlas_decision atlas_decision;
+	struct atlas_orion_frame_contract frame;
 
 	/* keeps stats.private_data == NULL   */
 	result = devfreq_update_stats(devfreq);
@@ -819,13 +869,9 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	} else {
 		scm_data[0] = level;
 		scm_data[1] = priv->bin.total_time;
-		adjusted_busy = (u64)priv->bin.busy_time;
-		if (priv->orion_aggressiveness)
-			adjusted_busy = div64_u64(
-				adjusted_busy * priv->orion_aggressiveness,
-				100);
-		if (adjusted_busy > (u64)priv->bin.total_time)
-			adjusted_busy = (u64)priv->bin.total_time;
+		/* Firmware receives measured utilization; local policy owns deadlines. */
+		adjusted_busy = min_t(u64, priv->bin.busy_time,
+				      priv->bin.total_time);
 		scm_data[2] = adjusted_busy;
 		scm_data[3] = context_count;
 		__secure_tz_update_entry3(scm_data, sizeof(scm_data),
@@ -853,6 +899,7 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 						 context_count, refresh_rate);
 	orion_update_atlas_telemetry(devfreq, effective_busy_pct,
 				     stats->current_frequency, context_count);
+	orion_build_frame_contract(devfreq, refresh_rate, effective_busy_pct, &frame);
 	orion_begin_atlas_decision(priv, effective_busy_pct, predicted_busy_pct,
 				   &atlas_decision);
 	mem_pressure_pct = atlas_decision.snap.mem_pressure_pct;
@@ -981,10 +1028,18 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	}
 
 	level = orion_apply_top_freq_guard(priv, devfreq, level,
-					   max(effective_busy_pct,
-					       predicted_busy_pct),
+					   max(effective_busy_pct, predicted_busy_pct),
 					   context_count, cpu_thermal_pct,
 					   npu_thermal_pct, mem_pressure_pct);
+	/* A single Vulkan queue can qualify, but only with fresh deadline risk. */
+	if (frame.confidence && frame.api == KGSL_PIPELINE_API_VK &&
+	    frame.bottleneck == AO_BOTTLENECK_GPU_COMPUTE &&
+	    (frame.inflight || frame.queued > 1 || frame.frame_slack_us <= 0))
+		level = 0;
+	/* Memory stalls are a bus-governor concern; avoid false core maxing. */
+	if (frame.confidence && frame.bottleneck == AO_BOTTLENECK_GPU_MEMORY &&
+	    val < 0 && frame.frame_slack_us > 0)
+		level = max(level, 1);
 
 	*freq = devfreq->profile->freq_table[level];
 	return 0;

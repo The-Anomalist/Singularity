@@ -1300,6 +1300,8 @@ static void _queue_drawobj(struct adreno_context *drawctxt,
 	drawctxt->drawqueue_tail = (drawctxt->drawqueue_tail + 1) %
 			ADRENO_CONTEXT_DRAWQUEUE_SIZE;
 	drawctxt->queued++;
+	kgsl_pwrscale_pipeline_submit(drawctxt->base.device,
+		&drawctxt->base, drawobj->flags, drawctxt->queued);
 	trace_adreno_cmdbatch_queued(drawobj, drawctxt->queued);
 }
 
@@ -2488,6 +2490,7 @@ static int adreno_dispatch_retire_drawqueue(struct adreno_device *adreno_dev,
 
 		dispatcher->inflight--;
 		drawqueue->inflight--;
+		kgsl_pwrscale_pipeline_retire(device, dispatcher->inflight);
 
 		drawqueue->cmd_q[drawqueue->head] = NULL;
 

@@ -7,7 +7,10 @@
 #define __KGSL_PWRSCALE_H
 
 #include <linux/msm_adreno_devfreq.h>
+#include <linux/seqlock.h>
 #include "kgsl_pwrctrl.h"
+
+struct kgsl_context;
 
 /* devfreq governor call window in usec */
 #define KGSL_GOVERNOR_CALL_INTERVAL 5000
@@ -38,6 +41,24 @@
 struct kgsl_popp {
 	int gpu_x;
 	int ddr_y;
+};
+
+enum kgsl_pipeline_api {
+	KGSL_PIPELINE_API_UNKNOWN,
+	KGSL_PIPELINE_API_GL,
+	KGSL_PIPELINE_API_VK,
+};
+
+/* Persisted, compact producer-side state read by devfreq without context walks. */
+struct kgsl_pipeline_snapshot {
+	u64 timestamp_ns, last_submit_ns, last_eof_submit_ns, last_retire_ns;
+	u64 service_time_ema_ns;
+	u32 submit_seq, retire_seq;
+	u16 active_contexts, vk_contexts, gl_contexts, queued_commands;
+	u16 inflight_commands, pending_contexts;
+	u8 dominant_api, gpu_busy_pct, ram_active_pct, ram_wait_pct;
+	s16 submit_cpu;
+	bool eof_pending;
 };
 
 struct kgsl_power_stats {
@@ -118,6 +139,10 @@ struct kgsl_pwrscale {
 	unsigned int ctxt_aware_busy_penalty;
 	unsigned int wakeup_boost_ms;
 	unsigned int wakeup_boost_pwrlevel;
+	/* Written from dispatch/retire paths; readers use pipeline_seq. */
+	seqcount_t pipeline_seq;
+	struct kgsl_pipeline_snapshot pipeline;
+	u64 pipeline_last_notify_ns;
 };
 
 int kgsl_pwrscale_init(struct device *dev, const char *governor);
@@ -128,6 +153,14 @@ void kgsl_pwrscale_update_stats(struct kgsl_device *device);
 void kgsl_pwrscale_busy(struct kgsl_device *device);
 void kgsl_pwrscale_sleep(struct kgsl_device *device);
 void kgsl_pwrscale_wake(struct kgsl_device *device);
+void kgsl_pwrscale_pipeline_submit(struct kgsl_device *device,
+		struct kgsl_context *context, unsigned int drawobj_flags,
+		unsigned int queued);
+void kgsl_pwrscale_pipeline_retire(struct kgsl_device *device,
+		unsigned int inflight);
+void kgsl_pwrscale_get_pipeline_snapshot(struct kgsl_device *device,
+		struct kgsl_pipeline_snapshot *snapshot);
+void kgsl_pwrscale_pipeline_reset(struct kgsl_device *device);
 
 void kgsl_pwrscale_midframe_timer_restart(struct kgsl_device *device);
 void kgsl_pwrscale_midframe_timer_cancel(struct kgsl_device *device);

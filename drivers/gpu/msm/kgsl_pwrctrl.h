@@ -12,6 +12,7 @@
 #include <soc/qcom/cx_ipeak.h>
 
 struct msm_bus_scale_pdata;
+struct kgsl_device;
 
 /*****************************************************************************
  * power flags

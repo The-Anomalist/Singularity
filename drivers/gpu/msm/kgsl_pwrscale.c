@@ -165,6 +165,93 @@ EXPORT_SYMBOL(kgsl_pwrscale_wake);
  * Called when new work is submitted to the device.
  * This function must be called with the device mutex locked.
  */
+void kgsl_pwrscale_get_pipeline_snapshot(struct kgsl_device *device,
+	struct kgsl_pipeline_snapshot *snapshot)
+{
+	struct kgsl_pwrscale *psc = &device->pwrscale;
+	unsigned int seq;
+
+	if (!snapshot)
+		return;
+	do {
+		seq = read_seqcount_begin(&psc->pipeline_seq);
+		*snapshot = psc->pipeline;
+	} while (read_seqcount_retry(&psc->pipeline_seq, seq));
+}
+EXPORT_SYMBOL_GPL(kgsl_pwrscale_get_pipeline_snapshot);
+
+void kgsl_pwrscale_pipeline_reset(struct kgsl_device *device)
+{
+	struct kgsl_pwrscale *psc = &device->pwrscale;
+
+	write_seqcount_begin(&psc->pipeline_seq);
+	memset(&psc->pipeline, 0, sizeof(psc->pipeline));
+	psc->pipeline.submit_cpu = -1;
+	write_seqcount_end(&psc->pipeline_seq);
+}
+EXPORT_SYMBOL_GPL(kgsl_pwrscale_pipeline_reset);
+
+void kgsl_pwrscale_pipeline_submit(struct kgsl_device *device,
+	struct kgsl_context *context, unsigned int flags, unsigned int queued)
+{
+	struct kgsl_pwrscale *psc = &device->pwrscale;
+	struct kgsl_pipeline_snapshot *p = &psc->pipeline;
+	u64 now = ktime_get_ns();
+	unsigned int type = (context->flags & KGSL_CONTEXT_TYPE_MASK) >>
+		KGSL_CONTEXT_TYPE_SHIFT;
+	bool eof = flags & KGSL_DRAWOBJ_END_OF_FRAME;
+	bool notify;
+
+	write_seqcount_begin(&psc->pipeline_seq);
+	p->timestamp_ns = p->last_submit_ns = now;
+	p->submit_seq++;
+	p->queued_commands = min_t(unsigned int, U16_MAX, queued);
+	p->active_contexts = min_t(unsigned int, U16_MAX,
+		atomic_read(&device->active_cnt));
+	p->submit_cpu = raw_smp_processor_id();
+	p->eof_pending |= eof;
+	if (eof)
+		p->last_eof_submit_ns = now;
+	if (type == KGSL_CONTEXT_TYPE_VK) {
+		p->dominant_api = KGSL_PIPELINE_API_VK;
+		p->vk_contexts = max_t(u16, p->vk_contexts, 1);
+	} else if (type == KGSL_CONTEXT_TYPE_GL) {
+		p->dominant_api = KGSL_PIPELINE_API_GL;
+		p->gl_contexts = max_t(u16, p->gl_contexts, 1);
+	}
+	notify = eof || queued == 1 || queued >= 3 ||
+		now - psc->pipeline_last_notify_ns >= 2 * NSEC_PER_MSEC;
+	if (notify)
+		psc->pipeline_last_notify_ns = now;
+	write_seqcount_end(&psc->pipeline_seq);
+
+	/* Workqueue delivery prevents devfreq recursion under KGSL locks. */
+	if (notify && psc->devfreq_wq && psc->devfreqptr)
+		queue_work(psc->devfreq_wq, &psc->devfreq_submit_ws);
+}
+EXPORT_SYMBOL_GPL(kgsl_pwrscale_pipeline_submit);
+
+void kgsl_pwrscale_pipeline_retire(struct kgsl_device *device, unsigned int inflight)
+{
+	struct kgsl_pwrscale *psc = &device->pwrscale;
+	struct kgsl_pipeline_snapshot *p = &psc->pipeline;
+	u64 now = ktime_get_ns(), service;
+
+	write_seqcount_begin(&psc->pipeline_seq);
+	p->timestamp_ns = p->last_retire_ns = now;
+	p->retire_seq++;
+	p->inflight_commands = min_t(unsigned int, U16_MAX, inflight);
+	if (p->last_submit_ns && now >= p->last_submit_ns) {
+		service = now - p->last_submit_ns;
+		p->service_time_ema_ns = p->service_time_ema_ns ?
+			((p->service_time_ema_ns * 7) + service) >> 3 : service;
+	}
+	if (!inflight)
+		p->eof_pending = false;
+	write_seqcount_end(&psc->pipeline_seq);
+}
+EXPORT_SYMBOL_GPL(kgsl_pwrscale_pipeline_retire);
+
 void kgsl_pwrscale_busy(struct kgsl_device *device)
 {
 	if (!device->pwrscale.enabled)
@@ -222,6 +309,12 @@ void kgsl_pwrscale_update_stats(struct kgsl_device *device)
 		device->pwrscale.accum_stats.busy_time += stats.busy_time;
 		device->pwrscale.accum_stats.ram_time += stats.ram_time;
 		device->pwrscale.accum_stats.ram_wait += stats.ram_wait;
+		/* Hardware RAM counters are the sole GPU-memory-stall signal. */
+		write_seqcount_begin(&psc->pipeline_seq);
+		psc->pipeline.ram_active_pct = stats.busy_time ? 100 : 0;
+		psc->pipeline.ram_wait_pct = stats.ram_time ? min_t(u64, 100,
+			div64_u64(stats.ram_wait * 100, stats.ram_time)) : 0;
+		write_seqcount_end(&psc->pipeline_seq);
 		pwrctrl->clock_times[pwrctrl->active_pwrlevel] +=
 				stats.busy_time;
 	}
@@ -1265,6 +1358,8 @@ int kgsl_pwrscale_init(struct device *dev, const char *governor)
 	INIT_WORK(&pwrscale->devfreq_resume_ws, do_devfreq_resume);
 	INIT_WORK(&pwrscale->devfreq_notify_ws, do_devfreq_notify);
 	INIT_WORK(&pwrscale->devfreq_submit_ws, do_devfreq_submit);
+	seqcount_init(&pwrscale->pipeline_seq);
+	pwrscale->pipeline.submit_cpu = -1;
 	if (kgsl_midframe)
 		INIT_WORK(&kgsl_midframe->timer_check_ws,
 				kgsl_pwrscale_midframe_timer_check);

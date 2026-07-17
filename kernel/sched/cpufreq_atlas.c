@@ -164,7 +164,21 @@ static DEFINE_PER_CPU(struct sugov_tunables *, cached_tunables);
 
 
 
+/*
+ * Producers update their own slot in the cpufreq callback.  Publication is
+ * rate limited and is the only writer of atlas_snapshot, so a snapshot never
+ * combines fields from two producer updates.  Do not take atlas_snapshot_lock
+ * from a cpufreq callback.
+ */
+struct atlas_raw_policy_telemetry {
+	seqcount_t seq;
+	unsigned int util_pct, freq_khz, thermal_pct, capacity;
+	u64 timestamp_ns;
+	bool active;
+};
 static DEFINE_SEQLOCK(atlas_snapshot_lock);
+static struct atlas_raw_policy_telemetry atlas_raw_cpu[ATLAS_MAX_CPU_POLICIES];
+static cpumask_t atlas_policy_masks[ATLAS_MAX_CPU_POLICIES];
 static struct atlas_telemetry_snapshot atlas_snapshot = {
 	.display_active = true,
 };
@@ -197,17 +211,26 @@ static void atlas_recompute_cpu_aggregate(void)
 
 	for (i = 0; i < atlas_snapshot.nr_cpu_policies; i++) {
 		struct atlas_cpu_policy_telemetry *cpu = &atlas_snapshot.cpu[i];
-		unsigned int cap;
+		struct atlas_raw_policy_telemetry *raw = &atlas_raw_cpu[i];
+		unsigned int seq, cap;
 
-		if (!READ_ONCE(cpu->active))
+		do {
+			seq = read_seqcount_begin(&raw->seq);
+			cpu->util_pct = READ_ONCE(raw->util_pct);
+			cpu->freq_khz = READ_ONCE(raw->freq_khz);
+			cpu->thermal_pct = READ_ONCE(raw->thermal_pct);
+			cpu->capacity = READ_ONCE(raw->capacity);
+			cpu->timestamp_ns = READ_ONCE(raw->timestamp_ns);
+			cpu->active = READ_ONCE(raw->active);
+		} while (read_seqcount_retry(&raw->seq, seq));
+		if (!cpu->active)
 			continue;
 		cap = cpu->capacity ?: 1;
-		max_util = max(max_util, READ_ONCE(cpu->util_pct));
-		max_thermal = max(max_thermal, READ_ONCE(cpu->thermal_pct));
-		weighted_freq += (u64)READ_ONCE(cpu->freq_khz) * cap;
+		max_util = max(max_util, (unsigned int) cpu->util_pct);
+		max_thermal = max(max_thermal, (unsigned int) cpu->thermal_pct);
+		weighted_freq += (u64) cpu->freq_khz * cap;
 		weight += cap;
 	}
-
 	atlas_snapshot.cpu_util_pct = max_util;
 	atlas_snapshot.cpu_freq_khz = weight ? div64_u64(weighted_freq, weight) : 0;
 	atlas_snapshot.cpu_thermal_pct = max_thermal;
@@ -218,7 +241,7 @@ static int atlas_find_cpu_policy_slot(const struct cpumask *cpus)
 	unsigned int i;
 
 	for (i = 0; i < atlas_snapshot.nr_cpu_policies; i++)
-		if (cpumask_equal(&atlas_snapshot.cpu[i].cpus, cpus))
+		if (cpumask_equal(&atlas_policy_masks[i], cpus))
 			return i;
 	if (atlas_snapshot.nr_cpu_policies >= ATLAS_MAX_CPU_POLICIES)
 		return -ENOSPC;
@@ -249,12 +272,22 @@ static int atlas_register_cpu_policy(const struct cpumask *cpus,
 	if (slot >= 0) {
 		struct atlas_cpu_policy_telemetry *cpu = &atlas_snapshot.cpu[slot];
 
-		cpumask_copy(&cpu->cpus, cpus);
-		WRITE_ONCE(cpu->util_pct, 0);
-		WRITE_ONCE(cpu->freq_khz, 0);
-		WRITE_ONCE(cpu->thermal_pct, 0);
+		cpumask_copy(&atlas_policy_masks[slot], cpus);
+		seqcount_init(&atlas_raw_cpu[slot].seq);
+		write_seqcount_begin(&atlas_raw_cpu[slot].seq);
+		atlas_raw_cpu[slot].util_pct = 0;
+		atlas_raw_cpu[slot].freq_khz = 0;
+		atlas_raw_cpu[slot].thermal_pct = 0;
+		atlas_raw_cpu[slot].capacity = capacity ?: 1;
+		atlas_raw_cpu[slot].timestamp_ns = ktime_get_ns();
+		atlas_raw_cpu[slot].active = true;
+		write_seqcount_end(&atlas_raw_cpu[slot].seq);
+		cpu->util_pct = 0;
+		cpu->freq_khz = 0;
+		cpu->thermal_pct = 0;
 		cpu->capacity = capacity ?: 1;
-		WRITE_ONCE(cpu->active, true);
+		cpu->timestamp_ns = atlas_raw_cpu[slot].timestamp_ns;
+		cpu->active = true;
 		atlas_recompute_cpu_aggregate();
 		atlas_publish_domain_timestamp(&atlas_snapshot.cpu_timestamp_ns);
 	}
@@ -273,10 +306,13 @@ static void atlas_unregister_cpu_policy(int slot)
 		return;
 
 	write_seqlock(&atlas_snapshot_lock);
-	WRITE_ONCE(atlas_snapshot.cpu[slot].active, false);
-	WRITE_ONCE(atlas_snapshot.cpu[slot].util_pct, 0);
-	WRITE_ONCE(atlas_snapshot.cpu[slot].freq_khz, 0);
-	WRITE_ONCE(atlas_snapshot.cpu[slot].thermal_pct, 0);
+	write_seqcount_begin(&atlas_raw_cpu[slot].seq);
+	atlas_raw_cpu[slot].active = false;
+	atlas_raw_cpu[slot].util_pct = 0;
+	atlas_raw_cpu[slot].freq_khz = 0;
+	atlas_raw_cpu[slot].thermal_pct = 0;
+	atlas_raw_cpu[slot].timestamp_ns = ktime_get_ns();
+	write_seqcount_end(&atlas_raw_cpu[slot].seq);
 	atlas_recompute_cpu_aggregate();
 	atlas_publish_domain_timestamp(&atlas_snapshot.cpu_timestamp_ns);
 	write_sequnlock(&atlas_snapshot_lock);
@@ -291,18 +327,19 @@ static void atlas_update_cpu_policy_slot(int slot, unsigned int util_pct,
 					 unsigned int freq_khz,
 					 unsigned int thermal_pct)
 {
-	struct atlas_cpu_policy_telemetry *cpu;
+	struct atlas_raw_policy_telemetry *raw;
 
 	if (slot < 0 || slot >= ATLAS_MAX_CPU_POLICIES)
 		return;
-
-	cpu = &atlas_snapshot.cpu[slot];
-	if (!READ_ONCE(cpu->active))
+	raw = &atlas_raw_cpu[slot];
+	if (!READ_ONCE(raw->active))
 		return;
-
-	WRITE_ONCE(cpu->util_pct, min_t(unsigned int, util_pct, 100));
-	WRITE_ONCE(cpu->freq_khz, freq_khz);
-	WRITE_ONCE(cpu->thermal_pct, min_t(unsigned int, thermal_pct, 100));
+	write_seqcount_begin(&raw->seq);
+	raw->util_pct = min_t(unsigned int, util_pct, 100);
+	raw->freq_khz = freq_khz;
+	raw->thermal_pct = min_t(unsigned int, thermal_pct, 100);
+	raw->timestamp_ns = ktime_get_ns();
+	write_seqcount_end(&raw->seq);
 }
 
 static void atlas_maybe_publish_cpu_policy(int slot, u64 time, u64 *last_publish)
@@ -393,14 +430,15 @@ void atlas_update_cpu_policy_telemetry(const struct cpumask *cpus,
 	write_seqlock(&atlas_snapshot_lock);
 	slot = atlas_find_cpu_policy_slot(cpus);
 	if (slot >= 0) {
-		struct atlas_cpu_policy_telemetry *cpu = &atlas_snapshot.cpu[slot];
-
-		cpumask_copy(&cpu->cpus, cpus);
-		cpu->util_pct = min_t(unsigned int, util_pct, 100);
-		cpu->freq_khz = freq_khz;
-		cpu->thermal_pct = min_t(unsigned int, thermal_pct, 100);
-		cpu->capacity = capacity;
-		cpu->active = true;
+		cpumask_copy(&atlas_policy_masks[slot], cpus);
+		write_seqcount_begin(&atlas_raw_cpu[slot].seq);
+		atlas_raw_cpu[slot].util_pct = min_t(unsigned int, util_pct, 100);
+		atlas_raw_cpu[slot].freq_khz = freq_khz;
+		atlas_raw_cpu[slot].thermal_pct = min_t(unsigned int, thermal_pct, 100);
+		atlas_raw_cpu[slot].capacity = capacity ?: 1;
+		atlas_raw_cpu[slot].timestamp_ns = ktime_get_ns();
+		atlas_raw_cpu[slot].active = true;
+		write_seqcount_end(&atlas_raw_cpu[slot].seq);
 		atlas_recompute_cpu_aggregate();
 		atlas_publish_domain_timestamp(&atlas_snapshot.cpu_timestamp_ns);
 	}
@@ -1468,7 +1506,8 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 
 	util_pct = mult_frac(*util, 100, max);
 	cpu_signal = util_pct;
-	gpu_signal = transition ? 100 : 0;
+	/* Scheduler migration is not evidence of graphics work. */
+	gpu_signal = 0;
 	gpu_util_pct = snap.gpu_util_pct;
 	gpu_freq_khz = snap.gpu_freq_khz;
 	gpu_thermal_pct = snap.gpu_thermal_pct;
@@ -1675,11 +1714,9 @@ static void sugov_apply_auto_boost(struct sugov_policy *sg_policy, u64 time,
 		low_load = min_t(unsigned int, high_load, low_load + 6);
 		max_util = max_t(unsigned int, min_util,
 				 mult_frac(max_util, 17, 20));
-	} else if (!thermal_relief && gpu_util_pct >= 65 && gpu_freq_khz &&
-		   cpu_freq_khz) {
-		if (gpu_freq_khz > cpu_freq_khz)
-			min_util = min_t(unsigned int, SCHED_CAPACITY_SCALE,
-					 min_util + 48);
+	} else if (!thermal_relief && gpu_util_pct >= 65) {
+		/* Clock domains are incomparable; use utilization demand only. */
+		min_util = min_t(unsigned int, SCHED_CAPACITY_SCALE, min_util + 32);
 	}
 
 	if (thermal_relief && fairness_floor_util) {
