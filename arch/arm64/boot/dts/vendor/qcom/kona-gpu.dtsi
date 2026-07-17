@@ -73,7 +73,7 @@
 
 		qcom,idle-timeout = <120>; /* msecs */
 
-		qcom,no-nap;
+		/* Let an idle GPU enter NAP/SLUMBER and gate the GX clock. */
 
 		qcom,highest-bank-bit = <16>;
 
