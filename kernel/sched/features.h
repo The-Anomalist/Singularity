@@ -107,6 +107,12 @@ SCHED_FEAT(FIND_BEST_TARGET, true)
 SCHED_FEAT(EAS_PREFER_IDLE, true)
 
 /*
+ * Compare EAS candidates by per-performance-domain energy delta for waking
+ * tasks. This avoids re-evaluating unaffected domains in the wakeup hot path.
+ */
+SCHED_FEAT(EAS_ENERGY_DELTA, true)
+
+/*
  * UCLASS: Unified Capacity and Latency Aware Scheduling System.
  *
  * Keep this enabled to apply conservative latency/capacity aware
