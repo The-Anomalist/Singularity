@@ -586,8 +586,14 @@ MODULE_PARM_DESC(kona_sleep_floor_decay_percent,
  */
 static bool kona_active_floor_scaling_enable = true;
 static unsigned long kona_active_floor_trigger_kb = 512000; /* 512 MB/s */
-static unsigned long kona_active_floor_low_kb = 1500000;   /* 1.5 GB/s */
-static unsigned long kona_active_floor_high_kb = 8000000;  /* 8.0 GB/s */
+/*
+ * Keep full floors for only genuinely bandwidth-heavy work.  The Kona and
+ * Kona-v2 compatibles share this provider, so these thresholds deliberately
+ * describe a conservative common denominator rather than one board's peak
+ * benchmark workload.
+ */
+static unsigned long kona_active_floor_low_kb = 1200000;   /* 1.2 GB/s */
+static unsigned long kona_active_floor_high_kb = 6000000;  /* 6.0 GB/s */
 static unsigned int kona_active_floor_low_percent = 70;
 static unsigned int kona_active_floor_mid_percent = 85;
 module_param_named(kona_active_floor_scaling_enable, kona_active_floor_scaling_enable, bool, 0644);
