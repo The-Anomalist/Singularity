@@ -119,6 +119,7 @@ scm_version()
 			git diff-index --name-only HEAD
 		} | grep -qvE '^(.. )?scripts/package'; then
 			# printf '%s' -dirty
+			:
 		fi
 
 		# All done with git

@@ -29,7 +29,11 @@ obj-$(CONFIG_SCHED_DEBUG) += debug.o
 obj-$(CONFIG_SCHED_TUNE) += tune.o
 obj-$(CONFIG_CGROUP_CPUACCT) += cpuacct.o
 obj-$(CONFIG_CPU_FREQ) += cpufreq.o
+# Atlas is a schedutil-derived governor and provides the same scheduler
+# integration symbols.  Build it in place of schedutil when selected.
+ifneq ($(CONFIG_CPU_FREQ_GOV_ATLAS),y)
 obj-$(CONFIG_CPU_FREQ_GOV_SCHEDUTIL) += cpufreq_schedutil.o
+endif
 obj-$(CONFIG_CPU_FREQ_GOV_ATLAS) += cpufreq_atlas.o
 obj-$(CONFIG_MEMBARRIER) += membarrier.o
 obj-$(CONFIG_CPU_ISOLATION) += isolation.o
