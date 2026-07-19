@@ -65,33 +65,6 @@ struct devfreq_msm_adreno_tz_data {
 	u32 tz_sample_floor;
 	u32 tz_min_busy;
 	u32 tz_busy_ceiling;
-	u32 orion_aggressiveness;
-	u32 orion_boost_level;
-	u32 orion_boost_ms;
-	bool orion_boost_enable;
-	unsigned long orion_boost_end;
-	u32 orion_scene_boost_ms;
-	u32 orion_downscale_delay_ms;
-	u32 orion_transition_boost_pct;
-	u32 orion_transition_contexts;
-	unsigned long orion_downscale_blocked_till;
-	u32 orion_upthreshold_pct;
-	u32 orion_downthreshold_pct;
-	u32 orion_load_filter_pct;
-	u32 orion_hispeed_load;
-	u32 orion_hispeed_level;
-	u32 orion_perf_boost_level;
-	u32 orion_top_freq_guard_ms;
-	u32 orion_top_freq_busy_pct;
-	u32 orion_top_freq_contexts;
-	unsigned long orion_top_freq_allowed_after;
-	u32 orion_smoothed_busy_pct;
-	u32 orion_predicted_busy_pct;
-	s32 orion_busy_trend_pct;
-	u32 orion_last_busy_pct;
-	u32 orion_cpu_util_ema;
-	u32 orion_cpu_momentum;
-	u32 orion_coupled_pressure;
 };
 
 struct msm_adreno_extended_profile {

@@ -67,7 +67,7 @@ void sqh_block_complete(struct request *rq, blk_status_t error)
 
 static int sqh_proc_show(struct seq_file *m, void *v)
 {
-	seq_puts(m, "orion_atlas_qos_hints\n");
+	seq_puts(m, "singularity_qos_hints\n");
 	seq_printf(m, "sched_enqueue=%ld\n", atomic_long_read(&sqh_sched_enqueue_cnt));
 	seq_printf(m, "sched_dequeue=%ld\n", atomic_long_read(&sqh_sched_dequeue_cnt));
 	seq_printf(m, "mem_reclaim_events=%ld\n", atomic_long_read(&sqh_mem_reclaim_events));
@@ -96,8 +96,8 @@ static const struct file_operations sqh_proc_fops = {
 
 static int __init sqh_init(void)
 {
-	if (!proc_create("orion_atlas_qos_hints", 0444, NULL, &sqh_proc_fops))
-		pr_warn("orion_atlas_qos_hints: failed to create /proc entry\n");
+	if (!proc_create("singularity_qos_hints", 0444, NULL, &sqh_proc_fops))
+		pr_warn("singularity_qos_hints: failed to create /proc entry\n");
 
 	return 0;
 }

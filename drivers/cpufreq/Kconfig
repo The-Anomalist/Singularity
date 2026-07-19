@@ -226,10 +226,10 @@ config CPU_FREQ_GOV_ATLAS
 	select CPU_FREQ_GOV_ATTR_SET
 	select IRQ_WORK
 	help
-	  'atlas' is a schedutil-derived governor with automatic CPU/GPU/
-	  NPU/memory coordination through Orion telemetry. It does not expose
-	  runtime tunables; policy decisions come from scheduler utilization,
-	  thermal pressure, display state, and realtime memory pressure.
+	  Atlas is an independent schedutil-derived governor. It uses the
+	  scheduler's utilization, deadline, uclamp, I/O-wait, and thermal
+	  signals to select frequencies with the standard schedutil tunables.
+	  It has no dependencies on GPU, NPU, display, or memory telemetry.
 
 	  If in doubt, say N.
 
