@@ -2503,9 +2503,67 @@ static bool kona_icc_vote_component_unchanged(u64 *last, unsigned int index, u64
 	return last && last[index] != U64_MAX && last[index] == vote;
 }
 
+/*
+ * Several logical Kona paths terminate at the same RPMh BCM (most notably
+ * CPU_MEM and CPU_LLCC).  The virtual provider sends BCM commands directly,
+ * so treating the per-node cache as the hardware cache lets the last, smaller
+ * client vote overwrite an already active devbw or memlat vote.  That is
+ * particularly visible in memory microbenchmarks, where latency-monitor and
+ * devbw updates interleave frequently.
+ *
+ * Retain the largest effective vote for a shared resource.  AB is normally
+ * additive in the generic ICC framework, but summing here would add each
+ * synthetic performance floor as well as the real requests and permanently
+ * over-vote DDR.  A max aggregation preserves the existing floor policy while
+ * preventing a low-rate sibling from pulling a shared channel below the vote
+ * required by the active high-rate sibling.
+ */
+static u64 kona_icc_shared_resource_vote(struct kona_icc_provider *qp,
+					 const char *resource, bool average)
+{
+	u64 vote = 0;
+	unsigned int i;
+
+	if (!resource || !qp->eff_ab || !qp->eff_ib)
+		return vote;
+
+	for (i = 0; i < qp->num_nodes; i++) {
+		const struct kona_icc_node_desc *node = &qp->nodes[i];
+		const char *node_resource = average ? node->ab : node->ib;
+		u64 node_vote = average ? qp->eff_ab[i] : qp->eff_ib[i];
+
+		if (!node_resource || strcmp(resource, node_resource) ||
+		    node_vote == U64_MAX ||
+		    kona_icc_is_policy_suppressed_path(node))
+			continue;
+
+		vote = max(vote, node_vote);
+	}
+
+	return vote;
+}
+
+static void kona_icc_cache_shared_resource_vote(struct kona_icc_provider *qp,
+						 const char *resource, bool average,
+						 u64 vote)
+{
+	unsigned int i;
+
+	if (!resource)
+		return;
+
+	for (i = 0; i < qp->num_nodes; i++) {
+		const char *node_resource = average ? qp->nodes[i].ab : qp->nodes[i].ib;
+		u64 *last = average ? qp->last_ab : qp->last_ib;
+
+		if (last && node_resource && !strcmp(resource, node_resource))
+			last[i] = vote;
+	}
+}
+
 static int kona_icc_send_vote_component(struct kona_icc_provider *qp,
 					unsigned int index, const char *res,
-					u64 vote, u64 *last, bool wait)
+					u64 vote, u64 *last, bool wait, bool average)
 {
 	int ret;
 
@@ -2517,8 +2575,7 @@ static int kona_icc_send_vote_component(struct kona_icc_provider *qp,
 	if (ret)
 		return ret;
 
-	if (last)
-		last[index] = vote;
+	kona_icc_cache_shared_resource_vote(qp, res, average, vote);
 
 	return 0;
 }
@@ -2534,6 +2591,10 @@ static int kona_icc_send_node_votes(struct kona_icc_provider *qp,
 	if (retry)
 		*retry = false;
 
+	/* Program the aggregate for a BCM, rather than this node's last vote. */
+	ab = kona_icc_shared_resource_vote(qp, desc->ab, true);
+	ib = kona_icc_shared_resource_vote(qp, desc->ib, false);
+
 	/*
 	 * Only touch RPMh resources whose component changed. Many consumers
 	 * adjust AB and IB independently, and replay can revisit nodes after one
@@ -2541,25 +2602,29 @@ static int kona_icc_send_node_votes(struct kona_icc_provider *qp,
 	 * ACTIVE_ONLY writes while preserving the GPU-before-AB ordering quirk.
 	 */
 	if (desc->id == KONA_ICC_GPU_TO_MEM) {
-		ret = kona_icc_send_vote_component(qp, index, desc->ib, ib, qp->last_ib, wait);
+		ret = kona_icc_send_vote_component(qp, index, desc->ib, ib, qp->last_ib, wait,
+						   false);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
 			return ret;
 
-		ret = kona_icc_send_vote_component(qp, index, desc->ab, ab, qp->last_ab, wait);
+		ret = kona_icc_send_vote_component(qp, index, desc->ab, ab, qp->last_ab, wait,
+						   true);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
 			return ret;
 	} else {
-		ret = kona_icc_send_vote_component(qp, index, desc->ab, ab, qp->last_ab, wait);
+		ret = kona_icc_send_vote_component(qp, index, desc->ab, ab, qp->last_ab, wait,
+						   true);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
 			return ret;
 
-		ret = kona_icc_send_vote_component(qp, index, desc->ib, ib, qp->last_ib, wait);
+		ret = kona_icc_send_vote_component(qp, index, desc->ib, ib, qp->last_ib, wait,
+						   false);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
@@ -2643,11 +2708,18 @@ static bool kona_icc_snapshot_dirty(struct kona_icc_provider *qp)
 static bool kona_icc_vote_is_unchanged(struct kona_icc_provider *qp,
 				      unsigned int index, u64 ab, u64 ib)
 {
+	const struct kona_icc_node_desc *desc;
+
 	if (!qp->last_ab || !qp->last_ib)
 		return false;
 
 	if (qp->last_ab[index] == U64_MAX || qp->last_ib[index] == U64_MAX)
 		return false;
+
+	/* last_* is shared per physical BCM; compare it with the BCM aggregate. */
+	desc = &qp->nodes[index];
+	ab = kona_icc_shared_resource_vote(qp, desc->ab, true);
+	ib = kona_icc_shared_resource_vote(qp, desc->ib, false);
 
 	return qp->last_ab[index] == ab && qp->last_ib[index] == ib;
 }
