@@ -81,9 +81,6 @@ struct cpufreq_qcom {
 	unsigned long xo_rate;
 	unsigned long cpu_hw_rate;
 	unsigned long dcvsh_freq_limit;
-	u32 max_freq_khz;
-	u32 max_freq_offset_khz;
-	u32 max_volt_offset_uv;
 	struct delayed_work freq_poll_work;
 	struct mutex dcvsh_lock;
 	struct device_attribute freq_limit_attr;
@@ -142,7 +139,6 @@ static struct cpufreq_qcom *qcom_freq_domain_map[NR_CPUS];
 static unsigned int hw_up_rate_limit_us = DEFAULT_HW_UP_RATE_LIMIT_US;
 static unsigned int hw_down_rate_limit_us = DEFAULT_HW_DOWN_RATE_LIMIT_US;
 static unsigned int hw_transition_hyst_khz = DEFAULT_TRANSITION_HYST_KHZ;
-static bool allow_logical_max_opp;
 
 module_param_named(hw_up_rate_limit_us, hw_up_rate_limit_us, uint, 0644);
 MODULE_PARM_DESC(hw_up_rate_limit_us,
@@ -155,10 +151,6 @@ MODULE_PARM_DESC(hw_down_rate_limit_us,
 module_param_named(hw_transition_hyst_khz, hw_transition_hyst_khz, uint, 0644);
 MODULE_PARM_DESC(hw_transition_hyst_khz,
 		 "Ignore target changes smaller than this kHz delta");
-
-module_param_named(allow_logical_max_opp, allow_logical_max_opp, bool, 0644);
-MODULE_PARM_DESC(allow_logical_max_opp,
-		 "Allow exposing a configured max OPP even if the HW LUT rejects it");
 
 static unsigned int qcom_cpufreq_hw_get(unsigned int cpu);
 
@@ -689,192 +681,6 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 
 	c->lut_max_entries = i;
 
-	/*
-	 * Prefer materializing the requested max clock as a real LUT row so it
-	 * behaves like a factory bin (residency + perf-state programming). If the
-	 * hardware table cannot be changed, still expose the configured top clock as
-	 * a normal CPUFreq entry and map it to the highest accepted PERF_STATE row.
-	 */
-	if ((c->max_freq_khz || c->max_freq_offset_khz) && c->lut_max_entries) {
-		unsigned int max_index = c->lut_max_entries - 1;
-		unsigned int offset_index = c->lut_max_entries;
-		unsigned int target_index;
-		u32 max_freq_data, max_volt_data, max_src, max_lval;
-		u32 programmed_freq_data, programmed_volt_data;
-		u32 programmed_src, programmed_lval;
-		u32 new_lval, new_mv, min_lval;
-		u32 original_target_freq_data, original_target_volt_data;
-		u64 target_freq_khz, target_freq_hz;
-		unsigned int exposed_freq_khz;
-		unsigned int materialized_freq_khz = 0;
-		unsigned int old_max_freq_khz;
-		bool append_row;
-		bool expose_logical = false;
-		bool hw_backed = false;
-
-		max_freq_data = readl_relaxed(base_freq + max_index * lut_row_size);
-		max_volt_data = readl_relaxed(base_volt + max_index * lut_row_size);
-		max_src = (max_freq_data & GENMASK(31, 30)) >> 30;
-		max_lval = max_freq_data & GENMASK(7, 0);
-		old_max_freq_khz = c->table[max_index].frequency;
-		target_freq_khz = c->max_freq_khz;
-		if (!target_freq_khz)
-			target_freq_khz = old_max_freq_khz + c->max_freq_offset_khz;
-		append_row = offset_index < lut_max_entries;
-		target_index = append_row ? offset_index : max_index;
-		/*
-		 * Only src=1 rows are programmable through the LUT L value. src=0
-		 * represents fixed-rate entries where an offset cannot be applied.
-		 */
-		if (max_src) {
-			target_freq_hz = target_freq_khz * 1000;
-			/*
-			 * Explicit max frequencies should be programmed as closely as the
-			 * LUT granularity permits. Offset-only OPPs still round up so small
-			 * offsets do not quantize back to the same top-row point.
-			 */
-			if (c->max_freq_khz)
-				new_lval = DIV_ROUND_CLOSEST_ULL(target_freq_hz, c->xo_rate);
-			else
-				new_lval = DIV_ROUND_UP_ULL(target_freq_hz, c->xo_rate);
-			min_lval = max_lval + 1;
-			if (new_lval < min_lval)
-				new_lval = min_lval;
-			new_mv = DIV_ROUND_UP(c->voltages[max_index] +
-					      c->max_volt_offset_uv, 1000);
-
-			/* L value and mV fields are 8-bit and 12-bit respectively. */
-			if (new_lval <= GENMASK(7, 0) && new_lval > max_lval &&
-			    new_mv <= GENMASK(11, 0)) {
-				original_target_freq_data = readl_relaxed(base_freq +
-						target_index * lut_row_size);
-				original_target_volt_data = readl_relaxed(base_volt +
-						target_index * lut_row_size);
-
-				max_freq_data &= ~GENMASK(7, 0);
-				max_freq_data |= new_lval;
-				max_volt_data &= ~GENMASK(11, 0);
-				max_volt_data |= new_mv;
-
-				writel_relaxed(max_freq_data,
-					       base_freq +
-					       target_index * lut_row_size);
-				writel_relaxed(max_volt_data,
-					       base_volt +
-					       target_index * lut_row_size);
-
-				/*
-				 * Read back the programmed LUT row and only expose
-				 * the OPP if the requested frequency/voltage were
-				 * really accepted by hardware.
-				 */
-				programmed_freq_data = readl_relaxed(
-					base_freq + target_index * lut_row_size);
-				programmed_volt_data = readl_relaxed(
-					base_volt + target_index * lut_row_size);
-				programmed_src =
-					(programmed_freq_data &
-					 GENMASK(31, 30)) >> 30;
-				programmed_lval = programmed_freq_data & GENMASK(7, 0);
-				if (programmed_src)
-					materialized_freq_khz =
-						c->xo_rate * programmed_lval /
-						1000;
-				else
-					materialized_freq_khz = c->cpu_hw_rate / 1000;
-
-				hw_backed =
-					(programmed_lval == new_lval) &&
-					((programmed_volt_data &
-					  GENMASK(11, 0)) == new_mv) &&
-					(materialized_freq_khz > old_max_freq_khz);
-
-				/*
-				 * If we had to repurpose the top row in-place and
-				 * HW refused the update, restore the factory row.
-				 */
-				if (!hw_backed && !append_row) {
-					writel_relaxed(original_target_freq_data,
-						       base_freq +
-						       max_index * lut_row_size);
-					writel_relaxed(original_target_volt_data,
-						       base_volt +
-						       max_index * lut_row_size);
-				}
-			}
-		}
-
-		if (!hw_backed && allow_logical_max_opp) {
-			/*
-			 * Some EPSS LUTs ignore AP writes after firmware has populated
-			 * the table, and some tables are already full. Exposing such an
-			 * OPP by default is harmful: policy->cpuinfo.max_freq and
-			 * arch_set_freq_scale() then describe a frequency the hardware
-			 * cannot reach, so scheduler capacity appears permanently low and
-			 * userspace may keep chasing a phantom top bin. Keep this opt-in
-			 * only for experiments that explicitly want the logical sysfs point.
-			 */
-			expose_logical = target_freq_khz > old_max_freq_khz;
-		}
-
-		if (hw_backed || expose_logical) {
-			if (expose_logical || c->max_freq_khz)
-				exposed_freq_khz = target_freq_khz;
-			else
-				exposed_freq_khz = materialized_freq_khz;
-
-			c->table[target_index].frequency = exposed_freq_khz;
-			/*
-			 * The max OPP must be a normal selectable frequency, not a
-			 * boost-only entry.  When we append into the first unused LUT slot,
-			 * that table entry may still carry flags copied from the duplicate
-			 * terminator row parsed above; clear them before exposing the new
-			 * top frequency through scaling_available_frequencies.
-			 */
-			c->table[target_index].flags = 0;
-			c->freqs[target_index] = c->table[target_index].frequency;
-			c->voltages[target_index] = hw_backed ? new_mv * 1000 :
-				c->voltages[max_index];
-			c->table[target_index].driver_data = hw_backed ? target_index :
-				max_index;
-			if (append_row) {
-				c->lut_max_entries++;
-				if (hw_backed)
-					dev_info(dev,
-						 "max OPP materialized in HW LUT for domain cpus%*pbl: %u kHz @ %u uV (appended row, HW %u kHz)\n",
-						 cpumask_pr_args(&c->related_cpus),
-						 c->table[target_index].frequency,
-						 c->voltages[target_index],
-						 materialized_freq_khz);
-				else
-					dev_warn(dev,
-						 "max OPP exposed logically for domain cpus%*pbl: %u kHz maps to HW row %u (%u kHz); LUT rejected programming\n",
-						 cpumask_pr_args(&c->related_cpus),
-						 c->table[target_index].frequency,
-						 max_index, old_max_freq_khz);
-			} else if (hw_backed) {
-				dev_info(dev,
-						 "max OPP materialized by retuning top LUT row for domain cpus%*pbl: %u -> %u kHz @ %u uV (HW %u kHz)\n",
-						 cpumask_pr_args(&c->related_cpus),
-						 old_max_freq_khz,
-						 c->table[target_index].frequency,
-						 c->voltages[target_index],
-						 materialized_freq_khz);
-			} else {
-				dev_warn(dev,
-					 "max OPP exposed logically for domain cpus%*pbl: %u kHz replaces table row %u (%u kHz); LUT rejected programming or is full\n",
-					 cpumask_pr_args(&c->related_cpus),
-					 c->table[target_index].frequency,
-					 max_index, old_max_freq_khz);
-			}
-		} else {
-			dev_warn(dev,
-				 "max OPP skipped for domain cpus%*pbl: HW LUT rejected freq/volt programming or no programmable headroom%s\n",
-				 cpumask_pr_args(&c->related_cpus),
-				 allow_logical_max_opp ? "" : "; logical exposure disabled");
-		}
-	}
-
 	c->table[c->lut_max_entries].frequency = CPUFREQ_TABLE_END;
 
 	for (i = 0; i < c->lut_max_entries; i++) {
@@ -980,16 +786,6 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 	c->max_cores = max_cores;
 	if (!c->max_cores)
 		return -ENOENT;
-
-	of_property_read_u32_index(dev->of_node,
-				   "qcom,max-frequency-khz", index,
-				   &c->max_freq_khz);
-	of_property_read_u32_index(dev->of_node,
-				   "qcom,max-frequency-offset-khz",
-				   index, &c->max_freq_offset_khz);
-	of_property_read_u32_index(dev->of_node,
-				   "qcom,max-voltage-offset-uv",
-				   index, &c->max_volt_offset_uv);
 
 	c->xo_rate = xo_rate;
 	c->cpu_hw_rate = cpu_hw_rate;

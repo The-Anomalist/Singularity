@@ -335,8 +335,6 @@
 			interconnect-names = "cpu-llcc", "cpu-ddr";
 
 			qcom,lut-row-size = <4>;
-			qcom,max-frequency-khz = <1900000 2525000 2925000>;
-			qcom,max-voltage-offset-uv = <65000 65000 65000>;
 			qcom,skip-enable-check;
 
 			interrupts = <GIC_SPI 30 IRQ_TYPE_LEVEL_HIGH>,
