@@ -50,6 +50,6 @@ const char *linux_banner_ptr = linux_banner;
 EXPORT_SYMBOL_GPL(linux_banner_ptr);
 
 const char linux_proc_banner[] =
-	"Singularity-Kernel by The_Anomalist | %s %s | ST16 CIP133\n";
+	"Singularity-Kernel by The_Anomalist | %s %s | ST18 CIP134\n";
 
 BUILD_SALT;
