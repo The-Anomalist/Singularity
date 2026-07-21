@@ -1457,7 +1457,14 @@
 			qcom,cachemiss-ev = <0x2A>;
 			qcom,core-dev-table =
 				<  300000 1 >,
-				< 3000000 2 >;
+				/*
+				 * Request AOP's low-latency DDR QoS mode when the
+				 * performance cluster reaches its validated high-performance
+				 * OPP range. Do not use the former 3 GHz overclock ceiling:
+				 * it is no longer exposed by CPUFreq, so level 2 was
+				 * unreachable.
+				 */
+				< 2419000 2 >;
 		};
 	};
 

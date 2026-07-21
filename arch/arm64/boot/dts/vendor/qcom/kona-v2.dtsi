@@ -195,6 +195,10 @@
 
 &cpu4_qoslatmon {
 	qcom,cachemiss-ev = <0x1000>;
+	/* Keep the level-2 DDR QoS request reachable on Kona v2/v2.1 too. */
+	qcom,core-dev-table =
+		<  300000 1 >,
+		< 2419000 2 >;
 };
 
 /* NPU overrides */
