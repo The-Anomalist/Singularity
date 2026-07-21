@@ -22,10 +22,12 @@ bool "Enable Kona interconnect performance floors"
 depends on INTERCONNECT_QCOM_KONA
 default y
 help
-  Apply conservative bandwidth floors for critical CPU/GPU interconnect
-  paths to prevent low DDR/LLCC performance corners from throttling the
-  system. This keeps performance closer to the pre-ICC baseline. Disable
-  only if you have an alternate mechanism for managing bandwidth votes.
+  Apply workload-aware bandwidth floors to Kona interconnect paths. The
+  policy keeps light clients at low average-bandwidth votes while preserving
+  high instantaneous DDR and LLCC peak-bandwidth headroom for CPU, GPU,
+  media, storage, and accelerator bursts. Auxiliary CPU_MEM/CPU_LLCC-backed
+  clients receive bounded baselines instead of CPU-sized floors. Disable only
+  if you have an alternate mechanism for managing bandwidth votes.
 
 config INTERCONNECT_QCOM_KONA_DEBUG
 bool "Verbose Kona interconnect logging"
