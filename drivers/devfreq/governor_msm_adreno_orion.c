@@ -9,6 +9,7 @@
 #include <linux/spinlock.h>
 #include <linux/slab.h>
 #include <linux/io.h>
+#include <linux/kernel.h>
 #include <linux/ftrace.h>
 #include <linux/mm.h>
 #include <linux/msm_adreno_devfreq.h>
@@ -64,6 +65,179 @@ static void do_partner_suspend_event(struct work_struct *work);
 static void do_partner_resume_event(struct work_struct *work);
 
 static struct workqueue_struct *workqueue;
+
+
+/*
+ * Orion combines the firmware recommendation with a local, continuously
+ * adapting controller.  Firmware remains the authority for platform-specific
+ * power constraints; the local controller only supplies latency protection
+ * and conservative downscale hysteresis from the same accounting samples.
+ *
+ * Pwrlevel zero is the fastest OPP in KGSL's frequency table.  Keeping the
+ * controller in pwrlevel space, rather than assuming evenly spaced clocks,
+ * makes it work correctly with binned and thermally restricted tables.
+ */
+#define ORION_DEFAULT_UP_THRESHOLD	82
+#define ORION_DEFAULT_DOWN_THRESHOLD	38
+#define ORION_DEFAULT_BOOST_THRESHOLD	92
+#define ORION_DEFAULT_DOWN_SAMPLES	3
+#define ORION_DEFAULT_BOOST_SAMPLES	2
+#define ORION_EWMA_WEIGHT		4
+
+struct orion_controller {
+	u32 load_ewma;
+	u32 previous_load;
+	u32 up_threshold;
+	u32 down_threshold;
+	u32 boost_threshold;
+	u32 down_samples;
+	u32 boost_samples;
+	u32 low_load_samples;
+	u32 boost_hold;
+	u32 last_level;
+	u32 tz_level;
+	u32 target_level;
+	u32 last_context_count;
+	bool initialized;
+};
+
+static struct orion_controller orion = {
+	.up_threshold = ORION_DEFAULT_UP_THRESHOLD,
+	.down_threshold = ORION_DEFAULT_DOWN_THRESHOLD,
+	.boost_threshold = ORION_DEFAULT_BOOST_THRESHOLD,
+	.down_samples = ORION_DEFAULT_DOWN_SAMPLES,
+	.boost_samples = ORION_DEFAULT_BOOST_SAMPLES,
+};
+
+static void orion_reset_controller(void)
+{
+	memset(&orion, 0, sizeof(orion));
+	orion.up_threshold = ORION_DEFAULT_UP_THRESHOLD;
+	orion.down_threshold = ORION_DEFAULT_DOWN_THRESHOLD;
+	orion.boost_threshold = ORION_DEFAULT_BOOST_THRESHOLD;
+	orion.down_samples = ORION_DEFAULT_DOWN_SAMPLES;
+	orion.boost_samples = ORION_DEFAULT_BOOST_SAMPLES;
+}
+
+static u32 orion_percent(u64 busy, u64 total)
+{
+	if (!total)
+		return 0;
+
+	return min_t(u64, 100, div64_u64(busy * 100, total));
+}
+
+/* Return the fastest level needed for an observed demand percentage. */
+static int orion_demand_level(struct devfreq *devfreq, u32 demand)
+{
+	u32 levels = devfreq->profile->max_state;
+
+	if (levels < 2)
+		return 0;
+
+	return div_u64((u64)(100 - min(demand, 100U)) * (levels - 1) + 50,
+			100);
+}
+
+static int orion_refine_target(struct devfreq *devfreq, int tz_level,
+		u64 busy, u64 total, int context_count)
+{
+	u32 load = orion_percent(busy, total);
+	u32 demand, trend;
+	int adaptive_level;
+	int target = tz_level;
+	int max_level = devfreq->profile->max_state - 1;
+
+	if (!orion.initialized) {
+		orion.load_ewma = load;
+		orion.previous_load = load;
+		orion.last_level = tz_level;
+		orion.initialized = true;
+	} else {
+		orion.load_ewma = (orion.load_ewma * (ORION_EWMA_WEIGHT - 1) +
+				  load) / ORION_EWMA_WEIGHT;
+	}
+
+	/* A rising queue is a meaningful latency signal even before it is busy. */
+	trend = load > orion.previous_load ? load - orion.previous_load : 0;
+	demand = max(load, orion.load_ewma);
+	if (trend >= 12)
+		demand = min(100U, demand + trend / 2);
+	if (context_count > orion.last_context_count)
+		demand = min(100U, demand + 8);
+	if (context_count >= 4)
+		demand = min(100U, demand + 5);
+
+	adaptive_level = orion_demand_level(devfreq, demand);
+	if (demand >= orion.up_threshold)
+		target = min(target, adaptive_level);
+
+	/* Saturation and queue growth acquire a short boost lease immediately. */
+	if (load >= orion.boost_threshold || trend >= 20 || context_count >= 8) {
+		orion.boost_hold = orion.boost_samples;
+		target = min(target, adaptive_level);
+	} else if (orion.boost_hold) {
+		orion.boost_hold--;
+		target = min_t(int, target, orion.last_level);
+	}
+
+	/* Downscaling is deliberately slower than boosting to avoid frame jitter. */
+	if (demand <= orion.down_threshold && !orion.boost_hold) {
+		orion.low_load_samples++;
+		if (orion.low_load_samples < orion.down_samples)
+			target = min_t(int, target, orion.last_level);
+		else
+			target = max(target, adaptive_level);
+	} else {
+		orion.low_load_samples = 0;
+	}
+
+	target = clamp(target, 0, max_level);
+	orion.previous_load = load;
+	orion.last_context_count = max(context_count, 0);
+	orion.tz_level = tz_level;
+	orion.target_level = target;
+	orion.last_level = target;
+	return target;
+}
+
+#define ORION_TUNABLE(_name, _field, _min, _max)\
+static ssize_t orion_##_name##_show(struct device *dev,\
+		struct device_attribute *attr, char *buf)\
+{\
+	return scnprintf(buf, PAGE_SIZE, "%u\n", orion._field);\
+} \
+static ssize_t orion_##_name##_store(struct device *dev,\
+		struct device_attribute *attr, const char *buf, size_t count)\
+{\
+	unsigned int value;\
+	int ret = kstrtouint(buf, 0, &value);\
+\
+	if (ret)\
+		return ret;\
+	if (value < (_min) || value > (_max))\
+		return -EINVAL;\
+	orion._field = value;\
+	return count;\
+} \
+static DEVICE_ATTR_RW(orion_##_name)
+
+ORION_TUNABLE(up_threshold, up_threshold, 1, 100);
+ORION_TUNABLE(down_threshold, down_threshold, 0, 99);
+ORION_TUNABLE(boost_threshold, boost_threshold, 1, 100);
+ORION_TUNABLE(down_samples, down_samples, 1, 20);
+ORION_TUNABLE(boost_samples, boost_samples, 0, 20);
+
+static ssize_t orion_state_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE,
+		"load=%u ewma=%u tz=%u target=%u low=%u hold=%u ctx=%u\n",
+		orion.previous_load, orion.load_ewma, orion.tz_level,
+		orion.target_level, orion.low_load_samples, orion.boost_hold,
+		orion.last_context_count);
+}
+static DEVICE_ATTR_RO(orion_state);
 
 /*
  * Returns GPU suspend time in millisecond.
@@ -136,6 +310,12 @@ static DEVICE_ATTR_RO(suspend_time);
 static const struct device_attribute *adreno_tz_attr_list[] = {
 		&dev_attr_gpu_load,
 		&dev_attr_suspend_time,
+		&dev_attr_orion_up_threshold,
+		&dev_attr_orion_down_threshold,
+		&dev_attr_orion_boost_threshold,
+		&dev_attr_orion_down_samples,
+		&dev_attr_orion_boost_samples,
+		&dev_attr_orion_state,
 		NULL
 };
 
@@ -374,6 +554,7 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	struct devfreq_msm_adreno_tz_data *priv = devfreq->data;
 	struct devfreq_dev_status *stats = &devfreq->last_status;
 	int val, level = 0;
+	u64 sample_busy, sample_total;
 	unsigned int scm_data[4];
 	int context_count = 0;
 
@@ -396,19 +577,28 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	/*
 	 * Do not waste CPU cycles running this algorithm if
 	 * the GPU just started, or if less than FLOOR time
-	 * has passed since the last run or the gpu hasn't been
-	 * busier than MIN_BUSY.
+	 * has passed since the last run.  A mostly idle completed window is
+	 * still useful: it feeds Orion's downscale hysteresis without paying for
+	 * a TrustZone transaction.
 	 */
-	if ((stats->total_time == 0) ||
-		(priv->bin.total_time < FLOOR) ||
-		(unsigned int) priv->bin.busy_time < MIN_BUSY) {
+	if (stats->total_time == 0 || priv->bin.total_time < FLOOR)
 		return 0;
-	}
 
 	level = devfreq_get_freq_level(devfreq, stats->current_frequency);
 	if (level < 0) {
 		pr_err(TAG "bad freq %ld\n", stats->current_frequency);
 		return level;
+	}
+
+	if ((unsigned int)priv->bin.busy_time < MIN_BUSY) {
+		sample_total = priv->bin.total_time;
+		sample_busy = priv->bin.busy_time;
+		priv->bin.total_time = 0;
+		priv->bin.busy_time = 0;
+		level = orion_refine_target(devfreq, level, sample_busy,
+					    sample_total, context_count);
+		*freq = devfreq->profile->freq_table[level];
+		return 0;
 	}
 
 	/*
@@ -431,6 +621,8 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 		__secure_tz_update_entry3(scm_data, sizeof(scm_data),
 					&val, sizeof(val), priv);
 	}
+	sample_total = priv->bin.total_time;
+	sample_busy = priv->bin.busy_time;
 	priv->bin.total_time = 0;
 	priv->bin.busy_time = 0;
 
@@ -444,6 +636,13 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 		level = min_t(int, level, devfreq->profile->max_state - 1);
 	}
 
+	/*
+	 * TrustZone picks the baseline OPP.  Refine it using short-term load,
+	 * trend and queue pressure so interactive work ramps without waiting for
+	 * a full firmware control cycle, while sustained idle decays smoothly.
+	 */
+	level = orion_refine_target(devfreq, level, sample_busy, sample_total,
+				    context_count);
 	*freq = devfreq->profile->freq_table[level];
 	return 0;
 }
@@ -499,6 +698,7 @@ static int tz_start(struct devfreq *devfreq)
 	partner_gpu_profile = gpu_profile;
 
 	priv = devfreq->data;
+	orion_reset_controller();
 	priv->nb.notifier_call = tz_notify;
 
 	out = 1;
@@ -562,6 +762,7 @@ static int tz_suspend(struct devfreq *devfreq)
 
 	priv->bin.total_time = 0;
 	priv->bin.busy_time = 0;
+	orion_reset_controller();
 	return 0;
 }
 
