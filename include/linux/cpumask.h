@@ -193,6 +193,20 @@ static inline unsigned int cpumask_local_spread(unsigned int i, int node)
 	return 0;
 }
 
+static inline unsigned int cpumask_nth_and(unsigned int n,
+					   const struct cpumask *src1p,
+					   const struct cpumask *src2p)
+{
+	return n ? 1 : 0;
+}
+
+static inline unsigned int cpumask_nth_andnot(unsigned int n,
+					      const struct cpumask *src1p,
+					      const struct cpumask *src2p)
+{
+	return n ? 1 : 0;
+}
+
 #define for_each_cpu(cpu, mask)			\
 	for ((cpu) = 0; (cpu) < 1; (cpu)++, (void)mask)
 #define for_each_cpu_not(cpu, mask)		\
@@ -244,6 +258,26 @@ static inline unsigned int cpumask_next_zero(int n, const struct cpumask *srcp)
 int cpumask_next_and(int n, const struct cpumask *, const struct cpumask *);
 int cpumask_any_but(const struct cpumask *mask, unsigned int cpu);
 unsigned int cpumask_local_spread(unsigned int i, int node);
+/**
+ * cpumask_nth_and - return the n-th CPU in the intersection of two masks
+ * @n: zero-based CPU index within the intersection
+ * @src1p: the first input cpumask
+ * @src2p: the second input cpumask
+ *
+ * Returns >= nr_cpu_ids if the intersection has fewer than n + 1 CPUs.
+ */
+unsigned int cpumask_nth_and(unsigned int n, const struct cpumask *src1p,
+			     const struct cpumask *src2p);
+/**
+ * cpumask_nth_andnot - return the n-th CPU in the difference of two masks
+ * @n: zero-based CPU index within the difference
+ * @src1p: the input cpumask
+ * @src2p: CPUs to exclude from @src1p
+ *
+ * Returns >= nr_cpu_ids if the difference has fewer than n + 1 CPUs.
+ */
+unsigned int cpumask_nth_andnot(unsigned int n, const struct cpumask *src1p,
+				const struct cpumask *src2p);
 
 /**
  * for_each_cpu - iterate over every cpu in a mask
