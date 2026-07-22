@@ -131,6 +131,20 @@ module_param(kona_perf_floor_enable, bool, 0644);
 MODULE_PARM_DESC(kona_perf_floor_enable,
 	"Enable adaptive bandwidth floors for latency-sensitive Kona paths (default: on)");
 
+/*
+ * CPU memory requests back the devbw and memlat governors.  Those requests
+ * are performance critical, but RPMh normally accepts them asynchronously.
+ * A benchmark can therefore begin its memory phase before a newly requested
+ * DDR or LLCC corner has reached the resource controller.  Commit CPU memory
+ * votes synchronously so the caller does not continue until the new corner is
+ * visible to hardware.  Other traffic remains asynchronous to avoid adding
+ * completion latency to display, storage, and peripheral clients.
+ */
+static bool kona_cpu_memory_sync_votes = true;
+module_param_named(kona_cpu_memory_sync_votes, kona_cpu_memory_sync_votes,
+		   bool, 0644);
+MODULE_PARM_DESC(kona_cpu_memory_sync_votes, "Commit CPU memory votes synchronously");
+
 static bool kona_display_resume_floor_enable = true;
 module_param_named(kona_display_resume_floor_enable, kona_display_resume_floor_enable, bool, 0644);
 MODULE_PARM_DESC(kona_display_resume_floor_enable,
@@ -2624,6 +2638,33 @@ static void kona_icc_cache_shared_resource_vote(struct kona_icc_provider *qp,
 	}
 }
 
+static bool kona_icc_is_cpu_memory_path(const struct kona_icc_node_desc *desc)
+{
+	switch (desc->id) {
+	case KONA_ICC_CPU_TO_LLCC:
+	case KONA_ICC_CPU_TO_MEM:
+	case KONA_ICC_CPU0_TO_LLCC:
+	case KONA_ICC_CPU0_TO_MEM:
+	case KONA_ICC_CPU1_TO_LLCC:
+	case KONA_ICC_CPU1_TO_MEM:
+	case KONA_ICC_CPU2_TO_LLCC:
+	case KONA_ICC_CPU2_TO_MEM:
+	case KONA_ICC_CPU3_TO_LLCC:
+	case KONA_ICC_CPU3_TO_MEM:
+	case KONA_ICC_CPU4_TO_LLCC:
+	case KONA_ICC_CPU4_TO_MEM:
+	case KONA_ICC_CPU5_TO_LLCC:
+	case KONA_ICC_CPU5_TO_MEM:
+	case KONA_ICC_CPU6_TO_LLCC:
+	case KONA_ICC_CPU6_TO_MEM:
+	case KONA_ICC_CPU7_TO_LLCC:
+	case KONA_ICC_CPU7_TO_MEM:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static int kona_icc_send_vote_component(struct kona_icc_provider *qp,
 					unsigned int index, const char *res,
 					u64 vote, u64 *last, bool wait, bool average)
@@ -2649,7 +2690,8 @@ static int kona_icc_send_node_votes(struct kona_icc_provider *qp,
 {
 	const struct kona_icc_node_desc *desc = &qp->nodes[index];
 	int ret;
-	bool wait = false;
+	bool wait = kona_cpu_memory_sync_votes &&
+		kona_icc_is_cpu_memory_path(desc);
 
 	if (retry)
 		*retry = false;
