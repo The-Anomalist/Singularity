@@ -41,9 +41,16 @@ static unsigned int _dispatcher_q_inflight_hi = 21;
  */
 static unsigned int _dispatcher_q_inflight_lo = 6;
 
-#define A650_DISPATCH_Q_INFLIGHT_HI	24
-#define A650_DISPATCH_Q_INFLIGHT_LO	6
-#define A650_CONTEXT_DRAWOBJ_BURST	8
+/*
+ * A650's CP can sustain a deeper queue than the generic A6xx defaults.
+ * Keep enough work queued in both the one-context and multi-context paths so
+ * that short GLES command buffers do not leave bubbles between retire and
+ * submit work.  These limits remain well below the 128-entry drawqueue,
+ * preserving room for preemption and fault recovery.
+ */
+#define A650_DISPATCH_Q_INFLIGHT_HI	32
+#define A650_DISPATCH_Q_INFLIGHT_LO	8
+#define A650_CONTEXT_DRAWOBJ_BURST	10
 #define A650_SOFT_FAULT_GRACE_SAMPLES	2
 
 /* Command batch timeout (in milliseconds) */
@@ -96,7 +103,8 @@ static void _add_context(struct adreno_device *adreno_dev,
 
 static void adreno_dispatcher_tune(struct adreno_device *adreno_dev)
 {
-	if (!adreno_is_a650_family(adreno_dev))
+	/* Keep these queue depths limited to A650, including its v2 revision. */
+	if (!adreno_is_a650(adreno_dev))
 		return;
 
 	_dispatcher_q_inflight_hi = max_t(unsigned int,
