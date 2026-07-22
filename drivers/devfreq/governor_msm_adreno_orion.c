@@ -77,11 +77,11 @@ static struct workqueue_struct *workqueue;
  * controller in pwrlevel space, rather than assuming evenly spaced clocks,
  * makes it work correctly with binned and thermally restricted tables.
  */
-#define ORION_DEFAULT_UP_THRESHOLD	82
+#define ORION_DEFAULT_UP_THRESHOLD	72
 #define ORION_DEFAULT_DOWN_THRESHOLD	38
-#define ORION_DEFAULT_BOOST_THRESHOLD	92
+#define ORION_DEFAULT_BOOST_THRESHOLD	80
 #define ORION_DEFAULT_DOWN_SAMPLES	3
-#define ORION_DEFAULT_BOOST_SAMPLES	2
+#define ORION_DEFAULT_BOOST_SAMPLES	4
 #define ORION_EWMA_WEIGHT		4
 
 struct orion_controller {

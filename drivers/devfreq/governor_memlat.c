@@ -486,13 +486,13 @@ static struct memlat_node *register_common(struct device *dev,
 	node->wb_pct_thres = 100;
 	node->wb_filter_ratio = 25000;
 	/* React early to memory stalls and writeback-heavy sequential I/O. */
-	node->boost_pct = 40;
-	node->boost_stall_floor = 24;
-	node->boost_wb_pct = 22;
-	node->pressure_stall_floor = 20;
-	node->pressure_wb_floor = 20;
-	node->min_freq_persist_pct = 88;
-	node->perf_increase_pct = 35;
+	node->boost_pct = 60;
+	node->boost_stall_floor = 16;
+	node->boost_wb_pct = 16;
+	node->pressure_stall_floor = 14;
+	node->pressure_wb_floor = 14;
+	node->min_freq_persist_pct = 92;
+	node->perf_increase_pct = 50;
 	node->hw = hw;
 
 	if (hw->get_child_of_node) {

@@ -114,6 +114,17 @@ static inline bool is_low_power_session(struct msm_vidc_inst *inst)
 	return !!(inst->flags & VIDC_LOW_POWER);
 }
 
+/*
+ * Regular playback and encode sessions are latency sensitive.  Reserve the
+ * low-power vote for clients that explicitly selected it; otherwise request
+ * the firmware's turbo performance envelope for clock and bandwidth votes.
+ * Thermal mitigation remains authoritative over the resulting OPP.
+ */
+static inline bool is_performance_session(struct msm_vidc_inst *inst)
+{
+	return msm_comm_turbo_session(inst) || !is_low_power_session(inst);
+}
+
 int msm_comm_g_ctrl(struct msm_vidc_inst *inst, struct v4l2_control *ctrl)
 {
 	return v4l2_g_ctrl(&inst->ctrl_handler, ctrl);
@@ -559,7 +570,7 @@ static int msm_comm_vote_bus(struct msm_vidc_core *core)
 		else
 			vote_data[i].fps = inst->prop.fps;
 
-		if (msm_comm_turbo_session(inst))
+		if (is_performance_session(inst))
 			vote_data[i].power_mode = VIDC_POWER_TURBO;
 		else if (is_low_power_session(inst))
 			vote_data[i].power_mode = VIDC_POWER_LOW;
@@ -2483,7 +2494,7 @@ int msm_comm_scale_clocks_load(struct msm_vidc_core *core,
 			inst->fmts[OUTPUT_PORT].fourcc :
 			inst->fmts[CAPTURE_PORT].fourcc;
 
-		if (msm_comm_turbo_session(inst))
+		if (is_performance_session(inst))
 			clk_scale_data.power_mode[num_sessions] =
 				VIDC_POWER_TURBO;
 		else if (is_low_power_session(inst))
