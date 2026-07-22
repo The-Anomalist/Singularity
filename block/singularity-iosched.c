@@ -3,6 +3,7 @@
  * Singularity cgroup-aware latency I/O scheduler.
  */
 #include <linux/bio.h>
+#include <linux/bitmap.h>
 #include <linux/blk-cgroup.h>
 #include <linux/blkdev.h>
 #include <linux/elevator.h>
@@ -17,11 +18,16 @@
 #define SING_SYNC_CLASS          0
 #define SING_BG_CLASS            1
 #define SING_MAX_BUCKETS         16
-#define SING_DYN_FG_BATCH_MIN    2
-#define SING_DYN_FG_BATCH_MAX    8
+#define SING_DYN_FG_BATCH_MIN    8
+#define SING_DYN_FG_BATCH_MAX    32
 #define SING_BG_STARVE_MS        4
 
-static unsigned int sing_fg_batch = 6;
+/*
+ * Switching classes too frequently breaks up the request stream delivered to
+ * fast flash storage.  Keep a substantial foreground run by default so that
+ * sequential writes and parallel random I/O can keep the device queue full.
+ */
+static unsigned int sing_fg_batch = 16;
 module_param_named(fg_batch, sing_fg_batch, uint, 0644);
 MODULE_PARM_DESC(fg_batch, "Consecutive sync-class dispatch budget");
 
@@ -38,6 +44,7 @@ MODULE_PARM_DESC(bg_starve_ms,
 struct sing_data {
 	struct list_head q[SING_NR_CLASSES][SING_MAX_BUCKETS];
 	unsigned long bg_head_jiffies[SING_MAX_BUCKETS];
+	unsigned long active[SING_NR_CLASSES][BITS_TO_LONGS(SING_MAX_BUCKETS)];
 	unsigned int rr[SING_NR_CLASSES];
 	unsigned int fg_budget;
 	unsigned int queued[SING_NR_CLASSES];
@@ -102,18 +109,18 @@ static inline unsigned int sing_dynamic_fg_batch(struct sing_data *sd)
 	 * Keep the scheduler latency-first, but avoid long sync-only runs on
 	 * mobile workloads where radio/tethering services can issue both sync
 	 * metadata and async log/cache writes.  Sustained mixed queues should
-	 * converge toward shorter foreground slices so the async side keeps
-	 * making progress.
+	 * retain a useful foreground run so the storage queue stays deep while
+	 * still allowing the async side to make progress.
 	 */
 	if (bg_q && sync_q) {
 		if (bg_q >= sync_q || total_q > 16)
-			batch = max_t(unsigned int, batch - 2,
+			batch = max_t(unsigned int, batch / 2,
 				      SING_DYN_FG_BATCH_MIN);
 		else
-			batch = max_t(unsigned int, batch - 1,
+			batch = max_t(unsigned int, batch - 4,
 				      SING_DYN_FG_BATCH_MIN);
 	} else if (total_q < 8) {
-		batch = max_t(unsigned int, batch - 1, SING_DYN_FG_BATCH_MIN);
+		batch = max_t(unsigned int, batch - 4, SING_DYN_FG_BATCH_MIN);
 	}
 
 	return batch;
@@ -134,6 +141,8 @@ static void sing_remove_request(struct sing_data *sd, struct request *rq)
 	list_del_init(&rq->queuelist);
 	if (sd->queued[class])
 		sd->queued[class]--;
+	if (list_empty(&sd->q[class][bucket]))
+		__clear_bit(bucket, sd->active[class]);
 
 	if (class == SING_BG_CLASS && was_head) {
 		if (list_empty(&sd->q[class][bucket]))
@@ -154,24 +163,25 @@ static void sing_merged_requests(struct request_queue *q, struct request *rq,
 static int sing_dispatch_class(struct request_queue *q, struct sing_data *sd,
 			       unsigned int class)
 {
-	unsigned int i;
+	unsigned int b;
+	struct request *rq;
 
-	for (i = 0; i < SING_MAX_BUCKETS; i++) {
-		unsigned int b = (sd->rr[class] + i) & (SING_MAX_BUCKETS - 1);
-		struct request *rq;
+	/*
+	 * Walking every cgroup bucket for every dispatched request is expensive
+	 * on high-IOPS UFS devices, especially when a benchmark uses one cgroup.
+	 * Track non-empty buckets instead, while retaining round-robin fairness.
+	 */
+	b = find_next_bit(sd->active[class], SING_MAX_BUCKETS, sd->rr[class]);
+	if (b == SING_MAX_BUCKETS)
+		b = find_first_bit(sd->active[class], SING_MAX_BUCKETS);
+	if (b == SING_MAX_BUCKETS)
+		return 0;
 
-		rq = list_first_entry_or_null(&sd->q[class][b], struct request,
-					      queuelist);
-		if (!rq)
-			continue;
-
-		sing_remove_request(sd, rq);
-		sd->rr[class] = (b + 1) & (SING_MAX_BUCKETS - 1);
-		elv_dispatch_sort(q, rq);
-		return 1;
-	}
-
-	return 0;
+	rq = list_first_entry(&sd->q[class][b], struct request, queuelist);
+	sing_remove_request(sd, rq);
+	sd->rr[class] = (b + 1) & (SING_MAX_BUCKETS - 1);
+	elv_dispatch_sort(q, rq);
+	return 1;
 }
 
 static int sing_dispatch(struct request_queue *q, int force)
@@ -180,7 +190,8 @@ static int sing_dispatch(struct request_queue *q, int force)
 	unsigned int fg_batch = sing_dynamic_fg_batch(sd);
 
 	/* Bound BG latency to avoid stalling streaming writes. */
-	if (sing_bg_starving(sd) && sing_dispatch_class(q, sd, SING_BG_CLASS)) {
+	if (sd->queued[SING_BG_CLASS] && sing_bg_starving(sd) &&
+	    sing_dispatch_class(q, sd, SING_BG_CLASS)) {
 		sd->fg_budget = 0;
 		return 1;
 	}
@@ -213,6 +224,8 @@ static void sing_add_request(struct request_queue *q, struct request *rq)
 
 	list_add_tail(&rq->queuelist, head);
 	sd->queued[class]++;
+	if (was_empty)
+		__set_bit(bucket, sd->active[class]);
 	if (class == SING_BG_CLASS && was_empty)
 		sd->bg_head_jiffies[bucket] = jiffies;
 }

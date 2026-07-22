@@ -257,8 +257,14 @@ static void ufshcd_update_uic_error_cnt(struct ufs_hba *hba, u32 reg, int type)
 /* Expose the flag value from utp_upiu_query.value */
 #define MASK_QUERY_UPIU_FLAG_LOC 0xFF
 
-/* Interrupt aggregation default timeout, unit: 40us */
-#define INT_AGGR_DEF_TO	0x02
+/*
+ * Interrupt aggregation timeout, in 40us units.  A shorter timeout releases
+ * completed low-queue-depth I/O sooner, which improves sequential writes and
+ * random-access throughput by returning UFS transfer slots to the block layer
+ * more quickly.  The controller still coalesces completions at high depth via
+ * its request-count threshold.
+ */
+#define INT_AGGR_DEF_TO	0x01
 
 /* default value of auto suspend is 3 seconds */
 #define UFSHCD_AUTO_SUSPEND_DELAY_MS 3000 /* millisecs */
