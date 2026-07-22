@@ -90,6 +90,7 @@ struct kona_icc_provider {
 	spinlock_t dirty_lock;
 	bool display_active;
 	bool display_hints_available;
+	bool display_protection;
 	unsigned long display_off_jiffies;
 	struct notifier_block display_nb;
 	bool display_nb_registered;
@@ -169,12 +170,13 @@ module_param_named(kona_display_nonzero_floor_enable, kona_display_nonzero_floor
 MODULE_PARM_DESC(kona_display_nonzero_floor_enable,
 	"Force non-zero fallback floor for DISPLAY paths when clients request 0/0");
 
-static unsigned int kona_display_nonzero_floor_ab_kBps = 80000; /* 80 MB/s */
+/* Match the active SDE data-bus floor; 80 MB/s cannot cover a modeset burst. */
+static unsigned int kona_display_nonzero_floor_ab_kBps = 256000; /* 256 MB/s */
 module_param_named(kona_display_nonzero_floor_ab_kBps, kona_display_nonzero_floor_ab_kBps, uint, 0644);
 MODULE_PARM_DESC(kona_display_nonzero_floor_ab_kBps,
 	"Fallback DISPLAY floor average BW (kB/s) when a 0/0 vote is requested");
 
-static unsigned int kona_display_nonzero_floor_ib_kBps = 160000; /* 160 MB/s */
+static unsigned int kona_display_nonzero_floor_ib_kBps = 7200000; /* 7.2 GB/s */
 module_param_named(kona_display_nonzero_floor_ib_kBps, kona_display_nonzero_floor_ib_kBps, uint, 0644);
 MODULE_PARM_DESC(kona_display_nonzero_floor_ib_kBps,
 	"Fallback DISPLAY floor peak BW (kB/s) when a 0/0 vote is requested");
@@ -3585,12 +3587,12 @@ static int kona_icc_display_notifier_cb(struct notifier_block *nb,
 
 	switch (*blank) {
 	case MSM_DRM_BLANK_UNBLANK:
-		qp->display_active = true;
-		qp->display_off_jiffies = 0;
+		WRITE_ONCE(qp->display_active, true);
+		WRITE_ONCE(qp->display_off_jiffies, 0);
 		break;
 	case MSM_DRM_BLANK_POWERDOWN:
-		qp->display_active = false;
-		qp->display_off_jiffies = jiffies;
+		WRITE_ONCE(qp->display_active, false);
+		WRITE_ONCE(qp->display_off_jiffies, jiffies);
 		for (i = 0; i < qp->num_nodes; i++) {
 			if (qp->nodes[i].role != KONA_ROLE_DISPLAY)
 				continue;
@@ -3735,6 +3737,14 @@ static int kona_icc_probe(struct platform_device *pdev)
 	if (!qp)
 		return -ENOMEM;
 
+	/*
+	 * Some panels briefly drop their SDE vote to 0/0 while re-enabling.
+	 * Boards that opt in need display blank/unblank notifications so the
+	 * fallback floor is applied only while the panel is actually active.
+	 */
+	qp->display_protection = of_property_read_bool(pdev->dev.of_node,
+					       "qcom,display-icc-protection");
+
 	if (data) {
 		qp->nodes = data->nodes;
 		qp->num_nodes = data->num_nodes;
@@ -3851,10 +3861,12 @@ static int kona_icc_probe(struct platform_device *pdev)
 		goto err_free_bitmaps;
         }
 
-	if (!kona_display_notifier_enable || kona_icc_stage < 4) {
+	if ((!kona_display_notifier_enable && !qp->display_protection) ||
+	    kona_icc_stage < 4) {
 		dev_info(&pdev->dev,
-			 "kona-icc: display notifier disabled (param=%d stage=%u)\n",
-			 kona_display_notifier_enable, kona_icc_stage);
+			 "kona-icc: display notifier disabled (param=%d dt=%d stage=%u)\n",
+			 kona_display_notifier_enable, qp->display_protection,
+			 kona_icc_stage);
 		ret = -ENODEV;
 	} else {
 		ret = msm_drm_register_client(&qp->display_nb);

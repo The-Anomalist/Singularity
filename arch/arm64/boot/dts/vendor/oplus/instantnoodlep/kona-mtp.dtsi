@@ -8,6 +8,11 @@
 #include "kona-thermal-overlay.dtsi"
 #include "kona-sensor.dtsi"
 
+/* Keep the display fabric alive across transient SDE 0/0 votes. */
+&kona_icc {
+	qcom,display-icc-protection;
+};
+
 &qupv3_se12_2uart {
 	status = "ok";
 };
