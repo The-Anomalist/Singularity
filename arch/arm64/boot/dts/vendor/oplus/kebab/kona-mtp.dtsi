@@ -374,9 +374,10 @@
 		touchpanel.button-TRx = <0 0>;
 
 		S3908 {
-			report_rate_default = <90>;
+			/* AMB655X exposes 60 and 120 Hz physical panel modes only. */
+			report_rate_default = <120>;
 			report_rate_game_value = <3>;
-			fps_report_rate = <60 2 90 1 120 1>; // 1:180Hz 2:120Hz 3:240Hz
+			fps_report_rate = <60 2 120 1>; // touch report frequency, not OLED Hz
 			fingerprint_and_grip_param_equal_19805 = <1>;
 		};
 	};

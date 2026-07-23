@@ -389,6 +389,17 @@ struct syna_tcm_app_info {
 	unsigned char has_hybrid_data[2];
 };
 
+/* A panel revision is an ABI boundary; firmware/configuration must never be
+ * shared just because the controller part number is the same.
+ */
+#define SYNAPTICS_QUIRK_PRESERVE_FIRMWARE	BIT(0)
+
+struct syna_fw_variant {
+	const char *customer_config_id;
+	const char *firmware_name;
+	u32 quirks;
+};
+
 struct syna_tcm_touch_info {
 	unsigned char image_2d_scale_factor[4];
 	unsigned char image_0d_scale_factor[4];
@@ -497,6 +508,7 @@ struct syna_tcm_data {
 	uint8_t touch_direction;
 	int display_refresh_rate;
 	bool game_mode;
+	u32 fw_variant_quirks;
 	int fingerprint_and_grip_param_equal_19805;
 
 	unsigned short ubl_addr;

@@ -32,6 +32,30 @@ static int syna_tcm_enable_report(struct syna_tcm_data *tcm_info,
 				  enum report_type report_type, bool enable);
 static void syna_tcm_fw_update_in_bl(void);
 
+static const struct syna_fw_variant syna_s3908_samsung_variants[] = {
+	/* The filename is the shipped KB2000 image. */
+	{ "EE013023", "tp/19805/FW_S3908_SAMSUNG.img", 0 },
+	/* No EE013A1F image is present in this source tree. Preserve the OEM
+	 * firmware rather than writing the incompatible EE013023 image.
+	 */
+	{ "EE013A1F", NULL, SYNAPTICS_QUIRK_PRESERVE_FIRMWARE },
+};
+
+static const struct syna_fw_variant *
+syna_s3908_find_variant(const unsigned char *customer_config_id)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(syna_s3908_samsung_variants); i++) {
+		if (!strncmp(customer_config_id,
+				     syna_s3908_samsung_variants[i].customer_config_id,
+				     strlen(syna_s3908_samsung_variants[i].customer_config_id)))
+			return &syna_s3908_samsung_variants[i];
+	}
+
+	return NULL;
+}
+
 inline int syna_tcm_rmi_read(struct syna_tcm_data *tcm_info,
 			     unsigned short addr, unsigned char *data,
 			     unsigned int length)
@@ -2440,8 +2464,8 @@ static int syna_tcm_set_game_mode(struct syna_tcm_data *tcm_info, bool enable)
 			TPD_INFO("Failed to set dynamic noise length config\n");
 			return retval;
 		}
-		syna_report_refresh_switch(tcm_info,
-					   tcm_info->display_refresh_rate);
+		retval = syna_report_refresh_switch(tcm_info,
+						    tcm_info->display_refresh_rate);
 		if (retval < 0) {
 			TPD_INFO(
 				"Failed to set dynamic report frequence config\n");
@@ -2745,7 +2769,7 @@ static int syna_mode_switch(void *chip_data, work_mode mode, bool flag)
 	default:
 		break;
 	}
-	return 0;
+	return ret;
 }
 
 static int syna_ftm_process(void *chip_data)
@@ -3261,8 +3285,30 @@ static fw_update_state syna_tcm_fw_update(void *chip_data,
 	unsigned int size = 0, flash_addr = 0, device_addr = 0, device_size = 0;
 	const unsigned char *data;
 	struct reflash_hcd reflash_hcd;
+	const struct syna_fw_variant *variant;
+	bool app_initialized;
 
 	memset(&image_info, 0, sizeof(struct image_info));
+	variant = syna_s3908_find_variant(tcm_info->app_info.customer_config_id);
+	app_initialized = tcm_info->id_info.mode == MODE_APPLICATION &&
+		le2_to_uint(tcm_info->app_info.max_touch_report_config_size) != 0;
+	if (variant) {
+		tcm_info->fw_variant_quirks = variant->quirks;
+		TPD_INFO("Samsung S3908 revision %s (image %s, quirks 0x%x)\n",
+			 variant->customer_config_id,
+			 variant->firmware_name ?: "none", variant->quirks);
+	}
+
+	/* EE013A1F is a supported OEM revision, but this tree contains no image
+	 * for it. This is only safe for a healthy application and never overrides
+	 * an explicit recovery update.
+	 */
+	if (!force && variant && !variant->firmware_name && app_initialized &&
+	    (variant->quirks & SYNAPTICS_QUIRK_PRESERVE_FIRMWARE)) {
+		TPD_INFO("Recognized Samsung S3908 OEM revision EE013A1F; "
+			 "no matching bundled image, preserving installed firmware\n");
+		return FW_NO_NEED_UPDATE;
+	}
 
 	if (tcm_info->fwupdate_bootloader) {
 		if (fw) {
@@ -3325,6 +3371,15 @@ static fw_update_state syna_tcm_fw_update(void *chip_data,
 	device_config_id = tcm_info->app_info.customer_config_id;
 	TPD_INFO("image config id 0x%s, device config id 0x%s\n",
 		 image_config_id, device_config_id);
+
+	/* A forced update is recovery for the matching revision, not permission
+	 * to cross-flash a different Samsung S3908 configuration.
+	 */
+	if (variant && strncmp(image_config_id, device_config_id, 16)) {
+		TPD_INFO("Refusing firmware for config %s on Samsung S3908 revision %s\n",
+			 image_config_id, variant->customer_config_id);
+		return FW_UPDATE_ERROR;
+	}
 
 	if (!force) {
 		if ((image_fw_id == device_fw_id) &&

@@ -244,9 +244,13 @@ void operate_mode_switch(struct touchpanel_data *ts)
 			ts->ts_ops->mode_switch(ts->chip_data, MODE_EDGE,
 						ts->limit_edge);
 
-		if (ts->game_switch_support)
+		/* Do not send MODE_GAME(false) merely because the device resumed.
+		 * Some TCM revisions reject that dynamic-config sequence while their
+		 * application is still settling after reset.
+		 */
+		if (ts->game_switch_support && ts->game_mode_enabled)
 			ts->ts_ops->mode_switch(ts->chip_data, MODE_GAME,
-						ts->noise_level);
+						true);
 
 		if (ts->glove_mode_support)
 			ts->ts_ops->mode_switch(ts->chip_data, MODE_GLOVE,
@@ -2646,6 +2650,7 @@ static ssize_t proc_game_switch_write(struct file *file,
 	}
 
 	ts->noise_level = value;
+	ts->game_mode_enabled = value > 0;
 	if (ts->health_monitor_v2_support) {
 		ts->monitor_data_v2.in_game_mode = value;
 	}
