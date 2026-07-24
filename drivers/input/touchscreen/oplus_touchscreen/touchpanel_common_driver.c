@@ -1721,6 +1721,14 @@ static void tp_fw_update_work(struct work_struct *work)
 							       ts->dev);
 					if (!ret)
 						break;
+					/* A driver may replace fw_name after reading a
+					 * controller revision.  Do not make that mapped image
+					 * unreachable merely because no FAE variant exists.
+					 */
+					ret = request_firmware(&fw, ts->panel_data.fw_name,
+							       ts->dev);
+					if (!ret)
+						break;
 				} else {
 					ret = request_firmware(
 						&fw, ts->panel_data.fw_name,

@@ -7,6 +7,7 @@
 #include <linux/kthread.h>
 #include <linux/interrupt.h>
 #include <linux/regulator/consumer.h>
+#include <linux/ctype.h>
 #include "synaptics_tcm_oncell.h"
 
 DECLARE_COMPLETION(response_complete);
@@ -33,27 +34,89 @@ static int syna_tcm_enable_report(struct syna_tcm_data *tcm_info,
 static void syna_tcm_fw_update_in_bl(void);
 
 static const struct syna_fw_variant syna_s3908_samsung_variants[] = {
-	/* The filename is the shipped KB2000 image. */
-	{ "EE013023", "tp/19805/FW_S3908_SAMSUNG.img", 0 },
-	/* No EE013A1F image is present in this source tree. Preserve the OEM
-	 * firmware rather than writing the incompatible EE013023 image.
-	 */
-	{ "EE013A1F", NULL, SYNAPTICS_QUIRK_PRESERVE_FIRMWARE },
+	/* KB2000 / AMB655X Samsung S3908 only; IDs are fixed-width fields. */
+	{ "EE013023", "tp/19805/FW_S3908_SAMSUNG.img", 19805,
+	  TP_SAMSUNG, "S3908" },
+	/* Add the verified EE013A1F filename here when it is shipped. */
+	{ "EE013A1F", NULL, 19805, TP_SAMSUNG, "S3908" },
 };
 
-static const struct syna_fw_variant *
-syna_s3908_find_variant(const unsigned char *customer_config_id)
+static bool syna_config_id_valid(const u8 *id)
 {
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(syna_s3908_samsung_variants); i++) {
-		if (!strncmp(customer_config_id,
-				     syna_s3908_samsung_variants[i].customer_config_id,
-				     strlen(syna_s3908_samsung_variants[i].customer_config_id)))
-			return &syna_s3908_samsung_variants[i];
+	for (i = 0; i < 16; i++) {
+		if (!id[i]) {
+			while (++i < 16)
+				if (id[i])
+					return false;
+			return true;
+		}
+		if (!isprint(id[i]))
+			return false;
 	}
+	return true;
+}
 
+static bool syna_config_id_equal(const u8 *left, const u8 *right)
+{
+	return !memcmp(left, right, 16);
+}
+
+static bool syna_app_info_valid(struct syna_tcm_data *tcm_info)
+{
+	return tcm_info->id_info.mode == MODE_APPLICATION &&
+		tcm_info->app_info_received &&
+		tcm_info->app_status == APP_STATUS_OK &&
+		le2_to_uint(tcm_info->app_info.max_touch_report_config_size) &&
+		le2_to_uint(tcm_info->app_info.max_x) &&
+		le2_to_uint(tcm_info->app_info.max_y) &&
+		le2_to_uint(tcm_info->app_info.max_objects) &&
+		syna_config_id_valid(tcm_info->app_info.customer_config_id);
+}
+
+static const struct syna_fw_variant *
+syna_s3908_find_variant(struct syna_tcm_data *tcm_info, const u8 *id)
+{
+	struct panel_info *panel_data = tcm_info->panel_data;
+	int i;
+
+	if (!panel_data)
+		return NULL;
+	for (i = 0; i < ARRAY_SIZE(syna_s3908_samsung_variants); i++) {
+		const struct syna_fw_variant *variant =
+			&syna_s3908_samsung_variants[i];
+
+		if (panel_data->project_id == variant->project_id &&
+		    panel_data->tp_type == variant->tp_type &&
+		    !strcmp(panel_data->chip_name, variant->chip_name) &&
+		    syna_config_id_equal(id, variant->customer_config_id))
+			return variant;
+	}
 	return NULL;
+}
+
+static void syna_cache_revision(struct syna_tcm_data *tcm_info)
+{
+	const struct syna_fw_variant *variant;
+
+	if (!syna_app_info_valid(tcm_info))
+		return;
+	variant = syna_s3908_find_variant(tcm_info,
+					 tcm_info->app_info.customer_config_id);
+	if (!variant)
+		return;
+	memcpy(tcm_info->cached_customer_config_id,
+	       tcm_info->app_info.customer_config_id, 16);
+	tcm_info->revision_valid = true;
+	TPD_INFO("Samsung KB2000/AMB655X S3908 revision %.16s (%16phN)\n",
+		 tcm_info->cached_customer_config_id,
+		 tcm_info->cached_customer_config_id);
+	if (variant->firmware_name && tcm_info->panel_data->fw_name) {
+		strscpy(tcm_info->panel_data->fw_name, variant->firmware_name,
+			MAX_FW_NAME_LENGTH);
+		TPD_INFO("selected revision firmware %s\n", variant->firmware_name);
+	}
 }
 
 inline int syna_tcm_rmi_read(struct syna_tcm_data *tcm_info,
@@ -1683,6 +1746,8 @@ static int syna_tcm_get_app_info(struct syna_tcm_data *tcm_info)
 	unsigned int resp_buf_size = 0, resp_length = 0;
 	unsigned int timeout = APP_STATUS_POLL_TIMEOUT_MS;
 
+	tcm_info->app_info_received = false;
+	memset(&tcm_info->app_info, 0, sizeof(tcm_info->app_info));
 get_app_info:
 	retval = syna_tcm_write_message(tcm_info, CMD_GET_APPLICATION_INFO,
 					NULL, 0, &resp_buf, &resp_buf_size,
@@ -1703,6 +1768,7 @@ get_app_info:
 	}
 
 	tcm_info->app_status = le2_to_uint(tcm_info->app_info.status);
+	tcm_info->app_info_received = true;
 
 	if (tcm_info->app_status == APP_STATUS_BOOTING ||
 	    tcm_info->app_status == APP_STATUS_UPDATING) {
@@ -2157,6 +2223,7 @@ static int syna_get_chip_info(void *chip_data)
 	struct syna_tcm_data *tcm_info = (struct syna_tcm_data *)chip_data;
 
 	TPD_INFO("%s: Enter\n", __func__);
+	tcm_info->app_info_received = false;
 
 	ret = syna_tcm_reset(
 		tcm_info); // reset to get bootloader info or boot info
@@ -2164,6 +2231,7 @@ static int syna_get_chip_info(void *chip_data)
 		TPD_INFO("failed to reset device\n");
 	}
 
+	syna_cache_revision(tcm_info);
 	ret = syna_get_default_report_config(tcm_info);
 	if (ret < 0) {
 		TPD_INFO("failed to get default report config\n");
@@ -2177,6 +2245,7 @@ static int syna_get_vendor(void *chip_data, struct panel_info *panel_data)
 	struct syna_tcm_data *tcm_info = (struct syna_tcm_data *)chip_data;
 
 	tcm_info->iHex_name = panel_data->extra;
+	tcm_info->panel_data = panel_data;
 
 	strlcat(manu_temp, panel_data->manufacture_info.manufacture,
 		MAX_DEVICE_MANU_LENGTH);
@@ -2829,24 +2898,26 @@ static fw_check_state syna_fw_check(void *chip_data,
 {
 	struct syna_tcm_data *tcm_info = (struct syna_tcm_data *)chip_data;
 	u16 config = 0;
+	char config_id[17];
 	int retval = 0;
 
-	TPD_INFO("fw id %d, custom config id 0x%s\n", panel_data->TP_FW,
+	TPD_INFO("fw id %d, custom config id %.16s (%16phN)\n", panel_data->TP_FW,
+		 tcm_info->app_info.customer_config_id,
 		 tcm_info->app_info.customer_config_id);
 
-	if (strlen(tcm_info->app_info.customer_config_id) == 0) {
+	if (!syna_app_info_valid(tcm_info))
 		return FW_ABNORMAL;
-	}
 
-	sscanf(tcm_info->app_info.customer_config_id, "%x", &panel_data->TP_FW);
-	if (panel_data->TP_FW == 0) {
+	memcpy(config_id, tcm_info->app_info.customer_config_id, 16);
+	config_id[16] = '\0';
+	if (sscanf(config_id, "%8x", &panel_data->TP_FW) != 1 ||
+	    !panel_data->TP_FW)
 		return FW_ABNORMAL;
-	}
 
-	if (panel_data->manufacture_info.version) {
-		sprintf(panel_data->manufacture_info.version, "0x%s",
-			tcm_info->app_info.customer_config_id);
-	}
+	if (panel_data->manufacture_info.version)
+		snprintf(panel_data->manufacture_info.version,
+			 MAX_DEVICE_VERSION_LENGTH, "0x%.16s",
+			 tcm_info->app_info.customer_config_id);
 
 	retval =
 		syna_tcm_get_dynamic_config(tcm_info, DC_NOISE_LENGTH, &config);
@@ -3286,27 +3357,27 @@ static fw_update_state syna_tcm_fw_update(void *chip_data,
 	const unsigned char *data;
 	struct reflash_hcd reflash_hcd;
 	const struct syna_fw_variant *variant;
-	bool app_initialized;
 
 	memset(&image_info, 0, sizeof(struct image_info));
-	variant = syna_s3908_find_variant(tcm_info->app_info.customer_config_id);
-	app_initialized = tcm_info->id_info.mode == MODE_APPLICATION &&
-		le2_to_uint(tcm_info->app_info.max_touch_report_config_size) != 0;
-	if (variant) {
-		tcm_info->fw_variant_quirks = variant->quirks;
-		TPD_INFO("Samsung S3908 revision %s (image %s, quirks 0x%x)\n",
-			 variant->customer_config_id,
-			 variant->firmware_name ?: "none", variant->quirks);
-	}
-
-	/* EE013A1F is a supported OEM revision, but this tree contains no image
-	 * for it. This is only safe for a healthy application and never overrides
-	 * an explicit recovery update.
+	/* Refresh application metadata before accepting either a normal or forced
+	 * image. A cached revision is used only after a previous full validation.
 	 */
-	if (!force && variant && !variant->firmware_name && app_initialized &&
-	    (variant->quirks & SYNAPTICS_QUIRK_PRESERVE_FIRMWARE)) {
-		TPD_INFO("Recognized Samsung S3908 OEM revision EE013A1F; "
-			 "no matching bundled image, preserving installed firmware\n");
+	ret = syna_tcm_identify(tcm_info, true);
+	if (ret >= 0)
+		syna_cache_revision(tcm_info);
+	if (!tcm_info->revision_valid) {
+		TPD_INFO("refusing firmware update: S3908 revision is not established\n");
+		return FW_UPDATE_ERROR;
+	}
+	variant = syna_s3908_find_variant(tcm_info,
+					 tcm_info->cached_customer_config_id);
+	if (!variant) {
+		TPD_INFO("refusing firmware update: unsupported controller context\n");
+		return FW_UPDATE_ERROR;
+	}
+	if (!force && !variant->firmware_name && syna_app_info_valid(tcm_info)) {
+		TPD_INFO("recognized OEM revision %.16s; no verified bundled image, preserving firmware\n",
+			 tcm_info->cached_customer_config_id);
 		return FW_NO_NEED_UPDATE;
 	}
 
@@ -3368,22 +3439,22 @@ static fw_update_state syna_tcm_fw_update(void *chip_data,
 		 device_fw_id);
 
 	image_config_id = header->customer_config_id;
-	device_config_id = tcm_info->app_info.customer_config_id;
-	TPD_INFO("image config id 0x%s, device config id 0x%s\n",
-		 image_config_id, device_config_id);
+	device_config_id = tcm_info->cached_customer_config_id;
+	TPD_INFO("image config id %.16s (%16phN), device config id %.16s (%16phN)\n",
+		 image_config_id, image_config_id, device_config_id, device_config_id);
 
 	/* A forced update is recovery for the matching revision, not permission
 	 * to cross-flash a different Samsung S3908 configuration.
 	 */
-	if (variant && strncmp(image_config_id, device_config_id, 16)) {
-		TPD_INFO("Refusing firmware for config %s on Samsung S3908 revision %s\n",
-			 image_config_id, variant->customer_config_id);
+	if (!syna_config_id_equal(image_config_id, device_config_id)) {
+		TPD_INFO("Refusing firmware for config %.16s on Samsung S3908 revision %.16s\n",
+			 image_config_id, device_config_id);
 		return FW_UPDATE_ERROR;
 	}
 
 	if (!force) {
 		if ((image_fw_id == device_fw_id) &&
-		    (strncmp(image_config_id, device_config_id, 16) == 0)) {
+		    syna_config_id_equal(image_config_id, device_config_id)) {
 			TPD_INFO(
 				"same firmware/config id, no need to update\n");
 			return FW_NO_NEED_UPDATE;
@@ -5032,7 +5103,8 @@ static void syna_auto_test(struct seq_file *s, void *chip_data,
 		error_count++;
 	}
 
-	seq_printf(s, "imageid = 0x%x customID 0x%s\n", syna_testdata->TP_FW,
+	seq_printf(s, "imageid = 0x%x customID %.16s (%16phN)\n",
+		   syna_testdata->TP_FW, tcm_info->app_info.customer_config_id,
 		   tcm_info->app_info.customer_config_id);
 	seq_printf(s, "%d error(s). %s\n", error_count,
 		   error_count ? "" : "All test passed.");
@@ -5421,11 +5493,13 @@ static void syna_main_register(struct seq_file *s, void *chip_data)
 	TPD_INFO("low temperatue mode: %d\n", config);
 	seq_printf(s, "low temperatue mode : %d\n", config);
 
-	TPD_INFO("Buid ID:%d, Custom ID:0x%s\n",
+	TPD_INFO("Buid ID:%d, Custom ID:%.16s (%16phN)\n",
 		 le4_to_uint(tcm_info->id_info.build_id),
+		 tcm_info->app_info.customer_config_id,
 		 tcm_info->app_info.customer_config_id);
-	seq_printf(s, "Buid ID:%d, Custom ID:0x%s\n",
+	seq_printf(s, "Buid ID:%d, Custom ID:%.16s (%16phN)\n",
 		   le4_to_uint(tcm_info->id_info.build_id),
+		   tcm_info->app_info.customer_config_id,
 		   tcm_info->app_info.customer_config_id);
 
 	TPD_INFO("APP info : version:%d\n",
