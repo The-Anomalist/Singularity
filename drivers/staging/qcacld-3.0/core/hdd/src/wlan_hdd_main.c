@@ -16078,11 +16078,23 @@ static QDF_STATUS hdd_qdf_init(void)
 	if (QDF_IS_STATUS_ERROR(status))
 		goto exit;
 
-	status = qdf_debugfs_init();
-	if (QDF_IS_STATUS_ERROR(status)) {
-		hdd_err("Failed to init debugfs; status:%u", status);
+status = qdf_debugfs_init();
+if (QDF_IS_STATUS_ERROR(status)) {
+	hdd_err("Failed to init debugfs; status:%u", status);
+
+	/*
+	 * On some Android 16 QPR2 ROMs, QDF debugfs may already be
+	 * initialized/busy by the time HDD init runs. Do not abort WLAN
+	 * bring-up for a debugfs-only busy/already-initialized condition,
+	 * otherwise wlan0 is never registered.
+	 */
+	if (status == 16) {
+		hdd_err("debugfs init returned busy/already initialized; continuing");
+		status = QDF_STATUS_SUCCESS;
+	} else {
 		goto print_deinit;
 	}
+}
 
 	qdf_lock_stats_init();
 	qdf_mem_init();
