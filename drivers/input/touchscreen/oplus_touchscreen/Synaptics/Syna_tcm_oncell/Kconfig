@@ -10,3 +10,17 @@ config TOUCHPANEL_SYNAPTICS_TCM_ONCELL
 
 	  If unsure, say N.
 
+config TOUCHPANEL_SYNAPTICS_TCM_ONCELL_EXPERIMENTAL_EE013023
+	bool "Allow experimental EE013023 image test on EE013A1F"
+	depends on TOUCHPANEL_SYNAPTICS_TCM_ONCELL
+	default n
+	help
+	  Expose the bundled EE013023 Samsung S3908 firmware image to an
+	  EE013A1F controller for controlled compatibility testing.
+
+	  A normal firmware check only parses and logs the candidate image.
+	  The driver requires an explicit forced firmware update before it
+	  permits the cross-revision write.
+
+	  This can leave the touchscreen unusable and should remain disabled
+	  in production kernels.

@@ -37,8 +37,18 @@ static const struct syna_fw_variant syna_s3908_samsung_variants[] = {
 	/* KB2000 / AMB655X Samsung S3908 only; IDs are fixed-width fields. */
 	{ "EE013023", "tp/19805/FW_S3908_SAMSUNG.img", 19805,
 	  TP_SAMSUNG, "S3908" },
+#ifdef CONFIG_TOUCHPANEL_SYNAPTICS_TCM_ONCELL_EXPERIMENTAL_EE013023
+	/*
+	 * Experimental only: expose the shipped EE013023 image to an
+	 * EE013A1F controller. The update path still requires an explicit
+	 * forced update before allowing the cross-revision write.
+	 */
+	{ "EE013A1F", "tp/19805/FW_S3908_SAMSUNG.img", 19805,
+	  TP_SAMSUNG, "S3908" },
+#else
 	/* Add the verified EE013A1F filename here when it is shipped. */
 	{ "EE013A1F", NULL, 19805, TP_SAMSUNG, "S3908" },
+#endif
 };
 
 static bool syna_config_id_valid(const u8 *id)
@@ -58,9 +68,37 @@ static bool syna_config_id_valid(const u8 *id)
 	return true;
 }
 
+static size_t syna_config_id_length(const u8 *id)
+{
+	size_t length = 16;
+
+	while (length && (id[length - 1] == '\0' || id[length - 1] == ' '))
+		length--;
+
+	return length;
+}
+
 static bool syna_config_id_equal(const u8 *left, const u8 *right)
 {
-	return !memcmp(left, right, 16);
+	size_t left_length = syna_config_id_length(left);
+	size_t right_length = syna_config_id_length(right);
+
+	return left_length && left_length == right_length &&
+		!memcmp(left, right, left_length);
+}
+
+static bool syna_s3908_experimental_pair(const u8 *device_id,
+					 const u8 *image_id)
+{
+#ifdef CONFIG_TOUCHPANEL_SYNAPTICS_TCM_ONCELL_EXPERIMENTAL_EE013023
+	static const u8 ee013a1f[16] = "EE013A1F";
+	static const u8 ee013023[16] = "EE013023";
+
+	return syna_config_id_equal(device_id, ee013a1f) &&
+		syna_config_id_equal(image_id, ee013023);
+#else
+	return false;
+#endif
 }
 
 static bool syna_app_info_valid(struct syna_tcm_data *tcm_info)
@@ -3357,6 +3395,7 @@ static fw_update_state syna_tcm_fw_update(void *chip_data,
 	const unsigned char *data;
 	struct reflash_hcd reflash_hcd;
 	const struct syna_fw_variant *variant;
+	bool experimental_crossflash;
 
 	memset(&image_info, 0, sizeof(struct image_info));
 	/* Refresh application metadata before accepting either a normal or forced
@@ -3446,10 +3485,23 @@ static fw_update_state syna_tcm_fw_update(void *chip_data,
 	/* A forced update is recovery for the matching revision, not permission
 	 * to cross-flash a different Samsung S3908 configuration.
 	 */
+	experimental_crossflash =
+		syna_s3908_experimental_pair(device_config_id, image_config_id);
 	if (!syna_config_id_equal(image_config_id, device_config_id)) {
-		TPD_INFO("Refusing firmware for config %.16s on Samsung S3908 revision %.16s\n",
-			 image_config_id, device_config_id);
-		return FW_UPDATE_ERROR;
+		if (!experimental_crossflash) {
+			TPD_INFO("Refusing firmware for config %.16s on Samsung S3908 revision %.16s\n",
+				 image_config_id, device_config_id);
+			return FW_UPDATE_ERROR;
+		}
+
+		if (!force) {
+			TPD_INFO("experimental S3908 candidate accepted for dry-run: device %.16s, image %.16s; force required to write\n",
+				 device_config_id, image_config_id);
+			return FW_NO_NEED_UPDATE;
+		}
+
+		TPD_INFO("WARNING: forcing experimental S3908 cross-flash: device %.16s, image %.16s\n",
+			 device_config_id, image_config_id);
 	}
 
 	if (!force) {
