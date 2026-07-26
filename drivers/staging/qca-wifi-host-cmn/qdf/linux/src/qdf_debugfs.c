@@ -37,10 +37,23 @@ static qdf_dentry_t qdf_debugfs_root;
 
 QDF_STATUS qdf_debugfs_init(void)
 {
+	qdf_dentry_t root;
+
+	if (qdf_debugfs_root)
+		return QDF_STATUS_SUCCESS;
+
+	root = debugfs_lookup(KBUILD_MODNAME, NULL);
+	if (root) {
+		qdf_debugfs_root = root;
+		return QDF_STATUS_SUCCESS;
+	}
+
 	qdf_debugfs_root = debugfs_create_dir(KBUILD_MODNAME, NULL);
 
-	if (!qdf_debugfs_root)
+	if (IS_ERR_OR_NULL(qdf_debugfs_root)) {
+		qdf_debugfs_root = NULL;
 		return QDF_STATUS_E_FAILURE;
+	}
 
 	return QDF_STATUS_SUCCESS;
 }
