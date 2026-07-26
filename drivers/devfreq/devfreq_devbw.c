@@ -158,6 +158,7 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 
 	if (d->use_icc) {
 		u32 avg_bw, peak_bw;
+		bool display_active = atomic_read(&devbw_display_active);
 
 		/*
 		 * msm-bus programmed per-path peak votes at full requested IB while
@@ -185,8 +186,8 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 		 * DT should keep this modest; over-large uplifts are expensive on
 		 * battery-powered devices because every client vote is multiplied.
 		 */
-		if (atomic_read(&devbw_display_active) &&
-		    d->icc_upscale_percent > 100 && new_ib > d->cur_ib) {
+		if (display_active && d->icc_upscale_percent > 100 &&
+		    new_ib > d->cur_ib) {
 			u64 boosted;
 
 			if (avg_bw) {
@@ -207,8 +208,8 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 		 * sensitive SKUs. Keep it screen-on and ramp-only so steady-state
 		 * or screen-off votes are not permanently inflated.
 		 */
-		if (atomic_read(&devbw_display_active) &&
-		    d->icc_boost_percent > 100 && new_ib > d->cur_ib) {
+		if (display_active && d->icc_boost_percent > 100 &&
+		    new_ib > d->cur_ib) {
 			u64 boosted;
 
 			if (avg_bw) {
@@ -229,13 +230,11 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 		 * critical clients don't fall into very low perf corners. Screen-off
 		 * requests intentionally skip these floors to allow standby collapse.
 		 */
-		if (atomic_read(&devbw_display_active) &&
-		    avg_bw && d->icc_min_avg_kbps &&
+		if (display_active && avg_bw && d->icc_min_avg_kbps &&
 		    avg_bw < d->icc_min_avg_kbps)
 			avg_bw = d->icc_min_avg_kbps;
 
-		if (atomic_read(&devbw_display_active) &&
-		    peak_bw && d->icc_min_peak_kbps &&
+		if (display_active && peak_bw && d->icc_min_peak_kbps &&
 		    peak_bw < d->icc_min_peak_kbps)
 			peak_bw = d->icc_min_peak_kbps;
 

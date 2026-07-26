@@ -152,6 +152,7 @@ return ERR_PTR(-ENOMEM);
 
 path->provider = provider;
 path->id = spec->args[0];
+mutex_init(&path->lock);
 
 return path;
 }
@@ -274,14 +275,19 @@ int icc_set_bw(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	if (IS_ERR_OR_NULL(path))
 		return -EINVAL;
 
+	/* Keep the cache check and provider transaction atomic per path. */
+	mutex_lock(&path->lock);
+
 	seq = atomic_long_read(&icc_resume_seq);
 	prev_avg = path->avg_bw;
 	prev_peak = path->peak_bw;
 	prev_seq = path->resume_seq;
 	need_reapply = path->resume_seq != seq;
 
-	if (!need_reapply && prev_avg == avg_bw && prev_peak == peak_bw)
-		return 0;
+	if (!need_reapply && prev_avg == avg_bw && prev_peak == peak_bw) {
+		ret = 0;
+		goto out_unlock;
+	}
 
 	/*
 	 * Keep zero-bandwidth paths in the fast path after resume. There is
@@ -289,14 +295,16 @@ int icc_set_bw(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	 */
 	if (need_reapply && !avg_bw && !peak_bw && !prev_avg && !prev_peak) {
 		path->resume_seq = seq;
-		return 0;
+		ret = 0;
+		goto out_unlock;
 	}
 
 	if (!path->provider || !path->provider->set) {
 		path->avg_bw = avg_bw;
 		path->peak_bw = peak_bw;
 		path->resume_seq = seq;
-		return 0;
+		ret = 0;
+		goto out_unlock;
 	}
 
 	ret = path->provider->set(path, avg_bw, peak_bw);
@@ -309,14 +317,17 @@ int icc_set_bw(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 		path->avg_bw = prev_avg;
 		path->peak_bw = prev_peak;
 		path->resume_seq = prev_seq;
-		return ret;
+		goto out_unlock;
 	}
 
 	path->avg_bw = avg_bw;
 	path->peak_bw = peak_bw;
 	path->resume_seq = seq;
 
-	return 0;
+	ret = 0;
+out_unlock:
+	mutex_unlock(&path->lock);
+	return ret;
 }
 
 EXPORT_SYMBOL_GPL(icc_set_bw);

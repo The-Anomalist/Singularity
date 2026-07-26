@@ -177,6 +177,9 @@ static void update_counts(struct memlat_cpu_grp *cpu_grp)
 	ktime_t now = ktime_get();
 	unsigned long delta = ktime_us_delta(now, cpu_grp->last_update_ts);
 
+	/* A same-tick restart/update must not turn into a divide-by-zero. */
+	delta = max(delta, 1UL);
+
 	cpu_grp->last_ts_delta_us = delta;
 	cpu_grp->last_update_ts = now;
 
@@ -192,9 +195,13 @@ static void update_counts(struct memlat_cpu_grp *cpu_grp)
 				common_evs[CYC_IDX].last_delta;
 
 		cpu_data->freq = common_evs[CYC_IDX].last_delta / delta;
-		cpu_data->stall_pct = mult_frac(100,
-				common_evs[STALL_IDX].last_delta,
-				common_evs[CYC_IDX].last_delta);
+		if (common_evs[CYC_IDX].last_delta)
+			cpu_data->stall_pct = min_t(unsigned long, 100,
+				mult_frac(100,
+					 common_evs[STALL_IDX].last_delta,
+					 common_evs[CYC_IDX].last_delta));
+		else
+			cpu_data->stall_pct = 0;
 	}
 
 	for (i = 0; i < cpu_grp->num_mons; i++) {
@@ -241,10 +248,11 @@ static unsigned long get_cnt(struct memlat_hwmon *hw)
 			devstats->mem_count = 1;
 		}
 
-		if (mon->access_ev_id && mon->wb_ev_id)
-			devstats->wb_pct =
+		if (mon->access_ev_id && mon->wb_ev_id &&
+		    mon->access_ev[mon_idx].last_delta)
+			devstats->wb_pct = min_t(unsigned long, 100,
 				mult_frac(100, mon->wb_ev[mon_idx].last_delta,
-					  mon->access_ev[mon_idx].last_delta);
+					  mon->access_ev[mon_idx].last_delta));
 		else
 			devstats->wb_pct = 0;
 	}
@@ -383,6 +391,8 @@ static int start_hwmon(struct memlat_hwmon *hw)
 			goto unlock_out;
 
 		INIT_DEFERRABLE_WORK(&cpu_grp->work, &memlat_monitor_work);
+		/* Start the rate window when counters start, not at probe time. */
+		cpu_grp->last_update_ts = ktime_get();
 	}
 
 	if (mon->miss_ev) {
@@ -470,13 +480,10 @@ static void set_update_ms(struct memlat_cpu_grp *cpu_grp)
 
 	if (new_update_ms == UINT_MAX) {
 		cancel_delayed_work(&cpu_grp->work);
-	} else if (cpu_grp->update_ms == UINT_MAX) {
-		queue_delayed_work(memlat_wq, &cpu_grp->work,
-				   msecs_to_jiffies(new_update_ms));
-	} else if (new_update_ms > cpu_grp->update_ms) {
-		cancel_delayed_work(&cpu_grp->work);
-		queue_delayed_work(memlat_wq, &cpu_grp->work,
-				   msecs_to_jiffies(new_update_ms));
+	} else if (new_update_ms != cpu_grp->update_ms) {
+		/* Apply faster requests without waiting for the old period. */
+		mod_delayed_work(memlat_wq, &cpu_grp->work,
+				 msecs_to_jiffies(new_update_ms));
 	}
 
 	cpu_grp->update_ms = new_update_ms;

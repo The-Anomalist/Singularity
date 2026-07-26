@@ -3,6 +3,7 @@
 #define __LINUX_INTERCONNECT_PROVIDER_H__
 
 #include <linux/list.h>
+#include <linux/mutex.h>
 #include <linux/types.h>
 #include <linux/of.h>      // ADD: bring in struct of_phandle_args definition
 
@@ -37,6 +38,8 @@ struct icc_path {
          * votes even if the requested values did not change.
          */
         unsigned long resume_seq;
+	/* Serializes the cached vote and the provider transaction. */
+	struct mutex lock;
         void *data;
 };
 
@@ -55,4 +58,3 @@ static inline struct class *icc_class_get(void)
 #endif
 
 #endif
-
