@@ -111,50 +111,53 @@
 };
 
 /*
- * Benchmark-oriented CPU memory path floors.
- * Keep these scoped to Oplus kona variants so generic kona boards are not affected.
+ * Singularity CPU memory path floors.
+ * Keep these scoped to OnePlus 8 variants so generic kona boards are not affected.
+ * The previous always-on floors kept interconnect rails high throughout
+ * normal mixed use.  These values leave enough headroom for scheduler and
+ * bwmon ramp-up, while letting DDR/LLCC settle lower between bursts.
  */
 &cpu_cpu_llcc_bw {
-	qcom,icc-min-avg-kbps = <6400000>;
-	qcom,icc-min-peak-kbps = <12800000>;
-	qcom,icc-boost-percent = <160>;
-	qcom,icc-upscale-percent = <260>;
-	qcom,polling-ms = <1>;
+	qcom,icc-min-avg-kbps = <4800000>;
+	qcom,icc-min-peak-kbps = <9600000>;
+	qcom,icc-boost-percent = <125>;
+	qcom,icc-upscale-percent = <170>;
+	qcom,polling-ms = <8>;
 };
 
 &cpu_llcc_ddr_bw {
-	qcom,icc-min-avg-kbps = <6400000>;
-	qcom,icc-min-peak-kbps = <12800000>;
-	qcom,icc-boost-percent = <165>;
-	qcom,icc-upscale-percent = <270>;
-	qcom,polling-ms = <1>;
+	qcom,icc-min-avg-kbps = <3600000>;
+	qcom,icc-min-peak-kbps = <7200000>;
+	qcom,icc-boost-percent = <125>;
+	qcom,icc-upscale-percent = <170>;
+	qcom,polling-ms = <8>;
 };
 
 &cpu4_cpu_ddr_latfloor {
-	qcom,icc-min-avg-kbps = <6400000>;
-	qcom,icc-min-peak-kbps = <12800000>;
-	qcom,icc-boost-percent = <165>;
+	qcom,icc-min-avg-kbps = <3600000>;
+	qcom,icc-min-peak-kbps = <7200000>;
+	qcom,icc-boost-percent = <125>;
 };
 
 /*
- * Keep GPU memory/cfg paths more aggressively provisioned during bursty
- * foreground workloads so Adreno 650 avoids undershooting right after idle.
+ * Keep GPU memory/cfg paths responsive for foreground animation, but avoid
+ * pinning the fabric at benchmark-style floors all day.
  */
 &gpubw {
-	qcom,icc-boost-percent = <220>;
-	qcom,icc-upscale-percent = <360>;
-	qcom,polling-ms = <2>;
-	qcom,icc-min-avg-kbps = <5625000>;
-	qcom,icc-min-peak-kbps = <22500000>;
+	qcom,icc-boost-percent = <160>;
+	qcom,icc-upscale-percent = <250>;
+	qcom,polling-ms = <8>;
+	qcom,icc-min-avg-kbps = <4218750>;
+	qcom,icc-min-peak-kbps = <16875000>;
 };
 
 &msm_gpu {
-	qcom,pm-qos-active-latency = <0>;
-	qcom,ca-busy-penalty = <12000>;
-	qcom,ca-target-pwrlevel = <0>;
-	qcom,tz-sample-floor = <3000>;
-	qcom,tz-min-busy = <600>;
-	qcom,tz-busy-ceiling = <30000>;
+	qcom,pm-qos-active-latency = <20>;
+	qcom,ca-busy-penalty = <10000>;
+	qcom,ca-target-pwrlevel = <1>;
+	qcom,tz-sample-floor = <2500>;
+	qcom,tz-min-busy = <550>;
+	qcom,tz-busy-ceiling = <28000>;
 	qcom,gpu-icc-bw-avg-kbps =
 		<1 390625 585937 878906 1113281 1406250 1757812
 		 2109375 2812500 3375000 4218750 4921875 5625000 6328125>;
@@ -166,15 +169,15 @@
 };
 
 /*
- * Raise storage fabric floor so ROM I/O tests don't stall on brief
- * under-votes while the DDR/LLCC paths ramp.
+ * Keep app-launch I/O from stalling, but drop the sustained storage fabric
+ * vote below the previous benchmark-oriented floor.
  */
 &ufshc_mem {
-	qcom,icc-min-avg-kbps = <1200000>;
-	qcom,icc-min-peak-kbps = <6000000>;
-	qcom,icc-boost-percent = <150>;
-	qcom,icc-upscale-percent = <240>;
-	qcom,polling-ms = <2>;
+	qcom,icc-min-avg-kbps = <900000>;
+	qcom,icc-min-peak-kbps = <5000000>;
+	qcom,icc-boost-percent = <130>;
+	qcom,icc-upscale-percent = <200>;
+	qcom,polling-ms = <8>;
 };
 
 /*
