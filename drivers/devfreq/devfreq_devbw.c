@@ -325,7 +325,7 @@ static int devbw_target(struct device *dev, unsigned long *freq, u32 flags)
 	if (!gov_ab) {
 		gov_ab = *freq;
 		if (*freq > d->cur_ib)
-			gov_ab = mult_frac(*freq, 5, 4);
+			gov_ab = mult_frac(*freq, 9, 8);
 	}
 
 	return set_bw(dev, *freq, gov_ab);
@@ -438,9 +438,9 @@ int devfreq_add_devbw(struct device *dev)
 	if (d->icc_upscale_percent > 300)
 		d->icc_upscale_percent = 300;
 	if (!d->polling_ms)
-		d->polling_ms = 20;
-	if (d->polling_ms < 2)
-		d->polling_ms = 2;
+		d->polling_ms = 50;
+	if (d->polling_ms < 5)
+		d->polling_ms = 5;
 	if (d->polling_ms > 100)
 		d->polling_ms = 100;
 	ret = 0;
