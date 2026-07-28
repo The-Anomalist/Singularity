@@ -24,6 +24,7 @@ struct sugov_tunables {
 	unsigned int		down_rate_limit_us;
 	unsigned int		hispeed_load;
 	unsigned int		hispeed_freq;
+	bool			hispeed_freq_override;
 	unsigned int		rtg_boost_freq;
 	bool			pl;
 };
@@ -40,6 +41,7 @@ struct sugov_policy {
 	unsigned long hispeed_util;
 	unsigned long rtg_boost_util;
 	unsigned long max;
+	unsigned int default_hispeed_freq;
 
 	raw_spinlock_t		update_lock;	/* For shared policies */
 	u64			last_freq_update_time;
@@ -605,7 +607,10 @@ static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #endif /* CONFIG_NO_HZ_COMMON */
 
 #define NL_RATIO 75
-#define DEFAULT_HISPEED_LOAD 90
+#define DEFAULT_HISPEED_LOAD 80
+#define DEFAULT_CPU0_HISPEED_FREQ 1400000
+#define DEFAULT_CPU4_HISPEED_FREQ 2000000
+#define DEFAULT_CPU7_HISPEED_FREQ 2500000
 #define DEFAULT_CPU0_RTG_BOOST_FREQ 1000000
 #define DEFAULT_CPU4_RTG_BOOST_FREQ 0
 #define DEFAULT_CPU7_RTG_BOOST_FREQ 0
@@ -663,6 +668,14 @@ static inline unsigned long target_util(struct sugov_policy *sg_policy,
 	return util;
 }
 
+static unsigned int sugov_hispeed_freq(struct sugov_policy *sg_policy)
+{
+	if (sg_policy->tunables->hispeed_freq_override)
+		return sg_policy->tunables->hispeed_freq;
+
+	return sg_policy->default_hispeed_freq;
+}
+
 static void sugov_update_single(struct update_util_data *hook, u64 time,
 				unsigned int flags)
 {
@@ -694,7 +707,7 @@ static void sugov_update_single(struct update_util_data *hook, u64 time,
 	if (sg_policy->max != max) {
 		sg_policy->max = max;
 		hs_util = target_util(sg_policy,
-				       sg_policy->tunables->hispeed_freq);
+				       sugov_hispeed_freq(sg_policy));
 		sg_policy->hispeed_util = hs_util;
 
 		boost_util = target_util(sg_policy,
@@ -805,7 +818,7 @@ sugov_update_shared(struct update_util_data *hook, u64 time, unsigned int flags)
 	if (sg_policy->max != sg_cpu->max) {
 		sg_policy->max = sg_cpu->max;
 		hs_util = target_util(sg_policy,
-					sg_policy->tunables->hispeed_freq);
+					sugov_hispeed_freq(sg_policy));
 		sg_policy->hispeed_util = hs_util;
 
 		boost_util = target_util(sg_policy,
@@ -993,10 +1006,12 @@ static ssize_t hispeed_freq_store(struct gov_attr_set *attr_set,
 		return -EINVAL;
 
 	tunables->hispeed_freq = val;
+	/* A zero value drops a previous override and restores each policy floor. */
+	tunables->hispeed_freq_override = val != 0;
 	list_for_each_entry(sg_policy, &attr_set->policy_list, tunables_hook) {
 		raw_spin_lock_irqsave(&sg_policy->update_lock, flags);
 		hs_util = target_util(sg_policy,
-					sg_policy->tunables->hispeed_freq);
+				      sugov_hispeed_freq(sg_policy));
 		sg_policy->hispeed_util = hs_util;
 		raw_spin_unlock_irqrestore(&sg_policy->update_lock, flags);
 	}
@@ -1185,6 +1200,7 @@ static void sugov_tunables_save(struct cpufreq_policy *policy,
 
 	cached->pl = tunables->pl;
 	cached->hispeed_load = tunables->hispeed_load;
+	cached->hispeed_freq_override = tunables->hispeed_freq_override;
 	cached->rtg_boost_freq = tunables->rtg_boost_freq;
 	cached->hispeed_freq = tunables->hispeed_freq;
 	cached->up_rate_limit_us = tunables->up_rate_limit_us;
@@ -1208,6 +1224,7 @@ static void sugov_tunables_restore(struct cpufreq_policy *policy)
 
 	tunables->pl = cached->pl;
 	tunables->hispeed_load = cached->hispeed_load;
+	tunables->hispeed_freq_override = cached->hispeed_freq_override;
 	tunables->rtg_boost_freq = cached->rtg_boost_freq;
 	tunables->hispeed_freq = cached->hispeed_freq;
 	tunables->up_rate_limit_us = cached->up_rate_limit_us;
@@ -1237,6 +1254,19 @@ static int sugov_init(struct cpufreq_policy *policy)
 	if (ret)
 		goto free_sg_policy;
 
+	switch (policy->cpu) {
+	default:
+	case 0:
+		sg_policy->default_hispeed_freq = DEFAULT_CPU0_HISPEED_FREQ;
+		break;
+	case 4:
+		sg_policy->default_hispeed_freq = DEFAULT_CPU4_HISPEED_FREQ;
+		break;
+	case 7:
+		sg_policy->default_hispeed_freq = DEFAULT_CPU7_HISPEED_FREQ;
+		break;
+	}
+
 	mutex_lock(&global_tunables_lock);
 
 	if (global_tunables) {
@@ -1261,8 +1291,16 @@ static int sugov_init(struct cpufreq_policy *policy)
 		max(500U, cpufreq_policy_transition_delay_us(policy));
 	tunables->down_rate_limit_us =
 		max(4000U, cpufreq_policy_transition_delay_us(policy));
+	/*
+	 * WALT's rolling utilization can take a window to reflect a newly
+	 * runnable, compute-heavy worker.  Give sustained high-utilization work
+	 * a sensible per-cluster floor while that signal converges.  The floor is
+	 * policy-local so it remains correct when this governor shares tunables
+	 * between clusters.  It is applied only after hispeed_load is reached and
+	 * userspace can override it through sysfs.
+	 */
 	tunables->hispeed_load = DEFAULT_HISPEED_LOAD;
-	tunables->hispeed_freq = 0;
+	tunables->hispeed_freq = sg_policy->default_hispeed_freq;
 
 	switch (policy->cpu) {
 	default:
