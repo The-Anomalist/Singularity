@@ -26,6 +26,8 @@ struct sugov_tunables {
 	unsigned int		hispeed_freq;
 	bool			hispeed_freq_override;
 	unsigned int		rtg_boost_freq;
+	unsigned int		target_load;
+	unsigned int		new_task_ratio;
 	bool			pl;
 };
 
@@ -286,7 +288,6 @@ static void sugov_deferred_update(struct sugov_policy *sg_policy, u64 time,
 	irq_work_queue(&sg_policy->irq_work);
 }
 
-#define TARGET_LOAD 80
 /**
  * get_next_freq - Compute a new frequency for a given cpufreq policy.
  * @sg_policy: schedutil policy object to compute the new frequency for.
@@ -606,8 +607,9 @@ static bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu)
 static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #endif /* CONFIG_NO_HZ_COMMON */
 
-#define NL_RATIO 75
-#define DEFAULT_HISPEED_LOAD 80
+#define DEFAULT_TARGET_LOAD 70
+#define DEFAULT_NEW_TASK_RATIO 60
+#define DEFAULT_HISPEED_LOAD 75
 #define DEFAULT_CPU0_HISPEED_FREQ 1400000
 #define DEFAULT_CPU4_HISPEED_FREQ 2000000
 #define DEFAULT_CPU7_HISPEED_FREQ 2500000
@@ -638,12 +640,13 @@ static void sugov_walt_adjust(struct sugov_cpu *sg_cpu, unsigned long *util,
 	if (is_hiload && !is_migration)
 		*util = max(*util, sg_policy->hispeed_util);
 
-	if (is_hiload && nl >= mult_frac(cpu_util, NL_RATIO, 100))
+	if (is_hiload && nl >= mult_frac(cpu_util,
+					 sg_policy->tunables->new_task_ratio, 100))
 		*util = *max;
 
 	if (sg_policy->tunables->pl) {
 		if (conservative_pl())
-			pl = mult_frac(pl, TARGET_LOAD, 100);
+			pl = mult_frac(pl, sg_policy->tunables->target_load, 100);
 		*util = max(*util, pl);
 	}
 }
@@ -664,7 +667,7 @@ static inline unsigned long target_util(struct sugov_policy *sg_policy,
 	unsigned long util;
 
 	util = freq_to_util(sg_policy, freq);
-	util = mult_frac(util, TARGET_LOAD, 100);
+	util = mult_frac(util, sg_policy->tunables->target_load, 100);
 	return util;
 }
 
@@ -1073,12 +1076,55 @@ static struct governor_attr hispeed_freq = __ATTR_RW(hispeed_freq);
 static struct governor_attr rtg_boost_freq = __ATTR_RW(rtg_boost_freq);
 static struct governor_attr pl = __ATTR_RW(pl);
 
+static ssize_t target_load_show(struct gov_attr_set *attr_set, char *buf)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", tunables->target_load);
+}
+
+static ssize_t target_load_store(struct gov_attr_set *attr_set, const char *buf,
+				 size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+	unsigned int value;
+
+	if (kstrtouint(buf, 10, &value) || !value || value > 100)
+		return -EINVAL;
+	tunables->target_load = value;
+	return count;
+}
+
+static ssize_t new_task_ratio_show(struct gov_attr_set *attr_set, char *buf)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", tunables->new_task_ratio);
+}
+
+static ssize_t new_task_ratio_store(struct gov_attr_set *attr_set,
+				    const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+	unsigned int value;
+
+	if (kstrtouint(buf, 10, &value) || !value || value > 100)
+		return -EINVAL;
+	tunables->new_task_ratio = value;
+	return count;
+}
+
+static struct governor_attr target_load = __ATTR_RW(target_load);
+static struct governor_attr new_task_ratio = __ATTR_RW(new_task_ratio);
+
 static struct attribute *sugov_attributes[] = {
 	&up_rate_limit_us.attr,
 	&down_rate_limit_us.attr,
 	&hispeed_load.attr,
 	&hispeed_freq.attr,
 	&rtg_boost_freq.attr,
+	&target_load.attr,
+	&new_task_ratio.attr,
 	&pl.attr,
 	NULL
 };
@@ -1202,6 +1248,8 @@ static void sugov_tunables_save(struct cpufreq_policy *policy,
 	cached->hispeed_load = tunables->hispeed_load;
 	cached->hispeed_freq_override = tunables->hispeed_freq_override;
 	cached->rtg_boost_freq = tunables->rtg_boost_freq;
+	cached->target_load = tunables->target_load;
+	cached->new_task_ratio = tunables->new_task_ratio;
 	cached->hispeed_freq = tunables->hispeed_freq;
 	cached->up_rate_limit_us = tunables->up_rate_limit_us;
 	cached->down_rate_limit_us = tunables->down_rate_limit_us;
@@ -1226,6 +1274,8 @@ static void sugov_tunables_restore(struct cpufreq_policy *policy)
 	tunables->hispeed_load = cached->hispeed_load;
 	tunables->hispeed_freq_override = cached->hispeed_freq_override;
 	tunables->rtg_boost_freq = cached->rtg_boost_freq;
+	tunables->target_load = cached->target_load;
+	tunables->new_task_ratio = cached->new_task_ratio;
 	tunables->hispeed_freq = cached->hispeed_freq;
 	tunables->up_rate_limit_us = cached->up_rate_limit_us;
 	tunables->down_rate_limit_us = cached->down_rate_limit_us;
@@ -1288,9 +1338,11 @@ static int sugov_init(struct cpufreq_policy *policy)
 	}
 
 	tunables->up_rate_limit_us =
-		max(500U, cpufreq_policy_transition_delay_us(policy));
+		max(100U, cpufreq_policy_transition_delay_us(policy));
 	tunables->down_rate_limit_us =
-		max(4000U, cpufreq_policy_transition_delay_us(policy));
+		max(2000U, cpufreq_policy_transition_delay_us(policy));
+	tunables->target_load = DEFAULT_TARGET_LOAD;
+	tunables->new_task_ratio = DEFAULT_NEW_TASK_RATIO;
 	/*
 	 * WALT's rolling utilization can take a window to reflect a newly
 	 * runnable, compute-heavy worker.  Give sustained high-utilization work

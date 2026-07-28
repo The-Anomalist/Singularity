@@ -178,10 +178,11 @@ int kswapd_threads_current = DEF_KSWAPD_THREADS_PER_NODE;
  * From 0 .. 100.  Higher means more swappy.
  */
 /*
- * Favor file cache retention for app and benchmark I/O workloads while still
- * allowing swap usage under pressure.
+ * Balance anonymous memory and file-cache reclaim equally. Android's zram
+ * makes earlier anonymous reclaim preferable to repeatedly dropping hot app
+ * code and data from the file cache.
  */
-int vm_swappiness = 20;
+int vm_swappiness = 100;
 /*
  * The total number of pages which are beyond the high watermark within all
  * zones.
