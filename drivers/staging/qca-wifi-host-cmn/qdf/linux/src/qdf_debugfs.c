@@ -45,12 +45,19 @@ QDF_STATUS qdf_debugfs_init(void)
 	root = debugfs_create_dir(KBUILD_MODNAME, NULL);
 
 	/*
-	 * debugfs is optional and must never prevent the WLAN driver from
-	 * loading.  In particular, another built-in WLAN implementation can
-	 * already own a directory named KBUILD_MODNAME.  Do not borrow that
-	 * directory: removing a tree owned by another driver during SSR or
-	 * module unload can leave its debugfs users with stale dentries.
+	 * Another WLAN implementation may already own the module-named
+	 * directory. Never borrow it because QDF teardown must not remove
+	 * another driver's debugfs hierarchy.
+	 *
+	 * Some qcacld users report local debug initialization failures when
+	 * no QDF root exists. Provide an independently owned fallback namespace
+	 * so debug-only facilities remain available without borrowing another
+	 * driver's directory. Debugfs remains optional if neither directory
+	 * can be created.
 	 */
+	if (IS_ERR_OR_NULL(root))
+		root = debugfs_create_dir(KBUILD_MODNAME "_qdf", NULL);
+
 	if (IS_ERR_OR_NULL(root))
 		return QDF_STATUS_SUCCESS;
 
@@ -352,6 +359,7 @@ qdf_export_symbol(qdf_debugfs_create_file);
 qdf_dentry_t qdf_debugfs_create_u8(const char *name, uint16_t mode,
 				   qdf_dentry_t parent, u8 *value)
 {
+	qdf_dentry_t file;
 	umode_t filemode;
 
 	if (!name)
@@ -363,12 +371,15 @@ qdf_dentry_t qdf_debugfs_create_u8(const char *name, uint16_t mode,
 		return NULL;
 
 	filemode = qdf_debugfs_get_filemode(mode);
-	return debugfs_create_u8(name, filemode, parent, value);
+	file = debugfs_create_u8(name, filemode, parent, value);
+
+	return IS_ERR_OR_NULL(file) ? NULL : file;
 }
 
 qdf_dentry_t qdf_debugfs_create_u16(const char *name, uint16_t mode,
 				    qdf_dentry_t parent, u16 *value)
 {
+	qdf_dentry_t file;
 	umode_t filemode;
 
 	if (!name)
@@ -380,7 +391,9 @@ qdf_dentry_t qdf_debugfs_create_u16(const char *name, uint16_t mode,
 		return NULL;
 
 	filemode = qdf_debugfs_get_filemode(mode);
-	return debugfs_create_u16(name, filemode, parent, value);
+	file = debugfs_create_u16(name, filemode, parent, value);
+
+	return IS_ERR_OR_NULL(file) ? NULL : file;
 }
 qdf_export_symbol(qdf_debugfs_create_u16);
 
@@ -388,6 +401,7 @@ qdf_dentry_t qdf_debugfs_create_u32(const char *name,
 				    uint16_t mode,
 				    qdf_dentry_t parent, u32 *value)
 {
+	qdf_dentry_t file;
 	umode_t filemode;
 
 	if (!name)
@@ -399,13 +413,16 @@ qdf_dentry_t qdf_debugfs_create_u32(const char *name,
 		return NULL;
 
 	filemode = qdf_debugfs_get_filemode(mode);
-	return debugfs_create_u32(name, filemode, parent, value);
+	file = debugfs_create_u32(name, filemode, parent, value);
+
+	return IS_ERR_OR_NULL(file) ? NULL : file;
 }
 qdf_export_symbol(qdf_debugfs_create_u32);
 
 qdf_dentry_t qdf_debugfs_create_u64(const char *name, uint16_t mode,
 				    qdf_dentry_t parent, u64 *value)
 {
+	qdf_dentry_t file;
 	umode_t filemode;
 
 	if (!name)
@@ -417,13 +434,16 @@ qdf_dentry_t qdf_debugfs_create_u64(const char *name, uint16_t mode,
 		return NULL;
 
 	filemode = qdf_debugfs_get_filemode(mode);
-	return debugfs_create_u64(name, filemode, parent, value);
+	file = debugfs_create_u64(name, filemode, parent, value);
+
+	return IS_ERR_OR_NULL(file) ? NULL : file;
 }
 qdf_export_symbol(qdf_debugfs_create_u64);
 
 qdf_dentry_t qdf_debugfs_create_atomic(const char *name, uint16_t mode,
 				       qdf_dentry_t parent, qdf_atomic_t *value)
 {
+	qdf_dentry_t file;
 	umode_t filemode;
 
 	if (!name)
@@ -435,7 +455,9 @@ qdf_dentry_t qdf_debugfs_create_atomic(const char *name, uint16_t mode,
 		return NULL;
 
 	filemode = qdf_debugfs_get_filemode(mode);
-	return debugfs_create_atomic_t(name, filemode, parent, value);
+	file = debugfs_create_atomic_t(name, filemode, parent, value);
+
+	return IS_ERR_OR_NULL(file) ? NULL : file;
 }
 qdf_export_symbol(qdf_debugfs_create_atomic);
 
@@ -465,6 +487,7 @@ static const struct file_operations qdf_string_fops = {
 qdf_dentry_t qdf_debugfs_create_string(const char *name, uint16_t mode,
 				       qdf_dentry_t parent, char *str)
 {
+	qdf_dentry_t file;
 	umode_t filemode;
 
 	if (!name)
@@ -476,8 +499,10 @@ qdf_dentry_t qdf_debugfs_create_string(const char *name, uint16_t mode,
 		return NULL;
 
 	filemode = qdf_debugfs_get_filemode(mode);
-	return debugfs_create_file(name, filemode, parent, str,
+	file = debugfs_create_file(name, filemode, parent, str,
 				   &qdf_string_fops);
+
+	return IS_ERR_OR_NULL(file) ? NULL : file;
 }
 qdf_export_symbol(qdf_debugfs_create_string);
 

@@ -224,8 +224,16 @@ static const struct file_operations fops_config_debugfs = {
 
 int hdd_debugfs_ini_config_init(struct hdd_context *hdd_ctx)
 {
-	if (!debugfs_create_file("ini_config", 0444, qdf_debugfs_get_root(),
-				 hdd_ctx, &fops_config_debugfs))
+	struct dentry *entry;
+	struct dentry *root = qdf_debugfs_get_root();
+
+	/* Never create an unowned entry at the global debugfs root. */
+	if (IS_ERR_OR_NULL(root))
+		return 0;
+
+	entry = debugfs_create_file("ini_config", 0444, root, hdd_ctx,
+				    &fops_config_debugfs);
+	if (IS_ERR_OR_NULL(entry))
 		return -EINVAL;
 
 	return 0;
