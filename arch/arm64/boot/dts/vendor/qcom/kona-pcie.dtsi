@@ -57,6 +57,8 @@
 				RPMH_REGULATOR_LEVEL_NOM 100000000>;
 		interconnects = <&kona_icc KONA_ICC_PCIE0_TO_MEM>;
 		interconnect-names = "pcie-mem";
+		qcom,icc-active-avg-kbps = <250000>;
+		qcom,icc-active-peak-kbps = <1000000>;
 
 		qcom,msm-bus,name = "pcie0";
 		qcom,msm-bus,num-cases = <2>;
@@ -307,6 +309,8 @@
 				RPMH_REGULATOR_LEVEL_NOM 100000000>;
 		interconnects = <&kona_icc KONA_ICC_PCIE1_TO_MEM>;
 		interconnect-names = "pcie-mem";
+		qcom,icc-active-avg-kbps = <125000>;
+		qcom,icc-active-peak-kbps = <500000>;
 
 		qcom,msm-bus,name = "pcie1";
 		qcom,msm-bus,num-cases = <2>;
@@ -589,6 +593,8 @@
 				RPMH_REGULATOR_LEVEL_NOM 100000000>;
 		interconnects = <&kona_icc KONA_ICC_PCIE2_TO_MEM>;
 		interconnect-names = "pcie-mem";
+		qcom,icc-active-avg-kbps = <500000>;
+		qcom,icc-active-peak-kbps = <2000000>;
 
 		qcom,msm-bus,name = "pcie2";
 		qcom,msm-bus,num-cases = <2>;

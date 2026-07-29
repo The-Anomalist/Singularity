@@ -138,6 +138,28 @@ Main node
 	Definition: List of CX voltage corner and rate change clock frequency
 		pair for each PCIe GEN speed
 
+- interconnects:
+	Usage: required for Kona
+	Value type: <prop-encoded-array>
+	Definition: Interconnect path from the PCIe controller to memory
+
+- interconnect-names:
+	Usage: required when interconnects is present
+	Value type: <stringlist>
+	Definition: Must contain "pcie-mem"
+
+- qcom,icc-active-avg-kbps:
+	Usage: required when interconnects is present
+	Value type: <u32>
+	Definition: Non-zero active average bandwidth vote in decimal kilobytes
+		per second (kB/s). Must not exceed qcom,icc-active-peak-kbps.
+
+- qcom,icc-active-peak-kbps:
+	Usage: required when interconnects is present
+	Value type: <u32>
+	Definition: Non-zero active peak bandwidth vote in decimal kilobytes
+		per second (kB/s).
+
 - qcom,msm-bus,<bus-field>:
 	Usage: required
 	Value type: <prop-encoded>

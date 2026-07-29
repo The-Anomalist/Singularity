@@ -756,6 +756,9 @@ struct msm_pcie_dev_t {
 	struct wakeup_source *ws;
 	struct icc_path *icc_path;
 	bool use_icc;
+	u32 icc_active_avg_kbps;
+	u32 icc_active_peak_kbps;
+	bool icc_voted;
 	struct msm_bus_scale_pdata *bus_scale_table;
 	uint32_t bus_client;
 
@@ -846,15 +849,22 @@ struct msm_pcie_dev_t {
 	void (*rumi_init)(struct msm_pcie_dev_t *pcie_dev);
 };
 
-#define MSM_PCIE_ICC_ON_AB_KBPS	500
-#define MSM_PCIE_ICC_ON_IB_KBPS	800
-
 static int msm_pcie_set_bus_bw(struct msm_pcie_dev_t *dev, bool enable)
 {
-	if (dev->use_icc)
-		return icc_set_bw(dev->icc_path,
-				enable ? MSM_PCIE_ICC_ON_AB_KBPS : 0,
-				enable ? MSM_PCIE_ICC_ON_IB_KBPS : 0);
+	int ret;
+
+	if (dev->use_icc) {
+		if (enable == dev->icc_voted)
+			return 0;
+
+		ret = icc_set_bw(dev->icc_path,
+				enable ? dev->icc_active_avg_kbps : 0,
+				enable ? dev->icc_active_peak_kbps : 0);
+		if (!ret)
+			dev->icc_voted = enable;
+
+		return ret;
+	}
 
 	if (dev->bus_client)
 		return msm_bus_scale_client_update_request(dev->bus_client,
@@ -3485,6 +3495,7 @@ static int msm_pcie_clk_init(struct msm_pcie_dev_t *dev)
 			PCIE_ERR(dev,
 				"PCIe: fail to set bus bandwidth for RC%d:%d.\n",
 				dev->rc_idx, rc);
+			regulator_disable(dev->gdsc);
 			return rc;
 		}
 
@@ -3543,6 +3554,8 @@ static int msm_pcie_clk_init(struct msm_pcie_dev_t *dev)
 		}
 
 		regulator_disable(dev->gdsc);
+		if (dev->use_icc)
+			msm_pcie_set_bus_bw(dev, false);
 	}
 
 	for (i = 0; i < MSM_PCIE_MAX_RESET; i++) {
@@ -4268,16 +4281,40 @@ static int msm_pcie_get_resources(struct msm_pcie_dev_t *dev,
 	PCIE_DBG(dev, "PCIe: RC%d: entry\n", dev->rc_idx);
 
 	dev->icc_path = devm_of_icc_get(&pdev->dev, "pcie-mem");
-	if (IS_ERR(dev->icc_path)) {
+	if (IS_ERR_OR_NULL(dev->icc_path)) {
+		ret = dev->icc_path ? PTR_ERR(dev->icc_path) : -ENODEV;
 		dev->icc_path = NULL;
 		dev->use_icc = false;
+		if (of_find_property(pdev->dev.of_node, "interconnects", NULL)) {
+			if (ret != -EPROBE_DEFER)
+				PCIE_ERR(dev,
+					 "PCIe: RC%d: failed to get required ICC path: %d\n",
+					 dev->rc_idx, ret);
+			return ret;
+		}
 	} else {
 		dev->use_icc = true;
+		ret = of_property_read_u32(pdev->dev.of_node,
+				"qcom,icc-active-avg-kbps",
+				&dev->icc_active_avg_kbps);
+		ret |= of_property_read_u32(pdev->dev.of_node,
+				 "qcom,icc-active-peak-kbps",
+				 &dev->icc_active_peak_kbps);
+		if (ret || !dev->icc_active_avg_kbps ||
+		    !dev->icc_active_peak_kbps ||
+		    dev->icc_active_avg_kbps > dev->icc_active_peak_kbps) {
+			PCIE_ERR(dev,
+				 "PCIe: RC%d: invalid ICC active vote (avg=%u peak=%u KB/s)\n",
+				 dev->rc_idx, dev->icc_active_avg_kbps,
+				 dev->icc_active_peak_kbps);
+			return -EINVAL;
+		}
 		PCIE_DBG(dev, "PCIe: RC%d: using ICC path for %s\n",
 			dev->rc_idx, dev->pdev->name);
 	}
 
-	dev->bus_scale_table = msm_bus_cl_get_pdata(pdev);
+	/* An ICC-described controller must never fall back to legacy msm_bus. */
+	dev->bus_scale_table = dev->use_icc ? NULL : msm_bus_cl_get_pdata(pdev);
 	if (!dev->bus_scale_table) {
 		PCIE_DBG(dev, "PCIe: RC%d: No bus scale table for %s\n",
 			dev->rc_idx, dev->pdev->name);
@@ -7536,14 +7573,23 @@ static int msm_pcie_drv_resume(struct msm_pcie_dev_t *pcie_dev)
 	mutex_lock(&pcie_dev->recovery_lock);
 	mutex_lock(&pcie_dev->setup_lock);
 
-	msm_pcie_vreg_init(pcie_dev);
+	ret = msm_pcie_vreg_init(pcie_dev);
+	if (ret) {
+		PCIE_ERR(pcie_dev,
+			 "PCIe: RC%d: DRV: failed to enable regulators: %d\n",
+			 pcie_dev->rc_idx, ret);
+		goto out_unlock;
+	}
 
 	if (pcie_dev->bus_client || pcie_dev->use_icc) {
 		ret = msm_pcie_set_bus_bw(pcie_dev, true);
-		if (ret)
+		if (ret) {
 			PCIE_ERR(pcie_dev,
 				"PCIe: RC%d: failed to set bus bw vote: %d\n",
 				pcie_dev->rc_idx, ret);
+			msm_pcie_vreg_deinit(pcie_dev);
+			goto out_unlock;
+		}
 	}
 
 	/* turn on all unsuppressible clocks */
@@ -7615,6 +7661,11 @@ static int msm_pcie_drv_resume(struct msm_pcie_dev_t *pcie_dev)
 	mutex_unlock(&pcie_dev->recovery_lock);
 
 	return 0;
+
+out_unlock:
+	mutex_unlock(&pcie_dev->setup_lock);
+	mutex_unlock(&pcie_dev->recovery_lock);
+	return ret;
 }
 
 static int msm_pcie_drv_suspend(struct msm_pcie_dev_t *pcie_dev,
