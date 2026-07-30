@@ -3544,6 +3544,8 @@ static int msm_pcie_clk_init(struct msm_pcie_dev_t *dev)
 	}
 
 	if (rc) {
+		int bw_rc;
+
 		PCIE_DBG(dev, "RC%d disable clocks for error handling.\n",
 			dev->rc_idx);
 		while (i--) {
@@ -3553,9 +3555,15 @@ static int msm_pcie_clk_init(struct msm_pcie_dev_t *dev)
 				clk_disable_unprepare(hdl);
 		}
 
+		bw_rc = msm_pcie_set_bus_bw(dev, false);
+		if (bw_rc)
+			PCIE_ERR(dev,
+				 "PCIe: RC%d failed to remove error-path bus vote: %d\n",
+				 dev->rc_idx, bw_rc);
 		regulator_disable(dev->gdsc);
-		if (dev->use_icc)
-			msm_pcie_set_bus_bw(dev, false);
+
+		/* Do not let reset handling overwrite the clock failure. */
+		return rc;
 	}
 
 	for (i = 0; i < MSM_PCIE_MAX_RESET; i++) {
