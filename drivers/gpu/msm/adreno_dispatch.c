@@ -41,17 +41,6 @@ static unsigned int _dispatcher_q_inflight_hi = 21;
  */
 static unsigned int _dispatcher_q_inflight_lo = 6;
 
-/*
- * A650's CP can sustain a deeper queue than the generic A6xx defaults.
- * Keep enough work queued in both the one-context and multi-context paths so
- * that short GLES and Vulkan command buffers do not leave bubbles between
- * retire and submit work.  Leave 32 entries in the 128-entry context queue
- * for markers, sync objects, preemption and fault recovery.
- */
-#define A650_CONTEXT_DRAWQUEUE_SIZE	96
-#define A650_DISPATCH_Q_INFLIGHT_HI	48
-#define A650_DISPATCH_Q_INFLIGHT_LO	12
-#define A650_CONTEXT_DRAWOBJ_BURST	16
 #define A650_SOFT_FAULT_GRACE_SAMPLES	2
 
 /* Command batch timeout (in milliseconds) */
@@ -100,22 +89,6 @@ static void _add_context(struct adreno_device *adreno_dev,
 
 	/* And push it to the front */
 	list_add(&drawctxt->active_node, &adreno_dev->active_list);
-}
-
-static void adreno_dispatcher_tune(struct adreno_device *adreno_dev)
-{
-	/* Keep these queue depths limited to A650, including its v2 revision. */
-	if (!adreno_is_a650(adreno_dev))
-		return;
-
-	_context_drawqueue_size = max_t(unsigned int,
-		_context_drawqueue_size, A650_CONTEXT_DRAWQUEUE_SIZE);
-	_dispatcher_q_inflight_hi = max_t(unsigned int,
-		_dispatcher_q_inflight_hi, A650_DISPATCH_Q_INFLIGHT_HI);
-	_dispatcher_q_inflight_lo = max_t(unsigned int,
-		_dispatcher_q_inflight_lo, A650_DISPATCH_Q_INFLIGHT_LO);
-	_context_drawobj_burst = max_t(unsigned int,
-		_context_drawobj_burst, A650_CONTEXT_DRAWOBJ_BURST);
 }
 
 static void _adreno_count_active_contexts(struct adreno_device *adreno_dev,
@@ -3011,8 +2984,6 @@ int adreno_dispatcher_init(struct adreno_device *adreno_dev)
 	int ret;
 
 	memset(dispatcher, 0, sizeof(*dispatcher));
-
-	adreno_dispatcher_tune(adreno_dev);
 
 	mutex_init(&dispatcher->mutex);
 
