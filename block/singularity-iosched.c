@@ -20,14 +20,14 @@
 #define SING_MAX_BUCKETS         16
 #define SING_DYN_FG_BATCH_MIN    8
 #define SING_DYN_FG_BATCH_MAX    32
-#define SING_BG_STARVE_MS        4
+#define SING_BG_STARVE_MS        6
 
 /*
  * Switching classes too frequently breaks up the request stream delivered to
  * fast flash storage.  Keep a substantial foreground run by default so that
  * sequential writes and parallel random I/O can keep the device queue full.
  */
-static unsigned int sing_fg_batch = 16;
+static unsigned int sing_fg_batch = 24;
 module_param_named(fg_batch, sing_fg_batch, uint, 0644);
 MODULE_PARM_DESC(fg_batch, "Consecutive sync-class dispatch budget");
 
