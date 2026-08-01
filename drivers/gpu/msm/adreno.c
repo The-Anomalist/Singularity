@@ -42,11 +42,11 @@ static struct devfreq_msm_adreno_tz_data adreno_tz_data = {
 };
 
 /*
- * Enable a stronger default performance profile aimed at frametime stability
- * during gaming sessions. Can be disabled at boot with
- * adreno_performance_mode=0.
+ * Optional stronger performance profile aimed at frametime stability during
+ * gaming sessions. It must be explicitly enabled at boot with
+ * adreno_performance_mode=1 so normal boots retain platform power policy.
  */
-static bool adreno_performance_mode = true;
+static bool adreno_performance_mode;
 module_param_named(performance_mode, adreno_performance_mode, bool, 0644);
 
 /*

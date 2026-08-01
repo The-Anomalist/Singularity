@@ -115,7 +115,8 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 			qcom,speed-bin = <0>;
-			qcom,initial-pwrlevel = <7>;
+			/* Start and resume at the lowest non-zero GPU OPP. */
+			qcom,initial-pwrlevel = <8>;
 			qcom,throttle-pwrlevel = <0>;
 			qcom,ca-target-pwrlevel = <1>;
 
@@ -258,7 +259,7 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 			qcom,speed-bin = <1>;
-			qcom,initial-pwrlevel = <5>;
+			qcom,initial-pwrlevel = <8>;
 			qcom,throttle-pwrlevel = <1>;
 			qcom,ca-target-pwrlevel = <4>;
 
@@ -401,7 +402,7 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 			qcom,speed-bin = <3>;
-			qcom,initial-pwrlevel = <5>;
+			qcom,initial-pwrlevel = <8>;
 			qcom,throttle-pwrlevel = <1>;
 			qcom,ca-target-pwrlevel = <4>;
 
@@ -544,7 +545,7 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 			qcom,speed-bin = <2>;
-			qcom,initial-pwrlevel = <5>;
+			qcom,initial-pwrlevel = <8>;
 			qcom,throttle-pwrlevel = <1>;
 			qcom,ca-target-pwrlevel = <4>;
 
@@ -687,7 +688,7 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 			qcom,speed-bin = <4>;
-			qcom,initial-pwrlevel = <5>;
+			qcom,initial-pwrlevel = <8>;
 			qcom,throttle-pwrlevel = <1>;
 			qcom,ca-target-pwrlevel = <4>;
 
