@@ -50,7 +50,19 @@ struct msm_bus_rsc_client {
 	struct device *client;
 };
 
-struct msm_bus_rsc_client rsc_clients[MSM_BUS_RSC_COUNT];
+static struct msm_bus_rsc_client rsc_clients[MSM_BUS_RSC_COUNT];
+
+struct device *msm_bus_rpmh_get_rsc_client(u32 rsc_id)
+{
+	int i;
+
+	for (i = 0; i < MSM_BUS_RSC_COUNT; i++)
+		if (rsc_clients[i].rsc_id == rsc_id)
+			return rsc_clients[i].client;
+
+	return NULL;
+}
+EXPORT_SYMBOL(msm_bus_rpmh_get_rsc_client);
 
 struct bcm_db {
 	uint32_t unit_size;

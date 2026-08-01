@@ -15,7 +15,12 @@ depends on INTERCONNECT_QCOM
 help
   Enable the virtual interconnect provider used on SM8250/Kona based
   platforms. This driver allows clients to express bandwidth requests
-  through the common interconnect framework.
+  through the common interconnect framework. The validated SH4, SH0 and MC0
+  CPU BCM path can be selected for A/B testing with the built-in kernel
+  boot-only command line option kona.rpmh_model. Stage 1 discovers metadata,
+  stages 2 and 3 validate ownership while retaining legacy programming, and
+  stage 4 enables the CPU transaction only after all three BCMs are valid.
+  The deprecated kona.rpmh_cpu_model=1 spelling maps to safe stage 1.
 
 config INTERCONNECT_QCOM_KONA_PERF_FLOOR
 bool "Enable Kona interconnect performance floors"

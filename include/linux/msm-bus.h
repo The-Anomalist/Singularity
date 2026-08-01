@@ -123,6 +123,7 @@ int msm_bus_scale_query_tcs_cmd(struct msm_bus_tcs_usecase *tcs_usecase,
 					uint32_t cl, unsigned int index);
 int msm_bus_scale_query_tcs_cmd_all(struct msm_bus_tcs_handle *tcs_handle,
 					uint32_t cl);
+struct device *msm_bus_rpmh_get_rsc_client(u32 rsc_id);
 
 /* AXI Port configuration APIs */
 int msm_bus_axi_porthalt(int master_port);
@@ -202,6 +203,11 @@ static inline int msm_bus_scale_query_tcs_cmd_all(struct msm_bus_tcs_handle
 						*tcs_handle, uint32_t cl)
 {
 	return 0;
+}
+
+static inline struct device *msm_bus_rpmh_get_rsc_client(u32 rsc_id)
+{
+	return NULL;
 }
 
 #endif

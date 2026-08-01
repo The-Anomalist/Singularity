@@ -19,6 +19,7 @@
 #include <linux/kernel.h>
 #include <linux/math64.h>
 #include <linux/minmax.h>
+#include <linux/overflow.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/sysfs.h>
@@ -30,8 +31,11 @@
 #include <linux/spinlock.h>
 
 #include <dt-bindings/interconnect/qcom,kona.h>
+#include <dt-bindings/msm/msm-bus-ids.h>
 #include <soc/qcom/cmd-db.h>
 #include <soc/qcom/rpmh.h>
+
+#include "kona-rpmh.h"
 
 /*
  * Description of each logical Kona ICC path.
@@ -62,13 +66,54 @@ struct kona_icc_node_desc {
         enum kona_icc_role role;
 };
 
+struct kona_packed_inputs {
+	u64 llcc_avg;
+	u64 llcc_peak;
+	u64 mem_avg;
+	u64 mem_peak;
+	unsigned int group_mask;
+	bool dry_run;
+	u64 config_generation;
+};
+
 struct kona_icc_provider {
 	struct icc_provider provider;
+	struct device *rpmh_dev;
 	const struct kona_icc_node_desc *nodes;
 	size_t num_nodes;
 	bool boot_floor_vote;
+	bool first_cpu_request_seen;
+	u64 invalid_vote_count;
+	u64 packed_submission_count;
+	u64 packed_dry_run_build_count;
+	u64 packed_dry_run_skip_count;
+	u64 packed_aggregate_build_count;
+	u64 packed_aggregate_unchanged_skip_count;
+	u64 packed_config_generation;
+	u64 packed_observed_generation;
+	int last_packed_dry_run_error;
+	struct kona_packed_inputs packed_current_inputs;
+	struct kona_packed_inputs packed_last_dry_run_inputs;
+	struct kona_packed_inputs packed_last_real_inputs;
+	atomic64_t packed_update_generation;
+	u64 packed_processed_generation;
+	bool packed_fallback_active;
+	bool packed_real_write_consumed;
+	u64 packed_fallback_count;
+	int last_failed_vcd;
+	int last_packed_error;
+	int last_legacy_fallback_error;
+	u64 last_invalid_raw_ab;
+	u64 last_invalid_raw_ib;
+	u64 last_invalid_eff_ab;
+	u64 last_invalid_eff_ib;
+	u32 last_invalid_node_id;
+	const char *last_invalid_node_name;
+	struct kona_bcm_state cpu_bcms[KONA_CPU_BCM_COUNT];
 	bool system_suspended;
 	atomic_t votes_paused;
+	/* Serialize logical-path updates that share a physical RPMh BCM. */
+	struct mutex vote_lock;
 	u64 *last_ab;
 	u64 *last_ib;
 	u64 *req_ab;
@@ -111,6 +156,258 @@ struct kona_icc_data {
         bool boot_floor_vote;
 };
 
+static DEFINE_MUTEX(kona_packed_param_lock);
+static struct kona_icc_provider *kona_packed_provider;
+
+static void kona_icc_packed_parameter_changed(struct kona_icc_provider *qp,
+					       bool enabled);
+static bool kona_icc_is_cpu_memory_path(const struct kona_icc_node_desc *desc);
+static void kona_icc_mark_dirty(struct kona_icc_provider *qp,
+				unsigned int index);
+static void kona_icc_packed_force_generation(struct kona_icc_provider *qp);
+static void kona_icc_queue_replay(struct kona_icc_provider *qp,
+				 unsigned int delay_ms, const char *why);
+
+static bool kona_packed_runtime_enable;
+static bool kona_packed_dry_run = true;
+static bool kona_packed_real_write_enable;
+static bool kona_packed_real_write_once = true;
+static bool kona_packed_real_write_rearm;
+static bool kona_packed_force_dirty;
+
+static int kona_param_set_packed_real_write_enable(const char *val,
+						    const struct kernel_param *kp)
+{
+	bool enabled;
+	int ret;
+
+	ret = kstrtobool(val, &enabled);
+	if (ret)
+		return ret;
+
+	mutex_lock(&kona_packed_param_lock);
+	WRITE_ONCE(kona_packed_real_write_enable, enabled);
+	mutex_unlock(&kona_packed_param_lock);
+
+	return 0;
+}
+
+static const struct kernel_param_ops kona_packed_real_write_enable_ops = {
+	.set = kona_param_set_packed_real_write_enable,
+	.get = param_get_bool,
+};
+module_param_cb(packed_real_write_enable,
+		&kona_packed_real_write_enable_ops,
+		&kona_packed_real_write_enable, 0644);
+MODULE_PARM_DESC(packed_real_write_enable,
+		 "Permit Stage 4 packed BCM hardware submissions");
+module_param_named(packed_real_write_once,
+		   kona_packed_real_write_once, bool, 0644);
+MODULE_PARM_DESC(packed_real_write_once,
+		 "Limit Stage 4 packed BCM hardware submission to one transaction");
+
+static int kona_param_set_packed_real_write_rearm(const char *val,
+						   const struct kernel_param *kp)
+{
+	struct kona_icc_provider *qp;
+	bool rearm;
+	int ret;
+
+	ret = kstrtobool(val, &rearm);
+	if (ret || !rearm)
+		return ret;
+
+	mutex_lock(&kona_packed_param_lock);
+	if (READ_ONCE(kona_packed_real_write_enable)) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+
+	qp = kona_packed_provider;
+	if (qp) {
+		mutex_lock(&qp->vote_lock);
+		qp->packed_real_write_consumed = false;
+		mutex_unlock(&qp->vote_lock);
+	}
+unlock:
+	mutex_unlock(&kona_packed_param_lock);
+
+	return ret;
+}
+
+static const struct kernel_param_ops kona_packed_real_write_rearm_ops = {
+	.set = kona_param_set_packed_real_write_rearm,
+	.get = param_get_bool,
+};
+module_param_cb(packed_real_write_rearm,
+		&kona_packed_real_write_rearm_ops,
+		&kona_packed_real_write_rearm, 0644);
+MODULE_PARM_DESC(packed_real_write_rearm,
+		 "Write 1 to clear the packed real-write one-shot latch while writes are disabled");
+
+static int kona_param_set_packed_dry_run(const char *val,
+					 const struct kernel_param *kp)
+{
+	bool dry_run;
+	int ret;
+
+	ret = kstrtobool(val, &dry_run);
+	if (ret)
+		return ret;
+
+	mutex_lock(&kona_packed_param_lock);
+	if (dry_run != kona_packed_dry_run) {
+		WRITE_ONCE(kona_packed_dry_run, dry_run);
+		if (kona_packed_provider && READ_ONCE(kona_packed_runtime_enable)) {
+			struct kona_icc_provider *qp = kona_packed_provider;
+			unsigned int i;
+
+			mutex_lock(&qp->vote_lock);
+			kona_icc_packed_force_generation(qp);
+			for (i = 0; i < qp->num_nodes; i++)
+				if (kona_icc_is_cpu_memory_path(&qp->nodes[i]))
+					kona_icc_mark_dirty(qp, i);
+			mutex_unlock(&qp->vote_lock);
+			kona_icc_queue_replay(qp, 0, "packed-dry-run");
+		}
+	}
+	mutex_unlock(&kona_packed_param_lock);
+
+	return 0;
+}
+
+static const struct kernel_param_ops kona_packed_dry_run_ops = {
+	.set = kona_param_set_packed_dry_run,
+	.get = param_get_bool,
+};
+module_param_cb(packed_dry_run, &kona_packed_dry_run_ops,
+		&kona_packed_dry_run, 0644);
+MODULE_PARM_DESC(packed_dry_run,
+		 "Build and log Stage 4 packed BCM commands without submitting them");
+
+static int kona_param_set_packed_runtime_enable(const char *val,
+						 const struct kernel_param *kp)
+{
+	bool enabled;
+	int ret;
+
+	ret = kstrtobool(val, &enabled);
+	if (ret)
+		return ret;
+
+	mutex_lock(&kona_packed_param_lock);
+	if (enabled != kona_packed_runtime_enable) {
+		if (kona_packed_provider) {
+			kona_icc_packed_parameter_changed(kona_packed_provider,
+							 enabled);
+		} else {
+			WRITE_ONCE(kona_packed_runtime_enable, enabled);
+		}
+	}
+	mutex_unlock(&kona_packed_param_lock);
+
+	return 0;
+}
+
+static const struct kernel_param_ops kona_packed_runtime_enable_ops = {
+	.set = kona_param_set_packed_runtime_enable,
+	.get = param_get_bool,
+};
+module_param_cb(packed_runtime_enable, &kona_packed_runtime_enable_ops,
+		&kona_packed_runtime_enable, 0644);
+MODULE_PARM_DESC(packed_runtime_enable,
+		 "Enable Stage 4 packed CPU BCM submissions at runtime");
+
+#define KONA_PACKED_GROUP_MC0	BIT(0)
+#define KONA_PACKED_GROUP_SH	BIT(1)
+#define KONA_PACKED_GROUP_ALL	(KONA_PACKED_GROUP_MC0 | KONA_PACKED_GROUP_SH)
+#define KONA_PACKED_REAL_WRITE_BLOCKED	1
+
+static unsigned int kona_packed_group_mask = KONA_PACKED_GROUP_ALL;
+
+static int kona_param_set_packed_group_mask(const char *val,
+					     const struct kernel_param *kp)
+{
+	unsigned int mask;
+	int ret;
+
+	ret = kstrtouint(val, 0, &mask);
+	if (ret)
+		return ret;
+	if (mask & ~KONA_PACKED_GROUP_ALL)
+		return -EINVAL;
+
+	mutex_lock(&kona_packed_param_lock);
+	if (mask != kona_packed_group_mask) {
+		if (kona_packed_provider && READ_ONCE(kona_packed_runtime_enable)) {
+			struct kona_icc_provider *qp = kona_packed_provider;
+			unsigned int i;
+
+			mutex_lock(&qp->vote_lock);
+			WRITE_ONCE(kona_packed_group_mask, mask);
+			kona_icc_packed_force_generation(qp);
+			for (i = 0; i < qp->num_nodes; i++)
+				if (kona_icc_is_cpu_memory_path(&qp->nodes[i])) {
+					qp->last_ab[i] = U64_MAX;
+					qp->last_ib[i] = U64_MAX;
+					kona_icc_mark_dirty(qp, i);
+				}
+			mutex_unlock(&qp->vote_lock);
+			dev_err(qp->provider.dev,
+				"kona-rpmh: packed runtime gate enabled mask=%u\n", mask);
+			kona_icc_queue_replay(qp, 0, "packed-group-mask");
+		} else {
+			WRITE_ONCE(kona_packed_group_mask, mask);
+		}
+	}
+	mutex_unlock(&kona_packed_param_lock);
+
+	return 0;
+}
+
+static const struct kernel_param_ops kona_packed_group_mask_ops = {
+	.set = kona_param_set_packed_group_mask,
+	.get = param_get_uint,
+};
+module_param_cb(packed_group_mask, &kona_packed_group_mask_ops,
+		&kona_packed_group_mask, 0644);
+MODULE_PARM_DESC(packed_group_mask,
+		 "Stage 4 packed groups: bit 0=MC0, bit 1=SH4/SH0");
+
+static int kona_param_set_packed_force_dirty(const char *val,
+					      const struct kernel_param *kp)
+{
+	struct kona_icc_provider *qp;
+	bool force_dirty;
+	int ret;
+
+	ret = kstrtobool(val, &force_dirty);
+	if (ret)
+		return ret;
+
+	mutex_lock(&kona_packed_param_lock);
+	WRITE_ONCE(kona_packed_force_dirty, force_dirty);
+	qp = kona_packed_provider;
+	if (force_dirty && qp && READ_ONCE(kona_packed_runtime_enable)) {
+		mutex_lock(&qp->vote_lock);
+		kona_icc_packed_force_generation(qp);
+		mutex_unlock(&qp->vote_lock);
+		kona_icc_queue_replay(qp, 0, "packed-force-dirty");
+	}
+	mutex_unlock(&kona_packed_param_lock);
+
+	return 0;
+}
+
+static const struct kernel_param_ops kona_packed_force_dirty_ops = {
+	.set = kona_param_set_packed_force_dirty,
+	.get = param_get_bool,
+};
+module_param_cb(packed_force_dirty, &kona_packed_force_dirty_ops,
+		&kona_packed_force_dirty, 0644);
+MODULE_PARM_DESC(packed_force_dirty,
+		 "Force selected Stage 4 packed BCMs dirty for one build");
+
 struct kona_icc_node_sysfs {
         struct kona_icc_provider *qp;
         unsigned int index;
@@ -126,6 +423,39 @@ struct kona_icc_node_sysfs {
 static bool kona_resume_debug;
 module_param_named(kona_resume_debug, kona_resume_debug, bool, 0644);
 MODULE_PARM_DESC(kona_resume_debug, "Enable Kona ICC suspend/resume deferral debug");
+
+static bool kona_vote_debug;
+module_param_named(vote_debug, kona_vote_debug, bool, 0644);
+MODULE_PARM_DESC(kona_vote_debug, "Log Kona CPU vote transformation boundaries");
+
+static bool kona_vote_debug_submit;
+module_param_named(vote_debug_submit, kona_vote_debug_submit, bool, 0644);
+MODULE_PARM_DESC(vote_debug_submit,
+		 "Trace Kona shared aggregation and legacy submission");
+
+static int kona_vote_debug_node = -1;
+module_param_named(vote_debug_node, kona_vote_debug_node, int, 0644);
+MODULE_PARM_DESC(vote_debug_node,
+		 "Trace only this Kona logical node ID; -1 traces all nodes");
+
+#define KONA_VOTE_TRACE(qp, desc, point, ab, ib) \
+	do { \
+		if (kona_vote_debug && \
+		    (kona_vote_debug_node < 0 || \
+		     (desc)->id == kona_vote_debug_node)) \
+			dev_info((qp)->provider.dev, \
+				 "kona-vote: id=%u name=%s point=%s ab=%llu ib=%llu\n", \
+				 (desc)->id, (desc)->name, (point), \
+				 (unsigned long long)(ab), \
+				 (unsigned long long)(ib)); \
+	} while (0)
+
+/*
+ * Both the ICC callback and the legacy RPMh sender have u32 vote interfaces.
+ * Keeping this named limit next to the policy code makes that contract explicit
+ * and prevents an uncached U64_MAX value from being mistaken for bandwidth.
+ */
+#define KONA_ICC_MAX_LOGICAL_VOTE	((u64)U32_MAX)
 
 static bool kona_perf_floor_enable = true;
 module_param(kona_perf_floor_enable, bool, 0644);
@@ -145,6 +475,23 @@ static bool kona_cpu_memory_sync_votes = true;
 module_param_named(kona_cpu_memory_sync_votes, kona_cpu_memory_sync_votes,
 		   bool, 0644);
 MODULE_PARM_DESC(kona_cpu_memory_sync_votes, "Commit CPU memory votes synchronously");
+
+static bool kona_rpmh_cpu_model;
+module_param_named(rpmh_cpu_model, kona_rpmh_cpu_model, bool, 0444);
+MODULE_PARM_DESC(rpmh_cpu_model,
+		 "Deprecated: discover packed CPU BCM metadata without programming it");
+
+static unsigned int kona_rpmh_model;
+module_param_named(rpmh_model, kona_rpmh_model, uint, 0444);
+MODULE_PARM_DESC(rpmh_model,
+	"Packed BCM migration: 0=legacy, 1=telemetry, 2=SH4, 3=SH4+SH0, 4=CPU, 5=validated clients");
+
+static unsigned int kona_cpu_model_stage(void)
+{
+	/* The old boolean is deliberately made a boot-safe discovery stage. */
+	return kona_rpmh_model ? min(kona_rpmh_model, 5U) :
+		(kona_rpmh_cpu_model ? 1 : 0);
+}
 
 static bool kona_display_resume_floor_enable = true;
 module_param_named(kona_display_resume_floor_enable, kona_display_resume_floor_enable, bool, 0644);
@@ -1214,6 +1561,14 @@ static void kona_icc_apply_hysteresis(struct kona_icc_provider *qp,
 
 	prev_ab = qp->last_ab[index];
 	prev_ib = qp->last_ib[index];
+	/*
+	 * last_* starts at U64_MAX so the first real vote is always sent.  It is
+	 * a cache sentinel, not bandwidth: feeding it to the maximum-downscale
+	 * calculation produces 85% of U64_MAX (0xd999999999999998 with the
+	 * default 15% limit) and overwrites both otherwise valid votes.
+	 */
+	if (prev_ab == U64_MAX || prev_ib == U64_MAX)
+		return;
 
 	if (kona_gpu_bimc_no_hyst_enable &&
 	    (desc->id == KONA_ICC_GPU_TO_MEM || desc->id == KONA_ICC_GMU_TO_MEM))
@@ -1367,9 +1722,9 @@ static void kona_icc_apply_aux_baseline(const struct kona_icc_node_desc *desc,
 }
 
 static void __maybe_unused
-kona_icc_apply_floor(struct kona_icc_provider *qp,
-		     const struct kona_icc_node_desc *desc,
-		     u64 req_ab, u64 req_ib, u64 *ab, u64 *ib)
+kona_icc_calculate_floor(struct kona_icc_provider *qp,
+			 const struct kona_icc_node_desc *desc,
+			 u64 req_ab, u64 req_ib, u64 *ab, u64 *ib)
 {
 	bool active;
 	bool sleep_mode;
@@ -1726,8 +2081,8 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 	/*
 	 * Display-on active scaling for non-display paths:
 	 * - sub-trigger request: skip large performance floors entirely
-	 * - low request: retain a responsive floor (default 60%)
-	 * - medium request: retain most of the floor (default 82%)
+	 * - low request: retain a responsive floor (default 35%)
+	 * - medium request: retain most of the floor (default 65%)
 	 * - high request: keep full floors (100%)
 	 *
 	 * GPU pinning is exempt from this scaling because the pin only latches
@@ -1735,7 +2090,8 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 	 * starvation; shrinking that vote would defeat the anti-starvation path.
 	 *
 	 * Classify on raw client request max(req_ab, req_ib), not post-floor vote.
-	 * Apply after path-specific floors and before minimum clamps/bias.
+	 * Apply after path-specific floors and before minimum clamps/bias. Scale
+	 * only synthetic headroom: never reduce an explicit consumer request.
 	 */
 	if (kona_active_floor_scaling_enable && active_floor_active &&
 	    !kona_icc_sleep_mode_active(qp, desc) &&
@@ -1754,6 +2110,8 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 		if (active_scale_percent < 100) {
 			*ab = mul_u64_u32_div(*ab, active_scale_percent, 100);
 			*ib = mul_u64_u32_div(*ib, active_scale_percent, 100);
+			*ab = max(*ab, req_ab);
+			*ib = max(*ib, req_ib);
 		}
 	}
 
@@ -1794,6 +2152,25 @@ kona_icc_apply_floor(struct kona_icc_provider *qp,
 
 	pr_debug("kona-icc: vote for %s after floor/bias (ab=%llu KBps, ib=%llu KBps)\n",
 		 desc->name, *ab, *ib);
+}
+
+static void __maybe_unused
+kona_icc_apply_floor(struct kona_icc_provider *qp,
+		     const struct kona_icc_node_desc *desc,
+		     u64 req_ab, u64 req_ib, u64 *ab, u64 *ib)
+{
+	u64 new_ab = *ab;
+	u64 new_ib = *ib;
+
+	kona_icc_calculate_floor(qp, desc, req_ab, req_ib,
+				 &new_ab, &new_ib);
+
+	if (new_ab > KONA_ICC_MAX_LOGICAL_VOTE ||
+	    new_ib > KONA_ICC_MAX_LOGICAL_VOTE)
+		return;
+
+	*ab = new_ab;
+	*ib = new_ib;
 }
 #endif /* CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR */
 
@@ -2470,11 +2847,29 @@ static struct icc_path *kona_icc_xlate(struct icc_provider *provider,
 	return path;
 }
 
-static int kona_icc_send_bw(struct device *dev, const char *res, u32 kbps, bool wait)
+struct kona_icc_legacy_submit_result {
+	u32 addr;
+	int raw_ret;
+	int final_ret;
+	const char *cause;
+	bool cmd_db_addr_missing;
+};
+
+static int kona_icc_send_bw_result(struct device *dev, const char *res, u32 kbps,
+				   bool wait,
+				   struct kona_icc_legacy_submit_result *result)
 {
 	struct tcs_cmd cmd = {};
 	u32 addr;
 	int ret;
+
+	if (result) {
+		result->addr = 0;
+		result->raw_ret = 0;
+		result->final_ret = 0;
+		result->cause = "none";
+		result->cmd_db_addr_missing = false;
+	}
 
 	if (!res)
 		return 0;
@@ -2484,16 +2879,30 @@ static int kona_icc_send_bw(struct device *dev, const char *res, u32 kbps, bool 
 	 * ready during early boot. Never propagate -EPROBE_DEFER to ICC consumers.
 	 * Use -EAGAIN internally to signal "try again later".
 	 */
-	if (!cmd_db_ready()) {
+	ret = cmd_db_ready();
+	if (ret) {
 		dev_dbg_ratelimited(dev, "kona-icc: cmd-db not ready for %s\n", res ?: "?");
-		return -EAGAIN;
+		if (result) {
+			result->cause = "cmd-db-not-ready";
+			result->raw_ret = ret;
+			result->final_ret = ret == -EPROBE_DEFER ? -EAGAIN : ret;
+		}
+		return ret == -EPROBE_DEFER ? -EAGAIN : ret;
 	}
 
 	addr = cmd_db_read_addr(res);
 	if (!addr) {
 		dev_dbg_ratelimited(dev, "kona-icc: missing cmd-db addr for %s\n", res ?: "?");
-		return -EAGAIN;
+		if (result) {
+			result->cause = "cmd-db-address-missing";
+			result->raw_ret = -ENODEV;
+			result->final_ret = -ENODEV;
+			result->cmd_db_addr_missing = true;
+		}
+		return -ENODEV;
 	}
+	if (result)
+		result->addr = addr;
 
 	/* cmd.data is KB/s; callers must already scale to KB/s. */
 	cmd.addr = addr;
@@ -2501,14 +2910,32 @@ static int kona_icc_send_bw(struct device *dev, const char *res, u32 kbps, bool 
 	cmd.wait = wait;
 
 	ret = rpmh_write(dev, RPMH_ACTIVE_ONLY_STATE, &cmd, 1);
+	if (result)
+		result->raw_ret = ret;
 	if (ret == -EBUSY || ret == -ETIMEDOUT || ret == -EPROBE_DEFER) {
 		dev_dbg_ratelimited(dev,
 			"kona-icc: rpmh deferring %s=%uKB/s ret=%d\n",
 			res ?: "?", kbps, ret);
+		if (result) {
+			result->cause = ret == -EBUSY ? "rpmh-busy" :
+				ret == -ETIMEDOUT ? "rpmh-timeout" :
+				"rpmh-probe-defer";
+			result->final_ret = -EAGAIN;
+		}
 		return -EAGAIN;
+	}
+	if (result) {
+		result->cause = ret == -EAGAIN ? "rpmh-eagain" :
+			ret ? "rpmh-hard-error" : "none";
+		result->final_ret = ret;
 	}
 
 	return ret;
+}
+
+static int kona_icc_send_bw(struct device *dev, const char *res, u32 kbps, bool wait)
+{
+	return kona_icc_send_bw_result(dev, res, kbps, wait, NULL);
 }
 
 static int kona_icc_register_crypto_ce0_client(struct device *dev)
@@ -2667,17 +3094,408 @@ static bool kona_icc_is_cpu_memory_path(const struct kona_icc_node_desc *desc)
 	}
 }
 
+static bool kona_icc_cpu_to_memory(u32 id)
+{
+	return id == KONA_ICC_CPU_TO_MEM ||
+		(id >= KONA_ICC_CPU0_TO_MEM && id <= KONA_ICC_CPU7_TO_MEM &&
+		 !(id & 1));
+}
+
+static bool kona_icc_cpu_generic(u32 id)
+{
+	return id == KONA_ICC_CPU_TO_LLCC || id == KONA_ICC_CPU_TO_MEM;
+}
+
+static void kona_icc_cpu_endpoint_vote(struct kona_icc_provider *qp,
+				       bool memory, u64 *avg, u64 *peak)
+{
+	u64 generic_avg = 0, per_cpu_avg = 0, policy_avg = 0, policy_peak = 0;
+	u64 raw_peak = 0;
+	unsigned int i;
+
+	for (i = 0; i < qp->num_nodes; i++) {
+		const struct kona_icc_node_desc *node = &qp->nodes[i];
+		u64 raw_avg, raw_ib;
+
+		if (!kona_icc_is_cpu_memory_path(node) ||
+		    kona_icc_cpu_to_memory(node->id) != memory)
+			continue;
+		if (qp->req_ab[i] == U64_MAX || qp->req_ib[i] == U64_MAX ||
+		    qp->eff_ab[i] == U64_MAX || qp->eff_ib[i] == U64_MAX)
+			continue;
+
+		raw_avg = qp->req_ab[i];
+		raw_ib = qp->req_ib[i];
+		if (kona_icc_cpu_generic(node->id))
+			generic_avg = max(generic_avg, raw_avg);
+		else if (U64_MAX - per_cpu_avg < raw_avg)
+			per_cpu_avg = U64_MAX;
+		else
+			per_cpu_avg += raw_avg;
+		raw_peak = max(raw_peak, raw_ib);
+		policy_avg = max(policy_avg, qp->eff_ab[i]);
+		policy_peak = max(policy_peak, qp->eff_ib[i]);
+	}
+
+	/* Generic and per-CPU paths overlap; never blindly add both views. */
+	*avg = max(max(generic_avg, per_cpu_avg), policy_avg);
+	*peak = max(raw_peak, policy_peak);
+}
+
+static int kona_icc_cpu_bcm_metadata(struct kona_icc_provider *qp,
+				     struct kona_bcm_state *bcm)
+{
+	struct kona_bcm_db aux;
+	size_t aux_len;
+	int ret;
+
+	if (bcm->metadata_valid)
+		return 0;
+	ret = cmd_db_ready();
+	if (ret)
+		return ret == -EPROBE_DEFER ? -EAGAIN : ret;
+	if (cmd_db_read_slave_id(bcm->name) != CMD_DB_HW_BCM)
+		return -ENODEV;
+	aux_len = cmd_db_read_aux_data_len(bcm->name);
+	if (!aux_len)
+		return -ENOENT;
+	if (aux_len != sizeof(aux))
+		return -EPROTO;
+	ret = cmd_db_read_aux_data(bcm->name, (u8 *)&aux, sizeof(aux));
+	if (ret < 0)
+		return ret;
+	if (ret != sizeof(aux))
+		return -EINVAL;
+	bcm->addr = cmd_db_read_addr(bcm->name);
+	bcm->unit = le32_to_cpu(aux.unit);
+	bcm->width = le16_to_cpu(aux.width);
+	bcm->vcd = aux.vcd;
+	if (!bcm->addr || !bcm->unit || !bcm->width)
+		return -EINVAL;
+	bcm->metadata_valid = true;
+	return 0;
+}
+
+static u64 kona_div_round_up_u64(u64 numerator, u64 denominator)
+{
+	u64 quotient;
+
+	if (!denominator)
+		return U64_MAX;
+	if (!numerator)
+		return 0;
+
+	quotient = div64_u64(numerator, denominator);
+	if (numerator % denominator)
+		quotient++;
+
+	return quotient;
+}
+
+static u64 kona_icc_cpu_normalize(u64 kbps, struct kona_bcm_state *bcm,
+				  const struct kona_qnode_vote *qnode,
+				  bool average, u64 *raw_vote)
+{
+	u64 bytes_per_sec = 0, numerator = 0, denominator, raw;
+	bool overflowed;
+
+	/*
+	 * Match the in-tree RPMh BCM voter:
+	 *   lnode_ib = max_ib * bcm_width / qnode_buswidth
+	 *   lnode_ab = sum_ab * bcm_width / (qnode_buswidth * channels)
+	 *   vec_{a,b} = max_lnode_{ab,ib} / bcm_unit_size
+	 * ICC clients provide kB/s, so convert to B/s before applying the BCM
+	 * width, qnode bus width/channel scaling, and command-db unit size.
+	 */
+	overflowed = check_mul_overflow(kbps, 1000ULL, &bytes_per_sec) ||
+		     check_mul_overflow(bytes_per_sec, (u64)bcm->width,
+					&numerator);
+	denominator = qnode->buswidth;
+	if (average)
+		denominator *= qnode->channels;
+	denominator *= bcm->unit;
+
+	if (overflowed)
+		raw = U64_MAX;
+	else
+		raw = kona_div_round_up_u64(numerator, denominator);
+	if (raw_vote)
+		*raw_vote = raw;
+
+	return min_t(u64, raw, KONA_BCM_VOTE_MASK);
+}
+
+static int kona_icc_build_cpu_bcm_group(struct kona_icc_provider *qp,
+					const unsigned int *indices,
+					unsigned int num_bcms,
+					struct tcs_cmd *cmds,
+					unsigned int *cmd_indices,
+					unsigned int *num_cmds, u32 *batch_n,
+					unsigned int *num_messages)
+{
+	struct kona_bcm_state *bcms = qp->cpu_bcms;
+	unsigned int base = *num_cmds;
+	unsigned int i, n = 0;
+	bool wait = false;
+	bool dry_run = READ_ONCE(kona_packed_dry_run);
+
+	for (i = 0; i < num_bcms; i++) {
+		struct kona_bcm_state *bcm = &bcms[indices[i]];
+		u64 threshold;
+
+		if (!bcm->dirty)
+			continue;
+		threshold = mul_u64_u32_div(bcm->committed_x, 125, 100);
+		wait |= (!bcm->committed_x && bcm->requested_x) ||
+			bcm->requested_x > threshold;
+		threshold = mul_u64_u32_div(bcm->committed_y, 125, 100);
+		wait |= (!bcm->committed_y && bcm->requested_y) ||
+			bcm->requested_y > threshold;
+	}
+
+	for (i = 0; i < num_bcms; i++) {
+		struct kona_bcm_state *bcm = &bcms[indices[i]];
+		bool commit;
+		bool valid;
+
+		if (!bcm->dirty)
+			continue;
+		commit = i == num_bcms - 1;
+		if (!commit) {
+			unsigned int j;
+
+			commit = true;
+			for (j = i + 1; j < num_bcms; j++)
+				if (bcms[indices[j]].dirty) {
+					commit = false;
+					break;
+				}
+		}
+		valid = bcm->requested_x || bcm->requested_y;
+		cmds[base + n].addr = bcm->addr;
+		cmds[base + n].data = KONA_BCM_TCS_CMD(commit, valid,
+							bcm->requested_x,
+							bcm->requested_y);
+		cmds[base + n].wait = commit && wait;
+		bcm->requested_data = cmds[base + n].data;
+		cmd_indices[base + n] = indices[i];
+		n++;
+	}
+	if (!n)
+		return 0;
+	if (dry_run) {
+		for (i = 0; i < n; i++) {
+			struct kona_bcm_state *bcm = &bcms[cmd_indices[base + i]];
+
+			bcm->dry_run_data = bcm->requested_data;
+			bcm->dry_run_generation = bcm->requested_generation;
+		}
+		qp->packed_dry_run_build_count++;
+	}
+
+	batch_n[*num_messages] = n;
+	(*num_messages)++;
+	*num_cmds += n;
+	return 0;
+}
+
+static void kona_packed_snapshot_inputs(struct kona_icc_provider *qp,
+					struct kona_packed_inputs *inputs)
+{
+	kona_icc_cpu_endpoint_vote(qp, false, &inputs->llcc_avg,
+				   &inputs->llcc_peak);
+	kona_icc_cpu_endpoint_vote(qp, true, &inputs->mem_avg,
+				   &inputs->mem_peak);
+	inputs->group_mask = READ_ONCE(kona_packed_group_mask);
+	inputs->dry_run = READ_ONCE(kona_packed_dry_run);
+	inputs->config_generation = qp->packed_config_generation;
+}
+
+static int kona_icc_commit_cpu_bcms(struct kona_icc_provider *qp,
+				    const struct kona_packed_inputs *inputs,
+				    int *failed_vcd)
+{
+	struct kona_qnode_vote llcc = { .buswidth = 16, .channels = 4 };
+	struct kona_qnode_vote apps = { .buswidth = 32, .channels = 2 };
+	struct kona_qnode_vote ebi = { .buswidth = 4, .channels = 4 };
+	struct kona_bcm_state *bcms = qp->cpu_bcms;
+	static const unsigned int vcd0[] = { KONA_CPU_BCM_MC0 };
+	static const unsigned int vcd1[] = {
+		KONA_CPU_BCM_SH4, KONA_CPU_BCM_SH0,
+	};
+	struct tcs_cmd cmds[KONA_CPU_BCM_COUNT] = {};
+	unsigned int cmd_indices[KONA_CPU_BCM_COUNT];
+	u32 batch_n[KONA_CPU_BCM_COUNT + 1] = {};
+	unsigned int num_cmds = 0, num_messages = 0;
+	unsigned int i;
+	unsigned int mask = inputs->group_mask;
+	bool force_dirty = READ_ONCE(kona_packed_force_dirty);
+	int ret;
+
+	apps.avg = max(inputs->llcc_avg, inputs->mem_avg);
+	llcc.avg = apps.avg;
+	apps.peak = max(inputs->llcc_peak, inputs->mem_peak);
+	llcc.peak = apps.peak;
+	ebi.avg = inputs->mem_avg;
+	ebi.peak = inputs->mem_peak;
+
+	for (i = 0; i < KONA_CPU_BCM_COUNT; i++) {
+		struct kona_bcm_state *bcm = &bcms[i];
+		unsigned int group = i == KONA_CPU_BCM_MC0 ?
+			KONA_PACKED_GROUP_MC0 : KONA_PACKED_GROUP_SH;
+		const struct kona_qnode_vote *qnode = i == KONA_CPU_BCM_SH4 ?
+			&apps : i == KONA_CPU_BCM_SH0 ? &llcc : &ebi;
+		u64 requested_x, requested_y, raw_x, raw_y;
+
+		/* A masked group is neither attempted nor failed. */
+		if (!(mask & group))
+			continue;
+		ret = kona_icc_cpu_bcm_metadata(qp, bcm);
+		if (ret) {
+			dev_err(qp->provider.dev,
+				"kona-rpmh: invalid metadata for %s: %d\n",
+				bcm->name, ret);
+			return ret;
+		}
+		requested_x = kona_icc_cpu_normalize(qnode->avg, bcm, qnode, true, &raw_x);
+		requested_y = kona_icc_cpu_normalize(qnode->peak, bcm, qnode, false, &raw_y);
+		if (requested_x != bcm->requested_x || requested_y != bcm->requested_y ||
+		    raw_x != bcm->raw_x || raw_y != bcm->raw_y)
+			bcm->requested_generation++;
+		bcm->requested_x = requested_x;
+		bcm->requested_y = requested_y;
+		bcm->raw_x = raw_x;
+		bcm->raw_y = raw_y;
+		bcm->saturated_x = raw_x > KONA_BCM_VOTE_MASK;
+		bcm->saturated_y = raw_y > KONA_BCM_VOTE_MASK;
+		if ((bcm->saturated_x && raw_x != bcm->last_diagnosed_x) ||
+		    (bcm->saturated_y && raw_y != bcm->last_diagnosed_y))
+			bcm->saturation_count++;
+		bcm->last_diagnosed_x = raw_x;
+		bcm->last_diagnosed_y = raw_y;
+		if (force_dirty) {
+			bcm->dirty = true;
+		} else if (READ_ONCE(kona_packed_dry_run)) {
+			bcm->dirty = bcm->dry_run_generation != bcm->requested_generation;
+			if (!bcm->dirty)
+				qp->packed_dry_run_skip_count++;
+		} else {
+			bcm->dirty = requested_x != bcm->committed_x ||
+				requested_y != bcm->committed_y;
+		}
+	}
+
+	/* Preserve ascending VCD order while constructing one native RPMh batch. */
+	if (mask & KONA_PACKED_GROUP_MC0) {
+		ret = kona_icc_build_cpu_bcm_group(qp, vcd0, ARRAY_SIZE(vcd0),
+						   cmds, cmd_indices, &num_cmds,
+						   batch_n, &num_messages);
+		if (ret)
+			return ret;
+	}
+	if (mask & KONA_PACKED_GROUP_SH) {
+		ret = kona_icc_build_cpu_bcm_group(qp, vcd1, ARRAY_SIZE(vcd1),
+						   cmds, cmd_indices, &num_cmds,
+						   batch_n, &num_messages);
+		if (ret)
+			return ret;
+	}
+	if (force_dirty) {
+		WRITE_ONCE(kona_packed_force_dirty, false);
+		pr_emerg("kona-rpmh: breadcrumb packed-force-dirty-consumed mask=%u\n",
+			 mask);
+	}
+
+	/* Dry-run construction and telemetry never cross an RPMh boundary. */
+	if (READ_ONCE(kona_packed_dry_run) || !num_cmds)
+		goto update_legacy_cache;
+
+	if (kona_cpu_model_stage() < 4 ||
+	    !READ_ONCE(kona_packed_runtime_enable) ||
+	    !READ_ONCE(kona_packed_group_mask) || qp->packed_fallback_active)
+		return -EPERM;
+	if (!READ_ONCE(kona_packed_real_write_enable)) {
+		return KONA_PACKED_REAL_WRITE_BLOCKED;
+	}
+	if (READ_ONCE(kona_packed_real_write_once) &&
+	    qp->packed_real_write_consumed) {
+		dev_warn_ratelimited(qp->provider.dev,
+				     "kona-rpmh: packed real-write one-shot blocked\n");
+		return KONA_PACKED_REAL_WRITE_BLOCKED;
+	}
+
+	/* Consume before submission so the complete hardware attempt is one-shot. */
+	if (READ_ONCE(kona_packed_real_write_once))
+		qp->packed_real_write_consumed = true;
+	qp->packed_submission_count++;
+	/*
+	 * Do not call rpmh_invalidate() here.  It invalidates every cached active
+	 * and sleep set owned by the APPS RSC, while this transaction can rebuild
+	 * only the selected CPU BCM messages.
+	 */
+	ret = rpmh_write_batch(qp->rpmh_dev, RPMH_ACTIVE_ONLY_STATE, cmds,
+			       batch_n);
+	if (ret)
+		goto batch_failed;
+
+	for (i = 0; i < num_cmds; i++) {
+		struct kona_bcm_state *bcm = &bcms[cmd_indices[i]];
+
+		bcm->committed_x = bcm->requested_x;
+		bcm->committed_y = bcm->requested_y;
+		bcm->committed_data = bcm->requested_data;
+		bcm->committed_generation = bcm->requested_generation;
+		bcm->dirty = false;
+		bcm->last_error = 0;
+	}
+	goto update_legacy_cache;
+
+batch_failed:
+	if (num_messages == 1)
+		*failed_vcd = bcms[cmd_indices[0]].vcd;
+	else
+		*failed_vcd = -1;
+	for (i = 0; i < num_cmds; i++) {
+		struct kona_bcm_state *bcm = &bcms[cmd_indices[i]];
+
+		bcm->last_error = ret;
+		bcm->failure_count++;
+		if (ret == -EAGAIN || ret == -EBUSY || ret == -ETIMEDOUT ||
+		    ret == -EPROBE_DEFER)
+			bcm->retry_count++;
+	}
+	if (ret == -EAGAIN || ret == -EBUSY || ret == -ETIMEDOUT ||
+	    ret == -EPROBE_DEFER)
+		return -EAGAIN;
+	return ret;
+update_legacy_cache:
+	/* Only the complete packed model owns all legacy CPU resources. */
+	if (!READ_ONCE(kona_packed_dry_run) && mask == KONA_PACKED_GROUP_ALL)
+		for (i = 0; i < qp->num_nodes; i++)
+			if (kona_icc_is_cpu_memory_path(&qp->nodes[i])) {
+				qp->last_ab[i] = qp->eff_ab[i];
+				qp->last_ib[i] = qp->eff_ib[i];
+			}
+	return 0;
+}
+
+
 static int kona_icc_send_vote_component(struct kona_icc_provider *qp,
 					unsigned int index, const char *res,
-					u64 vote, u64 *last, bool wait, bool average)
+					u64 vote, u64 *last,
+					bool wait, bool average,
+					bool *missing_alias)
 {
+	struct kona_icc_legacy_submit_result result;
 	int ret;
 
 	if (kona_icc_vote_component_unchanged(last, index, vote))
 		return 0;
 
-	ret = kona_icc_send_bw(qp->provider.dev, res,
-			       min_t(u64, vote, U32_MAX), wait);
+	ret = kona_icc_send_bw_result(qp->provider.dev, res,
+				      min_t(u64, vote, U32_MAX), wait, &result);
+	if (missing_alias && result.cmd_db_addr_missing)
+		*missing_alias = true;
 	if (ret)
 		return ret;
 
@@ -2686,21 +3504,144 @@ static int kona_icc_send_vote_component(struct kona_icc_provider *qp,
 	return 0;
 }
 
+static bool kona_icc_vote_valid(u64 ab, u64 ib);
+static void kona_icc_validate_vote(struct kona_icc_provider *qp,
+				   const struct kona_icc_node_desc *desc,
+				   u64 raw_ab, u64 raw_ib, u64 *ab, u64 *ib);
+
+static int kona_icc_process_packed_aggregate(struct kona_icc_provider *qp,
+						 bool *skip_legacy)
+{
+	struct kona_packed_inputs inputs;
+	struct kona_packed_inputs *observed;
+	bool dry_run;
+	bool aggregate_changed;
+	bool config_changed;
+	unsigned int i;
+	int failed_vcd = -2;
+	int ret;
+
+	if (skip_legacy)
+		*skip_legacy = false;
+
+	if (kona_cpu_model_stage() < 4 ||
+	    !READ_ONCE(kona_packed_runtime_enable) ||
+	    !READ_ONCE(kona_packed_group_mask) ||
+	    qp->packed_fallback_active)
+		return 0;
+
+	dry_run = READ_ONCE(kona_packed_dry_run);
+	kona_packed_snapshot_inputs(qp, &inputs);
+	qp->packed_current_inputs = inputs;
+	observed = dry_run ? &qp->packed_last_dry_run_inputs :
+		&qp->packed_last_real_inputs;
+
+	aggregate_changed = inputs.llcc_avg != observed->llcc_avg ||
+		inputs.llcc_peak != observed->llcc_peak ||
+		inputs.mem_avg != observed->mem_avg ||
+		inputs.mem_peak != observed->mem_peak;
+	config_changed = inputs.group_mask != observed->group_mask ||
+		inputs.dry_run != observed->dry_run ||
+		inputs.config_generation != observed->config_generation;
+
+	if (!aggregate_changed && !config_changed) {
+		qp->packed_aggregate_unchanged_skip_count++;
+		qp->packed_processed_generation = qp->packed_config_generation;
+		if (!dry_run && READ_ONCE(kona_packed_real_write_enable) &&
+		    inputs.group_mask == KONA_PACKED_GROUP_ALL && skip_legacy)
+			*skip_legacy = true;
+		return 0;
+	}
+
+	ret = kona_icc_commit_cpu_bcms(qp, &inputs, &failed_vcd);
+	if (ret == KONA_PACKED_REAL_WRITE_BLOCKED)
+		return 0;
+	if (!ret) {
+		qp->packed_aggregate_build_count++;
+		qp->packed_processed_generation = qp->packed_config_generation;
+		qp->packed_observed_generation = qp->packed_config_generation;
+		*observed = inputs;
+		if (dry_run)
+			qp->last_packed_dry_run_error = 0;
+		else if (inputs.group_mask == KONA_PACKED_GROUP_ALL && skip_legacy)
+			*skip_legacy = true;
+		return 0;
+	}
+
+	if (dry_run) {
+		qp->last_packed_dry_run_error = ret;
+		return 0;
+	}
+
+	qp->packed_fallback_active = true;
+	qp->packed_processed_generation = qp->packed_config_generation;
+	qp->packed_fallback_count++;
+	qp->last_failed_vcd = failed_vcd;
+	qp->last_packed_error = ret;
+	for (i = 0; i < qp->num_nodes; i++)
+		if (kona_icc_is_cpu_memory_path(&qp->nodes[i])) {
+			qp->last_ab[i] = U64_MAX;
+			qp->last_ib[i] = U64_MAX;
+		}
+	dev_err(qp->provider.dev,
+		"kona-rpmh: packed commit failed vcd=%d error=%d; using legacy CPU path for this boot\n",
+		failed_vcd, ret);
+	return 0;
+}
+
 static int kona_icc_send_node_votes(struct kona_icc_provider *qp,
 				    unsigned int index, u64 ab, u64 ib,
-				    bool *retry)
+				    bool *retry, bool *missing_alias)
 {
-	const struct kona_icc_node_desc *desc = &qp->nodes[index];
+	const struct kona_icc_node_desc *desc;
 	int ret;
-	bool wait = kona_cpu_memory_sync_votes &&
-		kona_icc_is_cpu_memory_path(desc);
+	bool wait;
+
+	if (WARN_ON_ONCE(!qp || index >= qp->num_nodes))
+		return -EINVAL;
+
+	desc = &qp->nodes[index];
+	wait = kona_cpu_memory_sync_votes && kona_icc_is_cpu_memory_path(desc);
+	if (unlikely(!kona_icc_vote_valid(ab, ib))) {
+		u64 raw_ab = qp->req_ab && qp->req_ab[index] != U64_MAX ?
+			qp->req_ab[index] : 0;
+		u64 raw_ib = qp->req_ib && qp->req_ib[index] != U64_MAX ?
+			qp->req_ib[index] : 0;
+
+		kona_icc_validate_vote(qp, desc, raw_ab, raw_ib, &ab, &ib);
+		if (qp->eff_ab)
+			qp->eff_ab[index] = ab;
+		if (qp->eff_ib)
+			qp->eff_ib[index] = ib;
+	}
 
 	if (retry)
 		*retry = false;
+	if (missing_alias)
+		*missing_alias = false;
 
 	/* Program the aggregate for a BCM, rather than this node's last vote. */
+	if (kona_vote_debug_submit)
+		KONA_VOTE_TRACE(qp, desc, "before-shared-aggregation", ab, ib);
 	ab = kona_icc_shared_resource_vote(qp, desc->ab, true);
 	ib = kona_icc_shared_resource_vote(qp, desc->ib, false);
+	if (kona_vote_debug_submit)
+		KONA_VOTE_TRACE(qp, desc, "after-shared-aggregation", ab, ib);
+	if (unlikely(!kona_icc_vote_valid(ab, ib))) {
+		dev_err_ratelimited(qp->provider.dev,
+				"kona-icc: invalid shared legacy vote id=%u name=%s vote=%llu/%llu\n",
+				desc->id, desc->name, (unsigned long long)ab,
+				(unsigned long long)ib);
+		ret = -ERANGE;
+		goto out_legacy;
+	}
+	if (kona_vote_debug && kona_icc_is_cpu_memory_path(desc))
+		dev_info(qp->provider.dev,
+			 "kona-vote: id=%u before-legacy=%llu/%llu stage=%u\n",
+			 desc->id, (unsigned long long)ab,
+			 (unsigned long long)ib, kona_cpu_model_stage());
+	if (kona_vote_debug_submit)
+		KONA_VOTE_TRACE(qp, desc, "before-legacy-send", ab, ib);
 
 	/*
 	 * Only touch RPMh resources whose component changed. Many consumers
@@ -2709,42 +3650,57 @@ static int kona_icc_send_node_votes(struct kona_icc_provider *qp,
 	 * ACTIVE_ONLY writes while preserving the GPU-before-AB ordering quirk.
 	 */
 	if (desc->id == KONA_ICC_GPU_TO_MEM) {
-		ret = kona_icc_send_vote_component(qp, index, desc->ib, ib, qp->last_ib, wait,
-						   false);
+		ret = kona_icc_send_vote_component(qp, index, desc->ib, ib,
+						   qp->last_ib, wait,
+						   false, missing_alias);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
-			return ret;
+			goto out_legacy;
 
-		ret = kona_icc_send_vote_component(qp, index, desc->ab, ab, qp->last_ab, wait,
-						   true);
+		ret = kona_icc_send_vote_component(qp, index, desc->ab, ab,
+						   qp->last_ab, wait,
+						   true, missing_alias);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
-			return ret;
+			goto out_legacy;
 	} else {
-		ret = kona_icc_send_vote_component(qp, index, desc->ab, ab, qp->last_ab, wait,
-						   true);
+		ret = kona_icc_send_vote_component(qp, index, desc->ab, ab,
+						   qp->last_ab, wait,
+						   true, missing_alias);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
-			return ret;
+			goto out_legacy;
 
-		ret = kona_icc_send_vote_component(qp, index, desc->ib, ib, qp->last_ib, wait,
-						   false);
+		ret = kona_icc_send_vote_component(qp, index, desc->ib, ib,
+						   qp->last_ib, wait,
+						   false, missing_alias);
 		if (ret == -EAGAIN)
 			goto out_retry;
 		if (ret)
-			return ret;
+			goto out_legacy;
 	}
 
-	return 0;
+	ret = 0;
+out_legacy:
+	if (kona_cpu_model_stage() >= 4 && qp->packed_fallback_active &&
+	    kona_icc_is_cpu_memory_path(desc))
+		qp->last_legacy_fallback_error = ret;
+	return ret;
 
 out_retry:
 	if (retry)
 		*retry = true;
+	ret = -EAGAIN;
+	goto out_legacy;
+}
 
-	return -EAGAIN;
+static void kona_icc_packed_force_generation(struct kona_icc_provider *qp)
+{
+	qp->packed_config_generation++;
+	atomic64_inc(&qp->packed_update_generation);
 }
 
 static void kona_icc_mark_dirty(struct kona_icc_provider *qp, unsigned int index)
@@ -2819,6 +3775,9 @@ static bool kona_icc_vote_is_unchanged(struct kona_icc_provider *qp,
 
 	if (!qp->last_ab || !qp->last_ib)
 		return false;
+	if (kona_cpu_model_stage() >= 4 &&
+	    kona_icc_is_cpu_memory_path(&qp->nodes[index]))
+		return false;
 
 	if (qp->last_ab[index] == U64_MAX || qp->last_ib[index] == U64_MAX)
 		return false;
@@ -2878,19 +3837,70 @@ static void kona_icc_queue_replay(struct kona_icc_provider *qp, unsigned int del
 			atomic_read(&qp->replay_queue_skips));
 }
 
+/*
+ * Parameter writes only change ownership and queue normal vote work.  The
+ * worker takes vote_lock and is the sole place that may reach packed RPMh I/O.
+ * Packed committed values intentionally remain historical after disarming.
+ */
+static void kona_icc_packed_parameter_changed(struct kona_icc_provider *qp,
+					       bool enabled)
+{
+	unsigned int i;
+
+	mutex_lock(&qp->vote_lock);
+	WRITE_ONCE(kona_packed_runtime_enable, enabled);
+	kona_icc_packed_force_generation(qp);
+	for (i = 0; i < qp->num_nodes; i++) {
+		if (!kona_icc_is_cpu_memory_path(&qp->nodes[i]))
+			continue;
+		/* Force either complete packed ownership or safe hybrid legacy votes. */
+		qp->last_ab[i] = U64_MAX;
+		qp->last_ib[i] = U64_MAX;
+		kona_icc_mark_dirty(qp, i);
+	}
+	mutex_unlock(&qp->vote_lock);
+
+	if (enabled)
+		dev_err(qp->provider.dev,
+			"kona-rpmh: packed runtime gate enabled mask=%u\n",
+			READ_ONCE(kona_packed_group_mask));
+	else
+		dev_err(qp->provider.dev,
+			"kona-rpmh: packed runtime gate disabled; restoring legacy CPU votes\n");
+
+	kona_icc_queue_replay(qp, 0, enabled ? "packed-runtime-enable" :
+			      "packed-runtime-disable");
+}
+
 
 static bool kona_icc_replay_req_votes(struct kona_icc_provider *qp)
 {
 	bool need_retry = false;
+	bool packed_skip_legacy = false;
 	unsigned long i;
 
 	if (!qp || !qp->eff_ab || !qp->eff_ib || !kona_icc_snapshot_dirty(qp))
 		return false;
 
+	if (kona_cpu_model_stage() >= 4 && READ_ONCE(kona_packed_runtime_enable) &&
+	    READ_ONCE(kona_packed_group_mask) && !qp->packed_fallback_active) {
+		bool any_cpu_memory_activity = false;
+
+		for_each_set_bit(i, qp->replay_scan_nodes, qp->num_nodes)
+			if (kona_icc_is_cpu_memory_path(&qp->nodes[i])) {
+				any_cpu_memory_activity = true;
+				break;
+			}
+
+		if (any_cpu_memory_activity)
+			kona_icc_process_packed_aggregate(qp, &packed_skip_legacy);
+	}
+
 	for_each_set_bit(i, qp->replay_scan_nodes, qp->num_nodes) {
 		u64 ab = qp->eff_ab[i];
 		u64 ib = qp->eff_ib[i];
 		bool retry = false;
+		int ret;
 
 		if (ab == U64_MAX || ib == U64_MAX) {
 			kona_icc_clear_dirty(qp, i);
@@ -2902,12 +3912,18 @@ static bool kona_icc_replay_req_votes(struct kona_icc_provider *qp)
 			continue;
 		}
 
+		if (packed_skip_legacy && kona_icc_is_cpu_memory_path(&qp->nodes[i])) {
+			kona_icc_clear_dirty(qp, i);
+			continue;
+		}
+
 		if (kona_icc_vote_is_unchanged(qp, i, ab, ib)) {
 			kona_icc_clear_dirty(qp, i);
 			continue;
 		}
 
-		if (kona_icc_send_node_votes(qp, i, ab, ib, &retry) == 0) {
+		ret = kona_icc_send_node_votes(qp, i, ab, ib, &retry, NULL);
+		if (ret == 0) {
 			kona_icc_clear_dirty(qp, i);
 		} else if (retry) {
 			need_retry = true;
@@ -3037,7 +4053,7 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 			continue;
 		}
 
-		ret = kona_icc_send_node_votes(qp, i, ab, ib, &retry);
+		ret = kona_icc_send_node_votes(qp, i, ab, ib, &retry, NULL);
 		if (ret == -EAGAIN || retry)
 			need_retry = true;
 		else if (!ret)
@@ -3119,19 +4135,60 @@ static void kona_icc_retry_workfn(struct work_struct *work)
 	}
 
 	atomic_inc(&qp->replay_runs);
+	mutex_lock(&qp->vote_lock);
 	need_retry = kona_icc_replay_req_votes_phased(qp);
+	mutex_unlock(&qp->vote_lock);
 
 	if (need_retry)
 		kona_icc_queue_replay(qp, KONA_RETRY_DELAY_MS, "provider-not-ready");
 }
 
-static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
+static bool kona_icc_vote_valid(u64 ab, u64 ib)
+{
+	return ab != U64_MAX && ib != U64_MAX &&
+	       ab <= KONA_ICC_MAX_LOGICAL_VOTE &&
+	       ib <= KONA_ICC_MAX_LOGICAL_VOTE;
+}
+
+/* vote_lock serializes the telemetry and all effective-vote cache updates. */
+static void kona_icc_validate_vote(struct kona_icc_provider *qp,
+				   const struct kona_icc_node_desc *desc,
+				   u64 raw_ab, u64 raw_ib, u64 *ab, u64 *ib)
+{
+	u64 bad_ab = *ab;
+	u64 bad_ib = *ib;
+
+	if (likely(kona_icc_vote_valid(bad_ab, bad_ib)))
+		return;
+
+	qp->invalid_vote_count++;
+	qp->last_invalid_raw_ab = raw_ab;
+	qp->last_invalid_raw_ib = raw_ib;
+	qp->last_invalid_eff_ab = bad_ab;
+	qp->last_invalid_eff_ib = bad_ib;
+	qp->last_invalid_node_id = desc->id;
+	qp->last_invalid_node_name = desc->name;
+
+	/* Raw callback votes are u32 and are therefore always sender-safe. */
+	*ab = min_t(u64, raw_ab, KONA_ICC_MAX_LOGICAL_VOTE);
+	*ib = min_t(u64, raw_ib, KONA_ICC_MAX_LOGICAL_VOTE);
+	dev_err_ratelimited(qp->provider.dev,
+			"kona-icc: invalid effective vote id=%u name=%s raw=%llu/%llu effective=%llu/%llu fallback=%llu/%llu count=%llu\n",
+			desc->id, desc->name, (unsigned long long)raw_ab,
+			(unsigned long long)raw_ib, (unsigned long long)bad_ab,
+			(unsigned long long)bad_ib, (unsigned long long)*ab,
+			(unsigned long long)*ib,
+			(unsigned long long)qp->invalid_vote_count);
+}
+
+static int __kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 {
 	struct kona_icc_provider *qp;
 	const struct kona_icc_node_desc *desc;
 	u64 prev_req_ab = U64_MAX, prev_req_ib = U64_MAX;
 	u64 prev_eff_ab = U64_MAX, prev_eff_ib = U64_MAX;
-	u64 ab, ib;
+	u64 ab = (u64)avg_bw;
+	u64 ib = (u64)peak_bw;
 	unsigned int index;
 
 	if (IS_ERR_OR_NULL(path) || !path->provider)
@@ -3146,14 +4203,20 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 		return -EINVAL;
 
 	desc = &qp->nodes[index];
+	KONA_VOTE_TRACE(qp, desc, "callback-entry", avg_bw, peak_bw);
+	KONA_VOTE_TRACE(qp, desc, "after-initialization", ab, ib);
 
 	/*
 	 * Kona v2 RPMh BCMs expect interconnect votes in KB/s (decimal 1000)
 	 * packed into cmd.data. Keep ICC consumer units aligned to KB/s to
 	 * avoid u32 saturation and unit skew across clients.
 	 */
-	ab = avg_bw;
-	ib = peak_bw;
+	if (kona_vote_debug && kona_icc_is_cpu_memory_path(desc))
+		dev_info(qp->provider.dev,
+			 "kona-vote: id=%u raw=%u/%u initial=%llu/%llu base=%llu/%llu\n",
+			 desc->id, avg_bw, peak_bw, (unsigned long long)ab,
+			 (unsigned long long)ib, (unsigned long long)ab,
+			 (unsigned long long)ib);
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
 	/*
@@ -3168,11 +4231,17 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	 * Apply per-path and global floors for non-zero votes. 0/0 votes
 	 * are treated as truly idle and are allowed to collapse.
 	 */
+	KONA_VOTE_TRACE(qp, desc, "before-floor", ab, ib);
 	if ((ab || ib) && kona_perf_floor_enable && kona_icc_stage >= 4 &&
 	    !kona_icc_is_policy_suppressed_path(desc)) {
 		kona_icc_apply_floor(qp, desc, avg_bw, peak_bw, &ab, &ib);
-		kona_icc_apply_hysteresis(qp, desc, index, &ab, &ib);
 	}
+	KONA_VOTE_TRACE(qp, desc, "after-floor", ab, ib);
+	KONA_VOTE_TRACE(qp, desc, "before-hysteresis", ab, ib);
+	if ((ab || ib) && kona_perf_floor_enable && kona_icc_stage >= 4 &&
+	    !kona_icc_is_policy_suppressed_path(desc))
+		kona_icc_apply_hysteresis(qp, desc, index, &ab, &ib);
+	KONA_VOTE_TRACE(qp, desc, "after-hysteresis", ab, ib);
 
 	/*
 	 * Keep-alive vote for CPU/GPU/NPU paths when clients briefly request 0/0
@@ -3181,9 +4250,12 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	 * Raw-only clients must preserve exact 0/0 collapse semantics while their
 	 * ICC exposure is validated.
 	 */
+	KONA_VOTE_TRACE(qp, desc, "before-keepalive", ab, ib);
 	if (!kona_icc_is_policy_suppressed_path(desc))
 		kona_icc_apply_keepalive_vote(qp, index, &ab, &ib);
+	KONA_VOTE_TRACE(qp, desc, "after-keepalive", ab, ib);
 
+	KONA_VOTE_TRACE(qp, desc, "before-gpu-turbo", ab, ib);
 	if (desc->id == KONA_ICC_GPU_TO_MEM) {
 		kona_icc_update_gpu_llcc_turbo(qp, ib);
 	} else if (qp->last_ib) {
@@ -3194,6 +4266,12 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	}
 
 	kona_icc_apply_gpu_llcc_turbo(qp, desc, &ab, &ib);
+	KONA_VOTE_TRACE(qp, desc, "after-gpu-turbo", ab, ib);
+	if (kona_vote_debug && kona_icc_is_cpu_memory_path(desc))
+		dev_info(qp->provider.dev,
+			 "kona-vote: id=%u after-floor-policy-resume-turbo=%llu/%llu\n",
+			 desc->id, (unsigned long long)ab,
+			 (unsigned long long)ib);
 
 
 skip_perf_floor:
@@ -3204,9 +4282,9 @@ skip_perf_floor:
 	    desc->role == KONA_ROLE_CPU_PRIME)
 		pr_info("kona-icc: %s avg=%uKB/s peak=%uKB/s -> ab=%lluKB/s ib=%lluKB/s prev ab/ib=%llu/%llu\n",
 			desc->name, avg_bw, peak_bw,
-			ab, ib,
-			qp->last_ab ? qp->last_ab[index] : 0,
-			qp->last_ib ? qp->last_ib[index] : 0);
+			(unsigned long long)ab, (unsigned long long)ib,
+			(unsigned long long)(qp->last_ab ? qp->last_ab[index] : 0),
+			(unsigned long long)(qp->last_ib ? qp->last_ib[index] : 0));
 #endif
 	
 	/*
@@ -3214,6 +4292,7 @@ skip_perf_floor:
 	 * transiently vote 0/0 during panel re-enable sequencing. On battery
 	 * this can collapse interconnect too early and wedge panel bring-up.
 	 */
+	KONA_VOTE_TRACE(qp, desc, "before-display-resume", ab, ib);
 	if (desc->role == KONA_ROLE_DISPLAY && !ab && !ib &&
 	    kona_icc_display_runtime_active(qp) &&
 	    !atomic_read(&qp->votes_paused) &&
@@ -3234,11 +4313,13 @@ skip_perf_floor:
 				"kona-icc: hold DISPLAY vote for %s during resume grace: ab=%llu ib=%llu\n",
 				desc->name, ab, ib);
 	}
+	KONA_VOTE_TRACE(qp, desc, "after-display-resume", ab, ib);
 
 	/*
 	 * Hard non-zero fallback for DISPLAY paths: avoid 0/0 collapse on ddr and
 	 * config-path links where panel/SDE/dispcc sequences can stall.
 	 */
+	KONA_VOTE_TRACE(qp, desc, "before-display-fallback", ab, ib);
 	if (desc->role == KONA_ROLE_DISPLAY && !ab && !ib &&
 	    kona_display_nonzero_floor_enable &&
 	    kona_icc_display_runtime_active(qp)) {
@@ -3248,6 +4329,17 @@ skip_perf_floor:
 				"kona-icc: fallback non-zero DISPLAY floor for %s: ab=%llu ib=%llu\n",
 				desc->name, ab, ib);
 	}
+	KONA_VOTE_TRACE(qp, desc, "after-display-fallback", ab, ib);
+
+	/* Validate the final transformed value before cache, replay, or submission. */
+	KONA_VOTE_TRACE(qp, desc, "before-validator", ab, ib);
+	kona_icc_validate_vote(qp, desc, (u64)avg_bw, (u64)peak_bw, &ab, &ib);
+	KONA_VOTE_TRACE(qp, desc, "after-validator", ab, ib);
+	KONA_VOTE_TRACE(qp, desc, "before-cache", ab, ib);
+	if (kona_vote_debug && kona_icc_is_cpu_memory_path(desc))
+		dev_info(qp->provider.dev,
+			 "kona-vote: id=%u before-cache=%llu/%llu\n", desc->id,
+			 (unsigned long long)ab, (unsigned long long)ib);
 
 	/*
 	 * Cache both the raw client request and the final effective vote. Resume
@@ -3272,6 +4364,27 @@ skip_perf_floor:
 		qp->eff_ab[index] = ab;
 	if (qp->eff_ib)
 		qp->eff_ib[index] = ib;
+	if (WARN_ON_ONCE(!qp->eff_ab || !qp->eff_ib ||
+			 qp->eff_ab[index] != ab || qp->eff_ib[index] != ib))
+		return -EIO;
+	KONA_VOTE_TRACE(qp, desc, "after-cache", qp->eff_ab[index],
+			qp->eff_ib[index]);
+	if (kona_vote_debug && kona_icc_is_cpu_memory_path(desc))
+		dev_info(qp->provider.dev,
+			 "kona-vote: id=%u after-cache req=%llu/%llu eff=%llu/%llu\n",
+			 desc->id, (unsigned long long)qp->req_ab[index],
+			 (unsigned long long)qp->req_ib[index],
+			 (unsigned long long)qp->eff_ab[index],
+			 (unsigned long long)qp->eff_ib[index]);
+	if (kona_icc_is_cpu_memory_path(desc) &&
+	    !qp->first_cpu_request_seen) {
+		qp->first_cpu_request_seen = true;
+		dev_err(qp->provider.dev,
+			"kona-rpmh: first CPU request id=%u name=%s raw=%u/%u policy=%llu/%llu stage=%u\n",
+			desc->id, desc->name, avg_bw, peak_bw,
+			(unsigned long long)ab, (unsigned long long)ib,
+			kona_cpu_model_stage());
+	}
 	if (prev_req_ab != avg_bw || prev_req_ib != peak_bw ||
 	    prev_eff_ab != ab || prev_eff_ib != ib)
 		kona_icc_mark_dirty(qp, index);
@@ -3290,6 +4403,16 @@ skip_perf_floor:
 	    (avg_bw || peak_bw)) {
 		qp->saved_ab[index] = ab;
 		qp->saved_ib[index] = ib;
+	}
+
+	if (kona_cpu_model_stage() >= 4 && kona_icc_is_cpu_memory_path(desc)) {
+		bool skip_legacy = false;
+
+		kona_icc_process_packed_aggregate(qp, &skip_legacy);
+		if (skip_legacy) {
+			kona_icc_clear_dirty(qp, index);
+			return 0;
+		}
 	}
 
 	/*
@@ -3402,12 +4525,18 @@ skip_perf_floor:
 	}
 
 	{
+		bool missing_alias = false;
 		bool retry = false;
-		int ret = kona_icc_send_node_votes(qp, index, ab, ib, &retry);
+		int ret = kona_icc_send_node_votes(qp, index, ab, ib, &retry,
+						   &missing_alias);
 
 		if (ret == -EAGAIN || retry) {
 			kona_icc_mark_dirty(qp, index);
 			kona_icc_queue_replay(qp, KONA_RETRY_DELAY_MS, "send-eagain");
+		} else if (ret == -ENODEV && missing_alias) {
+			kona_icc_mark_dirty(qp, index);
+
+			return 0;
 		} else if (ret) {
 			return ret;
 		} else {
@@ -3416,6 +4545,35 @@ skip_perf_floor:
 	}
 
 	return 0;
+}
+
+static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
+{
+	struct kona_icc_provider *qp;
+	int ret;
+
+	if (IS_ERR_OR_NULL(path) || !path->provider)
+		return -EINVAL;
+
+	qp = dev_get_drvdata(path->provider->dev);
+	if (!qp)
+		return -EINVAL;
+
+	/*
+	 * icc_set_bw() only serializes callers of the same logical path.  Kona
+	 * exposes several logical CPU paths backed by the same CPU_MEM and
+	 * CPU_LLCC BCMs, so two devbw/memlat workers can otherwise both compute
+	 * an aggregate and then send their votes out of order.  In that race the
+	 * older, smaller vote can land last and leave DDR/LLCC under-voted until
+	 * another governor update, severely hurting both single- and multi-core
+	 * workloads.  Cover the effective-vote update, shared aggregation, RPMh
+	 * transaction, and cache update with a provider-wide mutex.
+	 */
+	mutex_lock(&qp->vote_lock);
+	ret = __kona_icc_set(path, avg_bw, peak_bw);
+	mutex_unlock(&qp->vote_lock);
+
+	return ret;
 }
 
 static ssize_t ab_show(struct device *dev,
@@ -3454,14 +4612,109 @@ static ssize_t res_show(struct device *dev,
 	return sysfs_emit(buf, "ab=%s ib=%s\n", desc->ab ?: "", desc->ib ?: "");
 }
 
+static ssize_t physical_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
+{
+	struct kona_icc_node_sysfs *node = dev_get_drvdata(dev);
+	struct kona_bcm_state *bcm;
+	const char *packed_mode;
+	ssize_t len = 0;
+	unsigned int i;
+
+	if (!node || !node->qp)
+		return -EINVAL;
+	if (!kona_icc_is_cpu_memory_path(&node->qp->nodes[node->index]))
+		return sysfs_emit(buf, "legacy-resource\n");
+	if (node->qp->packed_fallback_active)
+		packed_mode = "sticky-legacy-fallback";
+	else if (kona_cpu_model_stage() < 4 ||
+		 !READ_ONCE(kona_packed_runtime_enable) ||
+		 !READ_ONCE(kona_packed_group_mask))
+		packed_mode = "stage4-unarmed";
+	else if (READ_ONCE(kona_packed_dry_run))
+		packed_mode = "stage4-armed-dry-run";
+	else if (!READ_ONCE(kona_packed_real_write_enable))
+		packed_mode = "stage4-real-blocked";
+	else
+		packed_mode = "stage4-armed-real";
+
+	for (i = 0; i < KONA_CPU_BCM_COUNT; i++) {
+		bcm = &node->qp->cpu_bcms[i];
+		len += scnprintf(buf + len, PAGE_SIZE - len,
+			"stage=%u %s addr=%#x vcd=%u width=%u unit=%u raw=%llu/%llu req=%llu/%llu "
+			"saturated=%u/%u committed=%llu/%llu data=%#x dry_data=%#x generation=%llu/%llu dry_generation=%llu dirty=%u retries=%u failures=%u fallback=%u last_error=%d saturation=%u\n",
+			kona_cpu_model_stage(), bcm->name, bcm->addr, bcm->vcd, bcm->width, bcm->unit,
+			bcm->raw_x, bcm->raw_y, bcm->requested_x, bcm->requested_y,
+			bcm->saturated_x, bcm->saturated_y,
+			bcm->committed_x, bcm->committed_y,
+			bcm->committed_data, bcm->dry_run_data, bcm->requested_generation,
+			bcm->committed_generation, bcm->dry_run_generation, bcm->dirty, bcm->retry_count,
+			bcm->failure_count, bcm->fallback, bcm->last_error,
+			bcm->saturation_count);
+	}
+	len += scnprintf(buf + len, PAGE_SIZE - len,
+		"invalid_votes=%llu last_invalid_node=%u/%s raw=%llu/%llu effective=%llu/%llu packed_mode=%s packed_runtime_enable=%u packed_group_mask=%u packed_force_dirty=%u packed_dry_run=%u packed_real_write_enable=%u packed_real_write_once=%u packed_real_write_consumed=%u packed_submissions=%llu packed_dry_run_builds=%llu packed_dry_run_skips=%llu packed_update_generation=%llu packed_processed_generation=%llu packed_update_pending=%u replay_pending=%u packed_fallback_active=%u packed_fallback_count=%llu last_failed_vcd=%d last_packed_error=%d last_legacy_fallback_error=%d current_aggregate=%llu/%llu/%llu/%llu dry_aggregate=%llu/%llu/%llu/%llu real_aggregate=%llu/%llu/%llu/%llu packed_config_generation=%llu packed_observed_generation=%llu aggregate_builds=%llu aggregate_unchanged_skips=%llu last_dry_run_error=%d pending_cause=%s\n",
+		(unsigned long long)node->qp->invalid_vote_count,
+		node->qp->last_invalid_node_id,
+		node->qp->last_invalid_node_name ?: "none",
+		(unsigned long long)node->qp->last_invalid_raw_ab,
+		(unsigned long long)node->qp->last_invalid_raw_ib,
+		(unsigned long long)node->qp->last_invalid_eff_ab,
+		(unsigned long long)node->qp->last_invalid_eff_ib,
+		packed_mode,
+		READ_ONCE(kona_packed_runtime_enable),
+		READ_ONCE(kona_packed_group_mask),
+		READ_ONCE(kona_packed_force_dirty),
+		READ_ONCE(kona_packed_dry_run),
+		READ_ONCE(kona_packed_real_write_enable),
+		READ_ONCE(kona_packed_real_write_once),
+		READ_ONCE(node->qp->packed_real_write_consumed),
+		(unsigned long long)node->qp->packed_submission_count,
+		(unsigned long long)node->qp->packed_dry_run_build_count,
+		(unsigned long long)node->qp->packed_dry_run_skip_count,
+		(unsigned long long)atomic64_read(&node->qp->packed_update_generation),
+		(unsigned long long)node->qp->packed_processed_generation,
+		node->qp->packed_processed_generation !=
+			atomic64_read(&node->qp->packed_update_generation),
+		delayed_work_pending(&node->qp->retry_work),
+		node->qp->packed_fallback_active,
+		(unsigned long long)node->qp->packed_fallback_count,
+		node->qp->last_failed_vcd, node->qp->last_packed_error,
+		node->qp->last_legacy_fallback_error,
+		(unsigned long long)node->qp->packed_current_inputs.llcc_avg,
+		(unsigned long long)node->qp->packed_current_inputs.llcc_peak,
+		(unsigned long long)node->qp->packed_current_inputs.mem_avg,
+		(unsigned long long)node->qp->packed_current_inputs.mem_peak,
+		(unsigned long long)node->qp->packed_last_dry_run_inputs.llcc_avg,
+		(unsigned long long)node->qp->packed_last_dry_run_inputs.llcc_peak,
+		(unsigned long long)node->qp->packed_last_dry_run_inputs.mem_avg,
+		(unsigned long long)node->qp->packed_last_dry_run_inputs.mem_peak,
+		(unsigned long long)node->qp->packed_last_real_inputs.llcc_avg,
+		(unsigned long long)node->qp->packed_last_real_inputs.llcc_peak,
+		(unsigned long long)node->qp->packed_last_real_inputs.mem_avg,
+		(unsigned long long)node->qp->packed_last_real_inputs.mem_peak,
+		(unsigned long long)node->qp->packed_config_generation,
+		(unsigned long long)node->qp->packed_observed_generation,
+		(unsigned long long)node->qp->packed_aggregate_build_count,
+		(unsigned long long)node->qp->packed_aggregate_unchanged_skip_count,
+		node->qp->last_packed_dry_run_error,
+		node->qp->packed_processed_generation !=
+			atomic64_read(&node->qp->packed_update_generation) ?
+			"config" : delayed_work_pending(&node->qp->retry_work) ?
+			"generic-dirty-replay" : "none");
+	return len;
+}
+
 static DEVICE_ATTR_RO(ab);
 static DEVICE_ATTR_RO(ib);
 static DEVICE_ATTR_RO(res);
+static DEVICE_ATTR_RO(physical);
 
 static struct attribute *kona_icc_attrs[] = {
 	&dev_attr_ab.attr,
 	&dev_attr_ib.attr,
 	&dev_attr_res.attr,
+	&dev_attr_physical.attr,
 	NULL,
 };
 
@@ -3713,6 +4966,7 @@ static int kona_icc_probe(struct platform_device *pdev)
 {
 	const struct kona_icc_data *data =
 		of_device_get_match_data(&pdev->dev);
+	struct device *rpmh_dev;
 	struct kona_icc_provider *qp;
 	u64 __maybe_unused ab, ib;
 	int ret, i;
@@ -3733,9 +4987,24 @@ static int kona_icc_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	rpmh_dev = msm_bus_rpmh_get_rsc_client(MSM_BUS_RSC_APPS);
+	if (!rpmh_dev) {
+		dev_info(&pdev->dev,
+			 "kona-rpmh: APPS RSC client unavailable; deferring probe\n");
+		return -EPROBE_DEFER;
+	}
+	dev_info(&pdev->dev, "kona-rpmh: resolved APPS RSC client %s\n",
+		 dev_name(rpmh_dev));
+
 	qp = devm_kzalloc(&pdev->dev, sizeof(*qp), GFP_KERNEL);
 	if (!qp)
 		return -ENOMEM;
+	qp->rpmh_dev = rpmh_dev;
+	qp->last_failed_vcd = -1;
+	qp->cpu_bcms[KONA_CPU_BCM_SH4].name = "SH4";
+	qp->cpu_bcms[KONA_CPU_BCM_SH0].name = "SH0";
+	qp->cpu_bcms[KONA_CPU_BCM_MC0].name = "MC0";
+	/* ACV is solver-owned on Kona; never synthesize a normal X/Y vote for it. */
 
 	/*
 	 * Some panels briefly drop their SDE vote to 0/0 while re-enabling.
@@ -3812,6 +5081,7 @@ static int kona_icc_probe(struct platform_device *pdev)
 	}
 
 	spin_lock_init(&qp->dirty_lock);
+	mutex_init(&qp->vote_lock);
 
 
 	INIT_DELAYED_WORK(&qp->retry_work, kona_icc_retry_workfn);
@@ -3891,7 +5161,8 @@ static int kona_icc_probe(struct platform_device *pdev)
 	}
 
 #ifdef CONFIG_INTERCONNECT_QCOM_KONA_PERF_FLOOR
-	if (qp->boot_floor_vote && kona_icc_stage >= 4) {
+	if (qp->boot_floor_vote && kona_icc_stage >= 4 &&
+	    kona_cpu_model_stage() < 4) {
 		for (i = 0; i < qp->num_nodes; i++) {
 			int r_ab, r_ib;
 
@@ -3927,6 +5198,38 @@ static int kona_icc_probe(struct platform_device *pdev)
 		 (kona_icc_stage >= 1) ? "enabled" : "disabled",
 		 qp->display_nb_registered, qp->boot_floor_vote,
 		 kona_perf_floor_enable && kona_icc_stage >= 4);
+	dev_err(&pdev->dev,
+		"kona-rpmh: provider probe complete migration_stage=%u legacy_compat=%u\n",
+		kona_cpu_model_stage(), kona_rpmh_cpu_model);
+	if (kona_cpu_model_stage() >= 1) {
+		for (i = 0; i < KONA_CPU_BCM_COUNT; i++) {
+			ret = kona_icc_cpu_bcm_metadata(qp, &qp->cpu_bcms[i]);
+			if (ret == -EAGAIN) {
+				dev_err(&pdev->dev,
+					"kona-rpmh: %s metadata temporarily unavailable; first request will retry\n",
+					qp->cpu_bcms[i].name);
+				continue;
+			}
+			if (ret) {
+				qp->cpu_bcms[i].fallback = true;
+				qp->cpu_bcms[i].last_error = ret;
+				dev_err(&pdev->dev,
+					"kona-rpmh: fallback %s permanent metadata error=%d\n",
+					qp->cpu_bcms[i].name, ret);
+				/* Keep ownership coherent: all CPU aliases remain legacy. */
+				if (kona_cpu_model_stage() >= 4)
+					kona_rpmh_model = 1;
+			}
+		}
+	}
+	if (kona_cpu_model_stage() == 2 || kona_cpu_model_stage() == 3)
+		dev_err(&pdev->dev,
+			"kona-rpmh: stage %u validates metadata only: local CPU aliases cannot split SH4/SH0 ownership; legacy programming retained\n",
+			kona_cpu_model_stage());
+
+	mutex_lock(&kona_packed_param_lock);
+	kona_packed_provider = qp;
+	mutex_unlock(&kona_packed_param_lock);
 
         return 0;
 
@@ -3941,6 +5244,11 @@ err_free_bitmaps:
 static int kona_icc_remove(struct platform_device *pdev)
 {
 	struct kona_icc_provider *qp = platform_get_drvdata(pdev);
+
+	mutex_lock(&kona_packed_param_lock);
+	if (kona_packed_provider == qp)
+		kona_packed_provider = NULL;
+	mutex_unlock(&kona_packed_param_lock);
 
 	cancel_delayed_work_sync(&qp->retry_work);
 
