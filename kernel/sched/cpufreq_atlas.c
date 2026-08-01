@@ -28,6 +28,7 @@ struct sugov_tunables {
 	unsigned int		rtg_boost_freq;
 	unsigned int		target_load;
 	unsigned int		new_task_ratio;
+	bool			convex_map;
 	bool			pl;
 };
 
@@ -327,6 +328,26 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 	sg_policy->prev_cached_raw_freq = sg_policy->cached_raw_freq;
 	sg_policy->cached_raw_freq = freq;
 	return cpufreq_driver_resolve_freq(policy, freq);
+}
+
+/*
+ * Optional experimental mapping.  Keep this separate from WALT adjustment:
+ * WALT, iowait and clamps select the demand while this knob only changes the
+ * final demand-to-frequency curve.  The default remains schedutil's linear
+ * map so an A/B test does not silently stack two sources of headroom.
+ */
+static unsigned long sugov_map_util(struct sugov_policy *sg_policy,
+				    unsigned long util, unsigned long max)
+{
+	u64 squared;
+
+	if (!sg_policy->tunables->convex_map || !max)
+		return util;
+
+	/* u + u * (max - u) / (2 * max), bounded and monotonic. */
+	squared = (u64)util * (max - min(util, max));
+	do_div(squared, 2 * max);
+	return min_t(unsigned long, max, util + squared);
 }
 
 extern long
@@ -728,6 +749,7 @@ static void sugov_update_single(struct update_util_data *hook, u64 time,
 				sg_cpu->walt_load.rtgb_active, flags);
 
 	sugov_walt_adjust(sg_cpu, &util, &max);
+	util = sugov_map_util(sg_policy, util, max);
 	next_f = get_next_freq(sg_policy, util, max);
 	/*
 	 * Do not reduce the frequency if the CPU has not been idle
@@ -791,15 +813,20 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time)
 		j_util = j_sg_cpu->util;
 		j_max = j_sg_cpu->max;
 		j_util = sugov_iowait_apply(j_sg_cpu, time, j_util, j_max);
+		/* Adjust each CPU before comparing normalized demand.  Applying a
+		 * losing CPU's WALT signals to the running policy maximum mixes its
+		 * numerator with another CPU's denominator and makes the result depend
+		 * on cpumask iteration order.
+		 */
+		sugov_walt_adjust(j_sg_cpu, &j_util, &j_max);
 
 		if (j_util * max >= j_max * util) {
 			util = j_util;
 			max = j_max;
 		}
-
-		sugov_walt_adjust(j_sg_cpu, &util, &max);
 	}
 
+	util = sugov_map_util(sg_policy, util, max);
 	return get_next_freq(sg_policy, util, max);
 }
 
@@ -1117,6 +1144,24 @@ static ssize_t new_task_ratio_store(struct gov_attr_set *attr_set,
 static struct governor_attr target_load = __ATTR_RW(target_load);
 static struct governor_attr new_task_ratio = __ATTR_RW(new_task_ratio);
 
+static ssize_t convex_map_show(struct gov_attr_set *attr_set, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 to_sugov_tunables(attr_set)->convex_map);
+}
+
+static ssize_t convex_map_store(struct gov_attr_set *attr_set,
+				const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	if (kstrtobool(buf, &tunables->convex_map))
+		return -EINVAL;
+	return count;
+}
+
+static struct governor_attr convex_map = __ATTR_RW(convex_map);
+
 static struct attribute *sugov_attributes[] = {
 	&up_rate_limit_us.attr,
 	&down_rate_limit_us.attr,
@@ -1125,6 +1170,7 @@ static struct attribute *sugov_attributes[] = {
 	&rtg_boost_freq.attr,
 	&target_load.attr,
 	&new_task_ratio.attr,
+	&convex_map.attr,
 	&pl.attr,
 	NULL
 };
@@ -1250,6 +1296,7 @@ static void sugov_tunables_save(struct cpufreq_policy *policy,
 	cached->rtg_boost_freq = tunables->rtg_boost_freq;
 	cached->target_load = tunables->target_load;
 	cached->new_task_ratio = tunables->new_task_ratio;
+	cached->convex_map = tunables->convex_map;
 	cached->hispeed_freq = tunables->hispeed_freq;
 	cached->up_rate_limit_us = tunables->up_rate_limit_us;
 	cached->down_rate_limit_us = tunables->down_rate_limit_us;
@@ -1276,6 +1323,7 @@ static void sugov_tunables_restore(struct cpufreq_policy *policy)
 	tunables->rtg_boost_freq = cached->rtg_boost_freq;
 	tunables->target_load = cached->target_load;
 	tunables->new_task_ratio = cached->new_task_ratio;
+	tunables->convex_map = cached->convex_map;
 	tunables->hispeed_freq = cached->hispeed_freq;
 	tunables->up_rate_limit_us = cached->up_rate_limit_us;
 	tunables->down_rate_limit_us = cached->down_rate_limit_us;
