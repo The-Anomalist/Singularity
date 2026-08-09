@@ -1888,16 +1888,43 @@ static void ufshcd_clk_scaling_resume_work(struct work_struct *work)
 	struct ufs_hba *hba = container_of(work, struct ufs_hba,
 					   clk_scaling.resume_work);
 	unsigned long irq_flags;
+	bool active;
+	bool is_suspended;
 
 	spin_lock_irqsave(hba->host->host_lock, irq_flags);
-	if (!hba->clk_scaling.is_suspended) {
-		spin_unlock_irqrestore(hba->host->host_lock, irq_flags);
-		return;
+	is_suspended = hba->clk_scaling.is_suspended;
+	active = hba->clk_scaling.active_reqs;
+	if (is_suspended)
+		hba->clk_scaling.is_suspended = false;
+	if (active) {
+		hba->clk_scaling.window_start_t = jiffies;
+		hba->clk_scaling.tot_busy_t = 0;
+		hba->clk_scaling.busy_start_t = ktime_get();
+		hba->clk_scaling.is_busy_started = true;
 	}
-	hba->clk_scaling.is_suspended = false;
 	spin_unlock_irqrestore(hba->host->host_lock, irq_flags);
 
-	devfreq_resume_device(hba->devfreq);
+	if (is_suspended)
+		devfreq_resume_device(hba->devfreq);
+	if (!active)
+		return;
+
+	/*
+	 * start_busy queues this worker on every idle-to-busy transition.  Do not
+	 * stop at resuming the periodic monitor, or throw the notification away
+	 * when the monitor was already running.  The periodic monitor can otherwise
+	 * leave the UFS link at its low clock and gear for an entire polling
+	 * interval.  That is a significant portion of short application launches
+	 * and storage benchmark bursts.
+	 *
+	 * Sampling immediately also has the desired simple_ondemand semantics.
+	 * The new busy interval is visible to get_dev_status(), so a sub-jiffy
+	 * first window is treated as fully busy and selects the performance OPP.
+	 * Steady-state downscaling remains controlled by the normal governor poll.
+	 */
+	mutex_lock(&hba->devfreq->lock);
+	update_devfreq(hba->devfreq);
+	mutex_unlock(&hba->devfreq->lock);
 }
 
 static int ufshcd_devfreq_target(struct device *dev,
