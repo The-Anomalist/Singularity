@@ -45,6 +45,9 @@
 #include <linux/show_mem_notifier.h>
 #include <linux/psi.h>
 #include <linux/cred.h>
+#include <linux/file.h>
+#include <linux/pid.h>
+#include <linux/syscalls.h>
 
 #include <asm/tlb.h>
 #include "internal.h"
@@ -1033,6 +1036,73 @@ static bool task_will_free_mem(struct task_struct *task)
 	}
 	rcu_read_unlock();
 
+	return ret;
+}
+
+/*
+ * Reap the address space of a dying process immediately.  This lets a
+ * userspace memory manager make the memory of a killed process available
+ * without waiting for exit_mmap(), which can be delayed considerably by a
+ * task stuck in the exit path.
+ */
+SYSCALL_DEFINE2(process_mrelease, int, pidfd, unsigned int, flags)
+{
+	struct task_struct *task;
+	struct mm_struct *mm;
+	struct fd f;
+	struct pid *pid;
+	long ret = 0;
+
+	if (flags)
+		return -EINVAL;
+
+	f = fdget(pidfd);
+	if (!f.file)
+		return -EBADF;
+
+	if (f.file->f_op != &pidfd_fops) {
+		ret = -EBADF;
+		goto out_fd;
+	}
+
+	pid = f.file->private_data;
+	task = get_pid_task(pid, PIDTYPE_TGID);
+	if (!task) {
+		ret = -ESRCH;
+		goto out_fd;
+	}
+
+	mm = mm_access(task, PTRACE_MODE_ATTACH_REALCREDS);
+	if (IS_ERR_OR_NULL(mm)) {
+		ret = mm ? PTR_ERR(mm) : -ESRCH;
+		goto out_task;
+	}
+
+	/* Releasing a live process would corrupt its address space. */
+	if (task->mm != mm || !task_will_free_mem(task))
+		ret = -EINVAL;
+	if (ret)
+		goto out_mm;
+
+	if (mmap_read_lock_killable(mm)) {
+		ret = -EINTR;
+		goto out_mm;
+	}
+
+	if (!test_bit(MMF_OOM_SKIP, &mm->flags)) {
+		if (!__oom_reap_task_mm(mm))
+			ret = -EAGAIN;
+		else
+			set_bit(MMF_OOM_SKIP, &mm->flags);
+	}
+
+	mmap_read_unlock(mm);
+out_mm:
+	mmput(mm);
+out_task:
+	put_task_struct(task);
+out_fd:
+	fdput(f);
 	return ret;
 }
 

@@ -745,8 +745,11 @@ __SYSCALL(__NR_close_range, sys_close_range)
 #define __NR_epoll_pwait2 441
 __SC_COMP(__NR_epoll_pwait2, sys_epoll_pwait2, compat_sys_epoll_pwait2)
 
+#define __NR_process_mrelease 448
+__SYSCALL(__NR_process_mrelease, sys_process_mrelease)
+
 #undef __NR_syscalls
-#define __NR_syscalls 442
+#define __NR_syscalls 449
 
 /*
  * 32 bit systems traditionally used different
