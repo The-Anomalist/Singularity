@@ -34,7 +34,7 @@
 
 /* Kona's EPSS frequency rows encode an integer CXO multiplier. */
 #define KONA_PRIME_STOCK_MAX_KHZ	2841600U
-#define KONA_PRIME_OC_TARGET_KHZ		3000000U
+#define KONA_PRIME_OC_TARGET_KHZ		3091200U
 
 #define CYCLE_CNTR_OFFSET(c, m, acc_count)				\
 			(acc_count ? ((c - cpumask_first(m) + 1) * 4) : 0)
@@ -471,6 +471,33 @@ static u32 qcom_cpufreq_hw_lut_freq(struct cpufreq_qcom *c, u32 data)
 	return c->cpu_hw_rate / 1000;
 }
 
+static void qcom_cpufreq_hw_dump_prime_lut(struct platform_device *pdev,
+					   struct cpufreq_qcom *c,
+					   unsigned int domain,
+					   unsigned int terminal)
+{
+	void __iomem *base_freq = c->reg_bases[REG_FREQ_LUT_TABLE];
+	void __iomem *base_volt = c->reg_bases[REG_VOLT_LUT_TABLE];
+	unsigned int first, last, i;
+	u32 data, voltage;
+
+	terminal = min(terminal, lut_max_entries - 1);
+	first = terminal > 2 ? terminal - 2 : 0;
+	last = min(terminal + 1, lut_max_entries - 1);
+
+	for (i = first; i <= last; i++) {
+		data = readl_relaxed(base_freq + i * lut_row_size);
+		voltage = readl_relaxed(base_volt + i * lut_row_size);
+		dev_info(&pdev->dev,
+			 "domain-%u: prime LUT[%u] freq=%u kHz src=%u L=%u cores=%u voltage=%u uV corner=%u\n",
+			 domain, i, qcom_cpufreq_hw_lut_freq(c, data),
+			 FIELD_GET(GENMASK(31, 30), data),
+			 FIELD_GET(GENMASK(7, 0), data), CORE_COUNT_VAL(data),
+			 FIELD_GET(GENMASK(11, 0), voltage) * 1000,
+			 FIELD_GET(GENMASK(21, 16), voltage));
+	}
+}
+
 /*
  * On Kona, EPSS is populated by secure firmware and Linux normally only
  * consumes the LUT.  The intentional prime overclock is opt-in from the Kona
@@ -493,6 +520,7 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 	u32 terminator_voltage, next_voltage;
 	u32 previous_freq, terminator_freq, previous_cc, terminator_cc;
 	u32 lval, actual, oc_row, i;
+	int ret;
 
 	if (of_property_read_u32(dev->of_node, "qcom,prime-oc-domain-id",
 				 &oc_domain))
@@ -503,10 +531,6 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 	requested = KONA_PRIME_OC_TARGET_KHZ;
 	of_property_read_u32(dev->of_node, "qcom,prime-oc-frequency-khz",
 			     &requested);
-	if (requested != KONA_PRIME_OC_TARGET_KHZ)
-		return dev_err_probe(dev, -EINVAL,
-			"domain-%u: unsupported prime OC target %u kHz\n",
-			domain, requested);
 
 	/* Locate the firmware's duplicate-frequency end marker. */
 	for (i = 1; i < lut_max_entries; i++) {
@@ -520,25 +544,37 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 		    previous_cc == terminator_cc)
 			break;
 	}
+	if (requested != KONA_PRIME_OC_TARGET_KHZ) {
+		ret = dev_err_probe(dev, -EINVAL,
+				    "domain-%u: unsupported prime OC target %u kHz\n",
+			domain, requested);
+		goto validation_failed;
+	}
 
 	if (i + 1 >= lut_max_entries ||
 	    previous_freq != KONA_PRIME_STOCK_MAX_KHZ ||
 	    previous_cc != c->max_cores ||
-	    !FIELD_GET(GENMASK(31, 30), previous))
-		return dev_err_probe(dev, -EINVAL,
-			"domain-%u: prime LUT does not end in %u kHz full-core row\n",
+	    !FIELD_GET(GENMASK(31, 30), previous)) {
+		ret = dev_err_probe(dev, -EINVAL,
+				    "domain-%u: prime LUT does not end in %u kHz full-core row\n",
 			domain, KONA_PRIME_STOCK_MAX_KHZ);
+		goto validation_failed;
+	}
 
 	lval = DIV_ROUND_CLOSEST_ULL((u64)requested * 1000, c->xo_rate);
-	if (!lval || !FIELD_FIT(GENMASK(7, 0), lval))
-		return dev_err_probe(dev, -ERANGE,
-			"domain-%u: prime OC multiplier %u is invalid\n",
+	if (!lval || !FIELD_FIT(GENMASK(7, 0), lval)) {
+		ret = dev_err_probe(dev, -ERANGE,
+				    "domain-%u: prime OC multiplier %u is invalid\n",
 			domain, lval);
+		goto validation_failed;
+	}
 	actual = c->xo_rate * lval / 1000;
-	if (actual <= previous_freq)
-		return dev_err_probe(dev, -ERANGE,
-			"domain-%u: prime OC rate %u kHz is not above stock\n",
+	if (actual <= previous_freq) {
+		ret = dev_err_probe(dev, -ERANGE,
+				    "domain-%u: prime OC rate %u kHz is not above stock\n",
 			domain, actual);
+		goto validation_failed;
+	}
 
 	voltage = readl_relaxed(base_volt + (i - 1) * lut_row_size);
 	terminator_voltage = readl_relaxed(base_volt + i * lut_row_size);
@@ -564,8 +600,11 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 		writel_relaxed(next, base_freq + (i + 1) * lut_row_size);
 		writel_relaxed(next_voltage,
 			       base_volt + (i + 1) * lut_row_size);
-		return dev_err_probe(dev, -EIO,
-			"domain-%u: prime OC LUT write was rejected\n", domain);
+		/* Make the restored firmware rows visible before LUT parsing. */
+		wmb();
+		ret = dev_err_probe(dev, -EIO,
+				    "domain-%u: prime OC LUT write was rejected\n", domain);
+		goto validation_failed;
 	}
 
 	c->has_prime_oc = true;
@@ -578,6 +617,10 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 		 FIELD_GET(GENMASK(21, 16), voltage));
 
 	return 0;
+
+validation_failed:
+	qcom_cpufreq_hw_dump_prime_lut(pdev, c, domain, i);
+	return ret;
 }
 
 static unsigned int qcom_cpufreq_hw_get(unsigned int cpu)
@@ -720,14 +763,90 @@ static struct cpufreq_driver cpufreq_qcom_hw_driver = {
 	.ready		= qcom_cpufreq_ready,
 };
 
+static int qcom_cpufreq_update_opp(struct device *cpu_dev,
+				   unsigned int freq_khz,
+				   unsigned int volt)
+{
+	struct dev_pm_opp *opp;
+	unsigned long freq = (unsigned long)freq_khz * 1000;
+	int ret;
+
+	/* Unavailable lookup is intentional: all DT OPPs start filtered out. */
+	opp = dev_pm_opp_find_freq_exact(cpu_dev, freq, false);
+	if (IS_ERR(opp))
+		return PTR_ERR(opp);
+	dev_pm_opp_put(opp);
+
+	ret = dev_pm_opp_adjust_voltage(cpu_dev, freq, volt, volt, volt);
+	if (ret)
+		return ret;
+
+	return dev_pm_opp_enable(cpu_dev, freq);
+}
+
+static int qcom_cpufreq_load_opp_table(struct cpufreq_qcom *c)
+{
+	struct device_node *cpu_np, *opp_np, *child;
+	struct device *cpu_dev;
+	u64 rate;
+	int ret;
+
+	ret = dev_pm_opp_of_cpumask_add_table(&c->related_cpus);
+	if (ret)
+		return ret;
+
+	cpu_dev = get_cpu_device(cpumask_first(&c->related_cpus));
+	if (!cpu_dev) {
+		ret = -ENODEV;
+		goto remove_table;
+	}
+
+	/*
+	 * DT describes the architectural superset.  Keep every entry disabled
+	 * until a matching EPSS LUT row supplies its authoritative voltage.
+	 */
+	cpu_np = of_cpu_device_node_get(cpumask_first(&c->related_cpus));
+	if (!cpu_np) {
+		ret = -ENODEV;
+		goto remove_table;
+	}
+
+	opp_np = of_parse_phandle(cpu_np, "operating-points-v2", 0);
+	of_node_put(cpu_np);
+	if (!opp_np) {
+		ret = -ENOENT;
+		goto remove_table;
+	}
+
+	for_each_available_child_of_node(opp_np, child) {
+		if (of_property_read_u64(child, "opp-hz", &rate))
+			continue;
+		ret = dev_pm_opp_disable(cpu_dev, rate);
+		if (ret) {
+			of_node_put(child);
+			goto put_opp_node;
+		}
+	}
+	of_node_put(opp_np);
+
+	return 0;
+
+put_opp_node:
+	of_node_put(opp_np);
+remove_table:
+	dev_pm_opp_of_cpumask_remove_table(&c->related_cpus);
+	return ret;
+}
+
 static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 				    struct cpufreq_qcom *c)
 {
 	struct device *dev = &pdev->dev, *cpu_dev;
 	void __iomem *base_freq, *base_volt;
-	u32 data, src, lval, i, core_count, prev_cc, prev_freq, cur_freq, volt;
+	u32 data, src, lval, i, core_count, prev_cc, raw_freq;
+	u32 prev_raw_freq, selectable_freq, prev_selectable_freq, volt;
 	u32 vc;
-	unsigned long cpu;
+	int ret;
 
 	c->table = devm_kcalloc(dev, lut_max_entries + 2,
 				sizeof(*c->table), GFP_KERNEL);
@@ -748,8 +867,13 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 	spin_lock_init(&c->skip_data.lock);
 	base_freq = c->reg_bases[REG_FREQ_LUT_TABLE];
 	base_volt = c->reg_bases[REG_VOLT_LUT_TABLE];
+	cpu_dev = get_cpu_device(cpumask_first(&c->related_cpus));
+	if (!cpu_dev)
+		return -ENODEV;
 
 	prev_cc = 0;
+	prev_raw_freq = 0;
+	prev_selectable_freq = CPUFREQ_ENTRY_INVALID;
 
 	for (i = 0; i < lut_max_entries; i++) {
 		data = readl_relaxed(base_freq + i * lut_row_size);
@@ -763,74 +887,65 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		vc = data & GENMASK(21, 16);
 
 		if (src)
-			c->table[i].frequency = c->xo_rate * lval / 1000;
+			raw_freq = c->xo_rate * lval / 1000;
 		else
-			c->table[i].frequency = c->cpu_hw_rate / 1000;
+			raw_freq = c->cpu_hw_rate / 1000;
+
+		/*
+		 * EPSS terminates a domain with a duplicate raw frequency and core
+		 * count.  Never use the filtered Linux table as firmware parser
+		 * state: its previous entry may be CPUFREQ_ENTRY_INVALID.
+		 */
+		if (i > 0 && raw_freq == prev_raw_freq && core_count == prev_cc) {
+			if (prev_selectable_freq == CPUFREQ_ENTRY_INVALID)
+				c->table[i - 1].flags = CPUFREQ_BOOST_FREQ;
+			break;
+		}
 
 		c->table[i].driver_data = i;
-		c->freqs[i] = c->table[i].frequency;
-		cur_freq = c->table[i].frequency;
+		c->freqs[i] = raw_freq;
+		selectable_freq = raw_freq;
+
+		/* A firmware row is selectable only when DT describes that OPP. */
+		ret = qcom_cpufreq_update_opp(cpu_dev, raw_freq, volt);
+		if (ret)
+			selectable_freq = CPUFREQ_ENTRY_INVALID;
 
 		dev_dbg(dev, "index=%d freq=%d, core_count %d\n",
-			i, c->table[i].frequency, core_count);
+			i, raw_freq, core_count);
 
 		if (core_count != c->max_cores) {
 			if (core_count == (c->max_cores - 1)) {
 				c->skip_data.skip = true;
 				c->skip_data.high_temp_index = i;
-				c->skip_data.freq = cur_freq;
+				c->skip_data.freq = raw_freq;
 				c->skip_data.cc = core_count;
 				c->skip_data.final_index = i + 1;
 				c->skip_data.low_temp_index = i + 1;
 				if (i > 0) {
-					c->skip_data.prev_freq =
-						c->table[i - 1].frequency;
+					c->skip_data.prev_freq = prev_raw_freq;
 					c->skip_data.prev_index = i - 1;
 					c->skip_data.prev_cc = prev_cc;
 				} else {
-					c->skip_data.prev_freq = cur_freq;
+					c->skip_data.prev_freq = raw_freq;
 					c->skip_data.prev_index = i;
 					c->skip_data.prev_cc = core_count;
 				}
 			} else {
-				cur_freq = CPUFREQ_ENTRY_INVALID;
+				selectable_freq = CPUFREQ_ENTRY_INVALID;
 				c->table[i].flags = CPUFREQ_BOOST_FREQ;
 			}
 		}
 
-		/*
-		 * Two of the same frequencies with the same core counts means
-		 * end of table.
-		 */
-		if (i > 0 && c->table[i - 1].frequency ==
-				c->table[i].frequency) {
-			if (prev_cc == core_count) {
-				struct cpufreq_frequency_table *prev =
-							&c->table[i - 1];
-
-				if (prev_freq == CPUFREQ_ENTRY_INVALID)
-					prev->flags = CPUFREQ_BOOST_FREQ;
-			}
-			break;
-		}
-
+		c->table[i].frequency = selectable_freq;
+		prev_raw_freq = raw_freq;
+		prev_selectable_freq = selectable_freq;
 		prev_cc = core_count;
-		prev_freq = cur_freq;
 	}
 
 	c->lut_max_entries = i;
 
 	c->table[c->lut_max_entries].frequency = CPUFREQ_TABLE_END;
-
-	for (i = 0; i < c->lut_max_entries; i++) {
-		for_each_cpu(cpu, &c->related_cpus) {
-			cpu_dev = get_cpu_device(cpu);
-			if (!cpu_dev)
-				continue;
-			dev_pm_opp_add(cpu_dev, c->freqs[i] * 1000,
-							c->voltages[i]);
-		}
-	}
 
 	if (c->skip_data.skip) {
 		pr_info("%s Skip: Index[%u], Frequency[%u], Core Count %u, Final Index %u Actual Index %u Prev_Freq[%u] Prev_Index[%u] Prev_CC[%u]\n",
@@ -932,6 +1047,8 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 	c->down_rate_limit_us = hw_down_rate_limit_us;
 	c->transition_hyst_khz = hw_transition_hyst_khz;
 	c->last_index = U32_MAX;
+	c->has_prime_oc = false;
+	c->oc_index = U32_MAX;
 	spin_lock_init(&c->transition_lock);
 
 	of_property_read_u32(dev->of_node, "qcom,driver-up-rate-limit-us",
@@ -947,12 +1064,25 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 		 c->transition_hyst_khz);
 
 	ret = qcom_cpufreq_hw_extend_prime_lut(pdev, c, index);
-	if (ret)
+	if (ret) {
+		dev_warn(dev,
+			 "domain-%d: prime OC unavailable (%d), using firmware LUT\n",
+			 index, ret);
+		c->has_prime_oc = false;
+		c->oc_index = U32_MAX;
+	}
+
+	ret = qcom_cpufreq_load_opp_table(c);
+	if (ret) {
+		dev_err(dev, "Domain-%d failed to load CPU OPP table: %d\n",
+			index, ret);
 		return ret;
+	}
 
 	ret = qcom_cpufreq_hw_read_lut(pdev, c);
 	if (ret) {
 		dev_err(dev, "Domain-%d failed to read LUT\n", index);
+		dev_pm_opp_of_cpumask_remove_table(&c->related_cpus);
 		return ret;
 	}
 

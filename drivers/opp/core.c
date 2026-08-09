@@ -1612,6 +1612,68 @@ int dev_pm_opp_add(struct device *dev, unsigned long freq, unsigned long u_volt)
 EXPORT_SYMBOL_GPL(dev_pm_opp_add);
 
 /**
+ * dev_pm_opp_adjust_voltage() - update the voltage of an existing OPP
+ * @dev: device for which the OPP is being adjusted
+ * @freq: frequency of the OPP in Hz
+ * @u_volt: new target voltage in microvolts
+ * @u_volt_min: new minimum voltage in microvolts
+ * @u_volt_max: new maximum voltage in microvolts
+ *
+ * This is used when firmware provides the authoritative voltage after a
+ * static DT OPP table has been parsed.
+ */
+int dev_pm_opp_adjust_voltage(struct device *dev, unsigned long freq,
+			      unsigned long u_volt,
+			      unsigned long u_volt_min,
+			      unsigned long u_volt_max)
+{
+	struct opp_table *opp_table;
+	struct dev_pm_opp *tmp_opp, *opp = ERR_PTR(-ENODEV);
+	int ret;
+
+	if (u_volt_min > u_volt || u_volt > u_volt_max)
+		return -EINVAL;
+
+	opp_table = _find_opp_table(dev);
+	if (IS_ERR(opp_table))
+		return PTR_ERR(opp_table);
+
+	mutex_lock(&opp_table->lock);
+	list_for_each_entry(tmp_opp, &opp_table->opp_list, node) {
+		if (tmp_opp->rate == freq) {
+			opp = tmp_opp;
+			break;
+		}
+	}
+
+	if (IS_ERR(opp)) {
+		ret = PTR_ERR(opp);
+		goto unlock;
+	}
+
+	opp->supplies[0].u_volt = u_volt;
+	opp->supplies[0].u_volt_min = u_volt_min;
+	opp->supplies[0].u_volt_max = u_volt_max;
+
+	dev_pm_opp_get(opp);
+	mutex_unlock(&opp_table->lock);
+
+	blocking_notifier_call_chain(&opp_table->head,
+				     OPP_EVENT_ADJUST_VOLTAGE, opp);
+	dev_pm_opp_put(opp);
+	ret = 0;
+	goto put_table;
+
+unlock:
+	mutex_unlock(&opp_table->lock);
+put_table:
+	dev_pm_opp_put_opp_table(opp_table);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(dev_pm_opp_adjust_voltage);
+
+/**
  * _opp_set_availability() - helper to set the availability of an opp
  * @dev:		device for which we do this operation
  * @freq:		OPP frequency to modify availability
