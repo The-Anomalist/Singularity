@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
- */
-
+ */ 
+ 
+#include <linux/bitfield.h>
 #include <linux/cpufreq.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -529,7 +530,7 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 			domain, KONA_PRIME_STOCK_MAX_KHZ);
 
 	lval = DIV_ROUND_CLOSEST_ULL((u64)requested * 1000, c->xo_rate);
-	if (!lval || lval > FIELD_MAX(GENMASK(7, 0)))
+	if (!lval || !FIELD_FIT(GENMASK(7, 0), lval))
 		return dev_err_probe(dev, -ERANGE,
 			"domain-%u: prime OC multiplier %u is invalid\n",
 			domain, lval);
