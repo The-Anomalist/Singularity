@@ -336,6 +336,9 @@
 
 			qcom,lut-row-size = <4>;
 			qcom,skip-enable-check;
+			/* Domain 2 is CPU7; request the nearest EPSS CXO rate. */
+			qcom,prime-oc-domain-id = <2>;
+			qcom,prime-oc-frequency-khz = <3000000>;
 
 			interrupts = <GIC_SPI 30 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 31 IRQ_TYPE_LEVEL_HIGH>,
