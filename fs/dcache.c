@@ -77,7 +77,7 @@
  * Keep dentry/inode reclaim below the upstream baseline so useful filesystem
  * metadata remains cached, but reclaim stale entries sooner under pressure.
  */
-int sysctl_vfs_cache_pressure __read_mostly = 75;
+int sysctl_vfs_cache_pressure __read_mostly = 50;
 EXPORT_SYMBOL_GPL(sysctl_vfs_cache_pressure);
 
 __cacheline_aligned_in_smp DEFINE_SEQLOCK(rename_lock);

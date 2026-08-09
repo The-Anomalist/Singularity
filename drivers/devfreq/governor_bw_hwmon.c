@@ -986,19 +986,19 @@ int register_bw_hwmon(struct device *dev, struct bw_hwmon *hwmon)
  * the baseline should not behave like an ultra-conservative battery profile
  * on performance kernels.
  */
-node->guard_band_mbps = 192;
-node->decay_rate = 98;
-node->io_percent = 14;
-node->bw_step = 128;
-node->sample_ms = 8;
-node->up_scale = 75;
-node->up_thres = 6;
-node->down_thres = 30;
-node->down_count = 8;
-node->hist_memory = 16;
-node->hyst_trigger_count = 2;
-node->hyst_length = 6;
-node->idle_mbps = 600;
+	node->guard_band_mbps = 384;
+	node->decay_rate = 98;
+	node->io_percent = 10;
+	node->bw_step = 64;
+	node->sample_ms = 4;
+	node->up_scale = 150;
+	node->up_thres = 3;
+	node->down_thres = 20;
+	node->down_count = 12;
+	node->hist_memory = 24;
+	node->hyst_trigger_count = 1;
+	node->hyst_length = 10;
+	node->idle_mbps = 1000;
 	node->use_ab = 1;
 	node->mbps_zones[0] = 0;
 	node->hw = hwmon;

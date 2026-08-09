@@ -911,7 +911,7 @@ MODULE_PARM_DESC(kona_perf_sustain_extra_bias,
 static bool kona_gpu_keepalive_enable = false;
 static unsigned long kona_gpu_keepalive_ab_kb = 1000000;   /* 1 GB/s */
 static unsigned long kona_gpu_keepalive_ib_kb = 2400000;  /* 2.4 GB/s */
-static bool kona_cpu_keepalive_enable = false;
+static bool kona_cpu_keepalive_enable = true;
 static unsigned long kona_cpu_keepalive_ab_kb = 512000;   /* 512 MB/s */
 static unsigned long kona_cpu_keepalive_ib_kb = 1200000;   /* 1.2 GB/s */
 static bool kona_npu_keepalive_enable = false;
@@ -927,7 +927,7 @@ static bool kona_disp_keepalive_enable = true;
 static unsigned long kona_disp_keepalive_ab_kb = 256000;   /* 256 MB/s */
 static unsigned long kona_disp_keepalive_ib_kb = 512000;   /* 512 MB/s */
 static bool kona_keepalive_decay_enable = true;
-static unsigned int kona_keepalive_decay_window_ms = 300;
+static unsigned int kona_keepalive_decay_window_ms = 750;
 static unsigned int kona_keepalive_decay_min_percent = 25;
 static unsigned int kona_sleep_keepalive_percent = 18;
 static unsigned int kona_sleep_perf_floor_percent = 35;
@@ -958,22 +958,21 @@ MODULE_PARM_DESC(kona_sleep_floor_decay_percent,
  * multi-GB/s DDR votes for housekeeping traffic.
  */
 static bool kona_active_floor_scaling_enable = true;
-static unsigned long kona_active_floor_trigger_kb = 256000; /* 256 MB/s */
+static unsigned long kona_active_floor_trigger_kb = 64000; /* 64 MB/s */
 /*
- * Keep full floors for only genuinely bandwidth-heavy work.  The Kona and
- * Kona-v2 compatibles share this provider, so these thresholds deliberately
- * describe a conservative common denominator rather than one board's peak
- * benchmark workload.
+ * Reach full floors early enough to cover short interactive memory bursts.
+ * The Kona and Kona-v2 compatibles share this provider and both use these
+ * values only while there is an active non-display request.
  */
-static unsigned long kona_active_floor_low_kb = 1000000;  /* 1 GB/s */
-static unsigned long kona_active_floor_high_kb = 4000000; /* 4 GB/s */
-static unsigned int kona_active_floor_low_percent = 60;
-static unsigned int kona_active_floor_mid_percent = 85;
+static unsigned long kona_active_floor_low_kb = 512000;  /* 512 MB/s */
+static unsigned long kona_active_floor_high_kb = 2000000; /* 2 GB/s */
+static unsigned int kona_active_floor_low_percent = 85;
+static unsigned int kona_active_floor_mid_percent = 100;
 module_param_named(kona_active_floor_scaling_enable, kona_active_floor_scaling_enable, bool, 0644);
 MODULE_PARM_DESC(kona_active_floor_scaling_enable,
 	"Enable display-on workload-aware downscaling of non-display performance floors");
 module_param_named(kona_active_floor_trigger_kb, kona_active_floor_trigger_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_active_floor_trigger_kb, "Minimum non-display request for large active floors (default: 256000 KB/s)");
+MODULE_PARM_DESC(kona_active_floor_trigger_kb, "Minimum non-display request for large active floors (default: 64000 KB/s)");
 module_param_named(kona_active_floor_low_kb, kona_active_floor_low_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_active_floor_low_kb,
 	"Display-on request threshold KB/s for low floor scaling bucket");
@@ -982,10 +981,10 @@ MODULE_PARM_DESC(kona_active_floor_high_kb,
 	"Display-on request threshold KB/s for high floor scaling bucket");
 module_param_named(kona_active_floor_low_percent, kona_active_floor_low_percent, uint, 0644);
 MODULE_PARM_DESC(kona_active_floor_low_percent,
-	"Percent of post-path floor kept for low display-on non-display workload votes (default: 60)");
+	"Percent of post-path floor kept for low display-on non-display workload votes (default: 85)");
 module_param_named(kona_active_floor_mid_percent, kona_active_floor_mid_percent, uint, 0644);
 MODULE_PARM_DESC(kona_active_floor_mid_percent,
-	"Percent of post-path floor kept for medium display-on non-display workload votes (default: 85)");
+	"Percent of post-path floor kept for medium display-on non-display workload votes (default: 100)");
 
 static unsigned int kona_gpu_ib_boost_percent = 150;
 static unsigned int kona_gpu_ib_min_ratio_percent = 240;
@@ -1037,9 +1036,9 @@ static unsigned long kona_cpu0_1804_trigger_kb = 1305600; /* 1.804 GHz corner */
 static unsigned int kona_cpu0_1804_boost_percent = 130;
 static unsigned int kona_cpu0_1804_min_ratio_percent = 190;
 static bool kona_ux_turbo_enable = true;
-static unsigned long kona_ux_turbo_threshold_kb = 384000;      /* 384 MB/s */
+static unsigned long kona_ux_turbo_threshold_kb = 128000;      /* 128 MB/s */
 static unsigned int kona_ux_turbo_exit_percent = 45;
-static unsigned int kona_ux_turbo_hold_ms = 180;
+static unsigned int kona_ux_turbo_hold_ms = 750;
 static unsigned long kona_ux_turbo_ab_kb = KONA_UX_DDR_AB_FLOOR_KB;
 static unsigned long kona_ux_turbo_ib_kb = KONA_UX_DDR_IB_FLOOR_KB;
 module_param(kona_gpu_keepalive_enable, bool, 0644);
@@ -1101,7 +1100,7 @@ MODULE_PARM_DESC(kona_keepalive_decay_enable,
 	"linearly decay keepalive votes after the last active request (default: on)");
 module_param(kona_keepalive_decay_window_ms, uint, 0644);
 MODULE_PARM_DESC(kona_keepalive_decay_window_ms,
-	"keepalive decay window in ms before allowing full collapse (default: 300)");
+	"keepalive decay window in ms before allowing full collapse (default: 750)");
 module_param(kona_keepalive_decay_min_percent, uint, 0644);
 MODULE_PARM_DESC(kona_keepalive_decay_min_percent,
 	"minimum keepalive strength percent while inside decay window (default: 25)");
