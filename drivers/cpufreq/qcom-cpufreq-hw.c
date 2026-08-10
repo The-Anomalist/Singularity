@@ -488,7 +488,7 @@ static void qcom_cpufreq_hw_dump_prime_lut(struct platform_device *pdev,
 	for (i = first; i <= last; i++) {
 		data = readl_relaxed(base_freq + i * lut_row_size);
 		voltage = readl_relaxed(base_volt + i * lut_row_size);
-		dev_info(&pdev->dev,
+		dev_dbg(&pdev->dev,
 			 "domain-%u: prime LUT[%u] freq=%u kHz src=%u L=%u cores=%u voltage=%u uV corner=%u\n",
 			 domain, i, qcom_cpufreq_hw_lut_freq(c, data),
 			 FIELD_GET(GENMASK(31, 30), data),
@@ -886,7 +886,7 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		data = readl_relaxed(base_volt + i * lut_row_size);
 		volt = (data & GENMASK(11, 0)) * 1000;
 		c->voltages[i] = volt;
-		vc = data & GENMASK(21, 16);
+		vc = FIELD_GET(GENMASK(21, 16), data);
 
 		if (src)
 			raw_freq = c->xo_rate * lval / 1000;
@@ -899,7 +899,7 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		 * state: its previous entry may be CPUFREQ_ENTRY_INVALID.
 		 */
 		if (i > 0 && raw_freq == prev_raw_freq && core_count == prev_cc) {
-			dev_info(dev,
+			dev_dbg(dev,
 				 "domain-%u LUT[%u]: freq=%u kHz src=%u L=%u cores=%u voltage=%u uV corner=%u terminator previous_DT=%s\n",
 				 domain, i, raw_freq, src, lval, core_count, volt,
 				 vc, prev_dt_match ? "match" : "missing");
@@ -918,7 +918,7 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		if (ret)
 			selectable_freq = CPUFREQ_ENTRY_INVALID;
 
-		dev_info(dev,
+		dev_dbg(dev,
 			 "domain-%u LUT[%u]: freq=%u kHz src=%u L=%u cores=%u voltage=%u uV corner=%u DT=%s\n",
 			 domain, i, raw_freq, src, lval, core_count, volt, vc,
 			 ret ? "missing" : "match");
