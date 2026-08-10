@@ -839,13 +839,15 @@ remove_table:
 }
 
 static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
-				    struct cpufreq_qcom *c)
+				    struct cpufreq_qcom *c,
+				    unsigned int domain)
 {
 	struct device *dev = &pdev->dev, *cpu_dev;
 	void __iomem *base_freq, *base_volt;
 	u32 data, src, lval, i, core_count, prev_cc, raw_freq;
 	u32 prev_raw_freq, selectable_freq, prev_selectable_freq, volt;
 	u32 vc;
+	bool dt_match, prev_dt_match = false;
 	int ret;
 
 	c->table = devm_kcalloc(dev, lut_max_entries + 2,
@@ -897,6 +899,10 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		 * state: its previous entry may be CPUFREQ_ENTRY_INVALID.
 		 */
 		if (i > 0 && raw_freq == prev_raw_freq && core_count == prev_cc) {
+			dev_info(dev,
+				 "domain-%u LUT[%u]: freq=%u kHz src=%u L=%u cores=%u voltage=%u uV corner=%u terminator previous_DT=%s\n",
+				 domain, i, raw_freq, src, lval, core_count, volt,
+				 vc, prev_dt_match ? "match" : "missing");
 			if (prev_selectable_freq == CPUFREQ_ENTRY_INVALID)
 				c->table[i - 1].flags = CPUFREQ_BOOST_FREQ;
 			break;
@@ -908,11 +914,14 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 
 		/* A firmware row is selectable only when DT describes that OPP. */
 		ret = qcom_cpufreq_update_opp(cpu_dev, raw_freq, volt);
+		dt_match = !ret;
 		if (ret)
 			selectable_freq = CPUFREQ_ENTRY_INVALID;
 
-		dev_dbg(dev, "index=%d freq=%d, core_count %d\n",
-			i, raw_freq, core_count);
+		dev_info(dev,
+			 "domain-%u LUT[%u]: freq=%u kHz src=%u L=%u cores=%u voltage=%u uV corner=%u DT=%s\n",
+			 domain, i, raw_freq, src, lval, core_count, volt, vc,
+			 ret ? "missing" : "match");
 
 		if (core_count != c->max_cores) {
 			if (core_count == (c->max_cores - 1)) {
@@ -939,6 +948,7 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 
 		c->table[i].frequency = selectable_freq;
 		prev_raw_freq = raw_freq;
+		prev_dt_match = dt_match;
 		prev_selectable_freq = selectable_freq;
 		prev_cc = core_count;
 	}
@@ -1079,7 +1089,7 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 		return ret;
 	}
 
-	ret = qcom_cpufreq_hw_read_lut(pdev, c);
+	ret = qcom_cpufreq_hw_read_lut(pdev, c, index);
 	if (ret) {
 		dev_err(dev, "Domain-%d failed to read LUT\n", index);
 		dev_pm_opp_of_cpumask_remove_table(&c->related_cpus);
