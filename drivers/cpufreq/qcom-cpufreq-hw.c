@@ -35,8 +35,6 @@
 /* Kona's EPSS frequency rows encode an integer CXO multiplier. */
 #define KONA_PRIME_STOCK_MAX_KHZ	2841600U
 #define KONA_PRIME_STOCK_MAX_L		148U
-#define KONA_PRIME_STOCK_MAX_UV		928000U
-#define KONA_PRIME_STOCK_MAX_CORNER	19U
 #define KONA_PRIME_OC_TARGET_KHZ		2956800U
 #define KONA_PRIME_OC_TARGET_L		154U
 
@@ -580,19 +578,19 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 
 	previous_l = FIELD_GET(GENMASK(7, 0), previous);
 	previous_src = FIELD_GET(GENMASK(31, 30), previous);
+	/*
+	 * Voltage/corner words are fuse-bin specific.  Validate the stock row's
+	 * identity here, then copy its complete word below instead of requiring a
+	 * value observed on only one Kona revision.
+	 */
 	if (previous_freq != KONA_PRIME_STOCK_MAX_KHZ ||
 	    previous_l != KONA_PRIME_STOCK_MAX_L ||
 	    previous_cc != c->max_cores ||
-	    !previous_src ||
-	    FIELD_GET(GENMASK(11, 0), voltage) * 1000 !=
-					KONA_PRIME_STOCK_MAX_UV ||
-	    FIELD_GET(GENMASK(21, 16), voltage) !=
-					KONA_PRIME_STOCK_MAX_CORNER) {
+	    !previous_src) {
 		ret = dev_err_probe(dev, -EINVAL,
-				    "domain-%u: prime OC stock-max validation failed: expected %u kHz/L%u, %u uV/corner %u full-core CXO row\n",
+				    "domain-%u: prime OC stock-max validation failed: expected %u kHz/L%u full-core CXO row\n",
 			domain, KONA_PRIME_STOCK_MAX_KHZ,
-			KONA_PRIME_STOCK_MAX_L, KONA_PRIME_STOCK_MAX_UV,
-			KONA_PRIME_STOCK_MAX_CORNER);
+			KONA_PRIME_STOCK_MAX_L);
 		goto validation_failed;
 	}
 
