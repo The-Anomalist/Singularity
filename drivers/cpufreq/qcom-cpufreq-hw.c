@@ -473,6 +473,42 @@ static u32 qcom_cpufreq_hw_lut_freq(struct cpufreq_qcom *c, u32 data)
 	return c->cpu_hw_rate / 1000;
 }
 
+static const char *qcom_cpufreq_hw_freq_bit_name(unsigned int bit)
+{
+	if (bit < 8)
+		return "L multiplier";
+	if (bit >= 16 && bit <= 18)
+		return "core count";
+	if (bit >= 30)
+		return "source";
+	return "frequency metadata";
+}
+
+static void qcom_cpufreq_hw_trace_diff(struct device *dev,
+				       unsigned int domain, unsigned int row,
+				       const char *word_name, u32 written, u32 read)
+{
+	u32 diff = written ^ read;
+	unsigned int bit;
+
+	dev_warn(dev,
+		 "domain-%u: prime OC MMIO row%u %s written=%#010x read=%#010x diff=%#010x\n",
+		 domain, row, word_name, written, read, diff);
+	for (bit = 0; bit < 32; bit++) {
+		if (!(diff & BIT(bit)))
+			continue;
+		dev_warn(dev,
+			 "domain-%u: prime OC MMIO row%u %s bit%u (%s) differs: wrote=%u read=%u\n",
+			 domain, row, word_name, bit,
+			 word_name[0] == 'f' ?
+			 qcom_cpufreq_hw_freq_bit_name(bit) :
+			 (bit < 12 ? "voltage" :
+			  (bit >= 16 && bit <= 21 ? "corner" :
+			   "voltage metadata")),
+			 !!(written & BIT(bit)), !!(read & BIT(bit)));
+	}
+}
+
 static void qcom_cpufreq_hw_dump_prime_lut(struct platform_device *pdev,
 					   struct cpufreq_qcom *c,
 					   unsigned int domain,
@@ -619,12 +655,29 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 	next = readl_relaxed(base_freq + (i + 1) * lut_row_size);
 	next_voltage = readl_relaxed(base_volt + (i + 1) * lut_row_size);
 	oc_row = (previous & ~GENMASK(7, 0)) | FIELD_PREP(GENMASK(7, 0), lval);
+	dev_warn(dev,
+		 "domain-%u: prime OC pre-write raw row%u freq=%#010x voltage=%#010x\n",
+		 domain, i - 1, previous, voltage);
+	dev_warn(dev,
+		 "domain-%u: prime OC pre-write raw row%u freq=%#010x voltage=%#010x\n",
+		 domain, i, terminator, terminator_voltage);
+	dev_warn(dev,
+		 "domain-%u: prime OC pre-write raw row%u freq=%#010x voltage=%#010x\n",
+		 domain, i + 1, next, next_voltage);
+	dev_warn(dev,
+		 "domain-%u: prime OC clone row%u -> row%u: freq %#010x -> %#010x (L%u -> L%u only), voltage unchanged %#010x\n",
+		 domain, i - 1, i, previous, oc_row, previous_l, lval,
+		 voltage);
+	qcom_cpufreq_hw_trace_diff(dev, domain, i, "frequency clone",
+				    previous, oc_row);
+	qcom_cpufreq_hw_trace_diff(dev, domain, i, "voltage clone",
+				    voltage, voltage);
 
-	/* Install the moved marker first; neither slot was selectable before. */
-	writel_relaxed(oc_row, base_freq + (i + 1) * lut_row_size);
-	writel_relaxed(voltage, base_volt + (i + 1) * lut_row_size);
+	/* Write the new state, then clone it byte-for-byte as its terminator. */
 	writel_relaxed(oc_row, base_freq + i * lut_row_size);
 	writel_relaxed(voltage, base_volt + i * lut_row_size);
+	writel_relaxed(oc_row, base_freq + (i + 1) * lut_row_size);
+	writel_relaxed(voltage, base_volt + (i + 1) * lut_row_size);
 	/* Complete both rows before checking that EPSS accepted the writes. */
 	wmb();
 
@@ -634,6 +687,14 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 					(i + 1) * lut_row_size);
 	read_terminator_voltage = readl_relaxed(base_volt +
 						(i + 1) * lut_row_size);
+	qcom_cpufreq_hw_trace_diff(dev, domain, i, "frequency",
+				    oc_row, read_oc);
+	qcom_cpufreq_hw_trace_diff(dev, domain, i, "voltage",
+				    voltage, read_oc_voltage);
+	qcom_cpufreq_hw_trace_diff(dev, domain, i + 1, "frequency",
+				    oc_row, read_terminator);
+	qcom_cpufreq_hw_trace_diff(dev, domain, i + 1, "voltage",
+				    voltage, read_terminator_voltage);
 	if (read_oc != oc_row || read_oc_voltage != voltage ||
 	    FIELD_GET(GENMASK(31, 30), read_oc) != previous_src ||
 	    FIELD_GET(GENMASK(7, 0), read_oc) != KONA_PRIME_OC_TARGET_L ||
@@ -955,6 +1016,12 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 				 vc, prev_dt_match ? "match" : "missing");
 			if (prev_selectable_freq == CPUFREQ_ENTRY_INVALID)
 				c->table[i - 1].flags = CPUFREQ_BOOST_FREQ;
+			if (c->has_prime_oc && i == c->oc_index + 1)
+				dev_warn(dev,
+					 "domain-%u: prime OC parser reached raw duplicate terminator row%u; row%u L%u was %s\n",
+					 domain, i, i - 1, lval,
+					 prev_selectable_freq == CPUFREQ_ENTRY_INVALID ?
+					 "dropped" : "accepted");
 			break;
 		}
 
@@ -967,6 +1034,13 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		dt_match = !ret;
 		if (ret)
 			selectable_freq = CPUFREQ_ENTRY_INVALID;
+		if (c->has_prime_oc && i == c->oc_index)
+			dev_warn(dev,
+				 "domain-%u: prime OC parser row%u raw freq=%#010x voltage=%#010x decoded=%u kHz/L%u: %s (%d)\n",
+				 domain, i,
+				 readl_relaxed(base_freq + i * lut_row_size), data,
+				 raw_freq, lval, ret ? "dropped by OPP lookup" :
+				 "accepted as selectable hardware index", ret);
 
 		dev_dbg(dev,
 			 "domain-%u LUT[%u]: freq=%u kHz src=%u L=%u cores=%u voltage=%u uV corner=%u DT=%s\n",
