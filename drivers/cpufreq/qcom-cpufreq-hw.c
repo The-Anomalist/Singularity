@@ -107,6 +107,9 @@ struct cpufreq_qcom {
 	u32 filtered_hyst_transitions;
 	u32 oc_index;
 	bool has_prime_oc;
+	bool prime_oc_write_through;
+	u32 prime_oc_freq_word;
+	u32 prime_oc_voltage_word;
 	spinlock_t transition_lock;
 };
 
@@ -432,6 +435,21 @@ qcom_cpufreq_hw_target_index(struct cpufreq_policy *policy,
 		programmed_index = c->skip_data.final_index;
 	} else {
 		programmed_index = policy->freq_table[index].driver_data;
+		/*
+		 * Some Kona EPSS revisions sanitize an inactive LUT row, but accept
+		 * the multiplier when it is written immediately before selecting the
+		 * state.  Keep this ordered write-through limited to the validated OC
+		 * row; DOMAIN_STATE remains the authoritative attained-rate report.
+		 */
+		if (c->prime_oc_write_through && programmed_index == c->oc_index) {
+			writel_relaxed(c->prime_oc_voltage_word,
+				       c->reg_bases[REG_VOLT_LUT_TABLE] +
+				       programmed_index * lut_row_size);
+			writel_relaxed(c->prime_oc_freq_word,
+				       c->reg_bases[REG_FREQ_LUT_TABLE] +
+				       programmed_index * lut_row_size);
+			wmb();
+		}
 		writel_relaxed(programmed_index, c->reg_bases[REG_PERF_STATE]);
 	}
 
@@ -702,6 +720,31 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 	    CORE_COUNT_VAL(read_oc) != previous_cc ||
 	    read_terminator != read_oc ||
 	    read_terminator_voltage != read_oc_voltage) {
+		/*
+		 * A precise L154 -> L148 sanitization is a known EPSS behaviour.
+		 * Retain a software description of the validated row and retry the
+		 * frequency word immediately before PERF_STATE selection.  This makes
+		 * the DT OPP visible to CPUFreq without pretending a different voltage
+		 * was accepted; runtime rate reporting still comes from DOMAIN_STATE.
+		 */
+		if (read_oc == previous && read_terminator == previous &&
+		    read_oc_voltage == voltage &&
+		    read_terminator_voltage == voltage &&
+		    (oc_row ^ read_oc) == GENMASK(3, 1)) {
+			writel_relaxed(next, base_freq + (i + 1) * lut_row_size);
+			writel_relaxed(next_voltage,
+				       base_volt + (i + 1) * lut_row_size);
+			wmb();
+			c->has_prime_oc = true;
+			c->prime_oc_write_through = true;
+			c->oc_index = i;
+			c->prime_oc_freq_word = oc_row;
+			c->prime_oc_voltage_word = voltage;
+			dev_warn(dev,
+				 "domain-%u: EPSS sanitized inactive L154 row; exposing index %u and enabling ordered write-through before selection\n",
+				 domain, i);
+			return 0;
+		}
 		writel_relaxed(terminator, base_freq + i * lut_row_size);
 		writel_relaxed(terminator_voltage,
 			       base_volt + i * lut_row_size);
@@ -1004,6 +1047,20 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		else
 			raw_freq = c->cpu_hw_rate / 1000;
 
+		/* Decode the validated software row before testing the raw duplicate. */
+		if (c->prime_oc_write_through &&
+		    (i == c->oc_index || i == c->oc_index + 1)) {
+			src = FIELD_GET(GENMASK(31, 30), c->prime_oc_freq_word);
+			lval = FIELD_GET(GENMASK(7, 0), c->prime_oc_freq_word);
+			core_count = CORE_COUNT_VAL(c->prime_oc_freq_word);
+			raw_freq = qcom_cpufreq_hw_lut_freq(c,
+						       c->prime_oc_freq_word);
+			volt = FIELD_GET(GENMASK(11, 0),
+					 c->prime_oc_voltage_word) * 1000;
+			vc = FIELD_GET(GENMASK(21, 16),
+				       c->prime_oc_voltage_word);
+		}
+
 		/*
 		 * EPSS terminates a domain with a duplicate raw frequency and core
 		 * count.  Never use the filtered Linux table as firmware parser
@@ -1182,6 +1239,7 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 	c->transition_hyst_khz = hw_transition_hyst_khz;
 	c->last_index = U32_MAX;
 	c->has_prime_oc = false;
+	c->prime_oc_write_through = false;
 	c->oc_index = U32_MAX;
 	spin_lock_init(&c->transition_lock);
 
