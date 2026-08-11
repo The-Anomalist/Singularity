@@ -7727,6 +7727,71 @@ static void select_cpu_candidates(struct sched_domain *sd, cpumask_t *cpus,
 }
 
 /*
+ * Keep every performance domain represented in the final EAS comparison.
+ *
+ * find_best_target() is deliberately aggressive about stopping after it has
+ * found a suitable CPU in the first capacity group.  That is a useful fast
+ * path for small, latency-sensitive work, but it also means that a waking
+ * compute thread can remain trapped on a LITTLE CPU while its WALT signal is
+ * growing.  It is particularly visible with parallel, bursty workloads: the
+ * first group fills up while the larger domains never become EAS candidates.
+ *
+ * Add the CPU with the most post-wakeup spare capacity from each PD.  The
+ * Energy Model still makes the placement decision; this only prevents the
+ * candidate pre-selection heuristic from hiding an entire cluster from it.
+ */
+static void add_pd_spare_candidates(struct sched_domain *sd, cpumask_t *cpus,
+				    struct perf_domain *pd,
+				    struct task_struct *p)
+{
+	int cpu;
+
+	for (; pd; pd = pd->next) {
+		int best_cpu = -1, fallback_cpu = -1;
+		unsigned long best_spare = 0, fallback_spare = 0;
+
+		for_each_cpu_and(cpu, perf_domain_span(pd),
+				 sched_domain_span(sd)) {
+			unsigned long capacity, util, spare;
+
+			if (!cpumask_test_cpu(cpu, &p->cpus_allowed) ||
+			    !cpu_active(cpu) || cpu_isolated(cpu) ||
+			    is_reserved(cpu) || sched_cpu_high_irqload(cpu))
+				continue;
+
+			capacity = capacity_of(cpu);
+#ifdef CONFIG_SCHED_WALT
+			util = cpu_util_next_walt(cpu, p, cpu);
+#else
+			util = cpu_util_next(cpu, p, cpu);
+#endif
+			util = uclamp_rq_util_with(cpu_rq(cpu), util, p);
+			spare = capacity - min(util, capacity);
+
+			if (fallback_cpu < 0 || spare > fallback_spare) {
+				fallback_spare = spare;
+				fallback_cpu = cpu;
+			}
+
+			if (capacity * 1024 <
+			    util * sched_capacity_margin_up[cpu])
+				continue;
+
+			if (best_cpu < 0 || spare > best_spare) {
+				best_spare = spare;
+				best_cpu = cpu;
+			}
+		}
+
+		/* An overloaded domain is still useful to the global comparison. */
+		if (best_cpu < 0)
+			best_cpu = fallback_cpu;
+		if (best_cpu >= 0)
+			cpumask_set_cpu(best_cpu, cpus);
+	}
+}
+
+/*
  * EAS migration should be conservative when the previous CPU is still a
  * sensible placement.  Keeping it in the candidate set lets the Energy Model
  * compare "stay" and "move" decisions directly, then the existing energy
@@ -7907,6 +7972,10 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 				   cpu : -1;
 
 		find_best_target(NULL, candidates, p, &fbt_env);
+		/* Preserve explicit latency/boost/RTG placement policy. */
+		if (!fbt_env.need_idle && !boosted && !is_rtg &&
+		    !task_placement_boost_enabled(p))
+			add_pd_spare_candidates(sd, candidates, pd, p);
 	} else {
 		select_cpu_candidates(sd, candidates, pd, p, prev_cpu);
 	}
@@ -7951,16 +8020,18 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 		delta = task_util(p);
 #endif
 	if (task_placement_boost_enabled(p) || fbt_env.need_idle || boosted ||
-	    is_rtg || __cpu_overutilized(prev_cpu, delta) ||
+	    is_rtg ||
 	    !task_fits_max(p, prev_cpu) || cpu_isolated(prev_cpu)) {
 		if (cpumask_test_cpu(prev_cpu, candidates) &&
 		    !cpu_isolated(prev_cpu) &&
 		    !__cpu_overutilized(prev_cpu, delta) &&
 		    task_fits_max(p, prev_cpu))
 			best_energy_cpu = prev_cpu;
-		else
+		else if (task_placement_boost_enabled(p) || fbt_env.need_idle ||
+			 boosted || is_rtg) {
 			best_energy_cpu = cpu;
-		goto unlock;
+			goto unlock;
+		}
 	}
 
 	if (cpumask_test_cpu(prev_cpu, &p->cpus_allowed))
@@ -8008,7 +8079,8 @@ unlock:
 		unsigned int margin_pct = uclass_prev_cpu_energy_margin_pct();
 		unsigned long min_delta = mult_frac(prev_energy, margin_pct, 100);
 
-		if ((prev_energy - best_energy) <= min_delta)
+		if (best_energy >= prev_energy ||
+		    (prev_energy - best_energy) <= min_delta)
 			best_energy_cpu = prev_cpu;
 	}
 
