@@ -336,6 +336,36 @@ static unsigned int qcom_cpufreq_hw_get_actual_rate(struct cpufreq_qcom *c)
 	return DIV_ROUND_CLOSEST_ULL(freq * c->xo_rate, 1000);
 }
 
+static u32 qcom_cpufreq_hw_lut_freq(struct cpufreq_qcom *c, u32 data);
+
+static void qcom_cpufreq_hw_prime_oc_live(struct cpufreq_policy *policy,
+					  unsigned int requested,
+					  unsigned int programmed_index)
+{
+	struct cpufreq_qcom *c = policy->driver_data;
+	struct device *dev = get_cpu_device(policy->cpu);
+	u32 row, perf_state, domain_state, src, lval, decoded;
+
+	/*
+	 * Read PERF_STATE first so the preceding relaxed write is observed
+	 * before sampling the live LUT row and attained domain state.
+	 */
+	perf_state = readl_relaxed(c->reg_bases[REG_PERF_STATE]);
+	domain_state = readl_relaxed(c->reg_bases[REG_DOMAIN_STATE]);
+	row = readl_relaxed(c->reg_bases[REG_FREQ_LUT_TABLE] +
+			    programmed_index * lut_row_size);
+	src = FIELD_GET(GENMASK(31, 30), row);
+	lval = FIELD_GET(GENMASK(7, 0), row);
+	decoded = qcom_cpufreq_hw_lut_freq(c, row);
+
+	dev_warn(dev,
+		 "prime OC LIVE: requested=%u index=%u perf_state=%#010x domain_state=%#010x row%u=%#010x src=%u L=%u decoded=%u kHz expected=%#010x match=%s\n",
+		 requested, programmed_index, perf_state, domain_state,
+		 programmed_index, row, src, lval, decoded,
+		 c->prime_oc_freq_word,
+		 row == c->prime_oc_freq_word ? "yes" : "no");
+}
+
 static inline unsigned int
 qcom_cpufreq_hw_resolve_rate(struct cpufreq_policy *policy, unsigned int index)
 {
@@ -452,6 +482,10 @@ qcom_cpufreq_hw_target_index(struct cpufreq_policy *policy,
 		}
 		writel_relaxed(programmed_index, c->reg_bases[REG_PERF_STATE]);
 	}
+	if (c->has_prime_oc && programmed_index == c->oc_index)
+		qcom_cpufreq_hw_prime_oc_live(policy,
+					      policy->freq_table[index].frequency,
+					      programmed_index);
 
 	/*
 	 * PERF_STATE readback proves command acceptance, not clock attainment.
@@ -761,6 +795,7 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 
 	c->has_prime_oc = true;
 	c->oc_index = i;
+	c->prime_oc_freq_word = oc_row;
 	dev_warn(dev,
 		 "domain-%u: prime OC stock max index %u=%u kHz/L%u, voltage %u uV corner %u (raw %#x)\n",
 		 domain, i - 1, previous_freq, previous_l,
