@@ -385,7 +385,7 @@
 		opp-2649600000 { opp-hz = /bits/ 64 <2649600000>; };
 		opp-2745600000 { opp-hz = /bits/ 64 <2745600000>; };
 		opp-2841600000 { opp-hz = /bits/ 64 <2841600000>; };
-		opp-3091200000 { opp-hz = /bits/ 64 <3091200000>; };
+		opp-2956800000 { opp-hz = /bits/ 64 <2956800000>; };
 	};
 
 
@@ -418,9 +418,9 @@
 
 			qcom,lut-row-size = <4>;
 			qcom,skip-enable-check;
-			/* Domain 2 is CPU7; EPSS can represent this as CXO L161. */
+			/* Domain 2 is CPU7; EPSS can represent this as CXO L154. */
 			qcom,prime-oc-domain-id = <2>;
-			qcom,prime-oc-frequency-khz = <3091200>;
+			qcom,prime-oc-frequency-khz = <2956800>;
 
 			interrupts = <GIC_SPI 30 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 31 IRQ_TYPE_LEVEL_HIGH>,

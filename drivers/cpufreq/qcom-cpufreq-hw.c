@@ -34,7 +34,11 @@
 
 /* Kona's EPSS frequency rows encode an integer CXO multiplier. */
 #define KONA_PRIME_STOCK_MAX_KHZ	2841600U
-#define KONA_PRIME_OC_TARGET_KHZ		3091200U
+#define KONA_PRIME_STOCK_MAX_L		148U
+#define KONA_PRIME_STOCK_MAX_UV		928000U
+#define KONA_PRIME_STOCK_MAX_CORNER	19U
+#define KONA_PRIME_OC_TARGET_KHZ		2956800U
+#define KONA_PRIME_OC_TARGET_L		154U
 
 #define CYCLE_CNTR_OFFSET(c, m, acc_count)				\
 			(acc_count ? ((c - cpumask_first(m) + 1) * 4) : 0)
@@ -506,8 +510,10 @@ static void qcom_cpufreq_hw_dump_prime_lut(struct platform_device *pdev,
  * index used by target_index() and fast_switch().
  *
  * EPSS exposes no independent Linux regulator/CPR request for a LUT row.  Keep
- * the complete firmware voltage/corner word from the validated stock maximum;
- * do not manufacture a voltage or bypass the firmware's voltage protections.
+ * the complete firmware voltage/corner word from the validated stock maximum.
+ * This experimental reuse is not proof that the stock-max voltage guarantees
+ * stability at the higher frequency.  Do not manufacture a voltage or bypass
+ * the firmware's voltage protections.
  */
 static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 					    struct cpufreq_qcom *c,
@@ -516,10 +522,12 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 	struct device *dev = &pdev->dev;
 	void __iomem *base_freq = c->reg_bases[REG_FREQ_LUT_TABLE];
 	void __iomem *base_volt = c->reg_bases[REG_VOLT_LUT_TABLE];
-	u32 oc_domain, requested, previous, terminator, next, voltage;
+	u32 oc_domain, requested, previous = 0, terminator = 0, next, voltage;
 	u32 terminator_voltage, next_voltage;
 	u32 previous_freq, terminator_freq, previous_cc, terminator_cc;
-	u32 lval, actual, oc_row, i;
+	u32 previous_l, previous_src, lval, actual, oc_row, i;
+	u32 read_oc, read_oc_voltage, read_terminator;
+	u32 read_terminator_voltage;
 	int ret;
 
 	if (of_property_read_u32(dev->of_node, "qcom,prime-oc-domain-id",
@@ -532,10 +540,16 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 	of_property_read_u32(dev->of_node, "qcom,prime-oc-frequency-khz",
 			     &requested);
 
-	/* Locate the firmware's duplicate-frequency end marker. */
+	/*
+	 * EPSS termination is semantic: frequency and core count repeat.  Do not
+	 * require unrelated frequency metadata or the voltage words to match.
+	 */
 	for (i = 1; i < lut_max_entries; i++) {
 		previous = readl_relaxed(base_freq + (i - 1) * lut_row_size);
 		terminator = readl_relaxed(base_freq + i * lut_row_size);
+		voltage = readl_relaxed(base_volt + (i - 1) * lut_row_size);
+		terminator_voltage = readl_relaxed(base_volt +
+						     i * lut_row_size);
 		previous_freq = qcom_cpufreq_hw_lut_freq(c, previous);
 		terminator_freq = qcom_cpufreq_hw_lut_freq(c, terminator);
 		previous_cc = CORE_COUNT_VAL(previous);
@@ -546,38 +560,64 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 	}
 	if (requested != KONA_PRIME_OC_TARGET_KHZ) {
 		ret = dev_err_probe(dev, -EINVAL,
-				    "domain-%u: unsupported prime OC target %u kHz\n",
+				    "domain-%u: prime OC target validation failed: unsupported %u kHz\n",
 			domain, requested);
 		goto validation_failed;
 	}
 
-	if (i + 1 >= lut_max_entries ||
-	    previous_freq != KONA_PRIME_STOCK_MAX_KHZ ||
-	    previous_cc != c->max_cores ||
-	    !FIELD_GET(GENMASK(31, 30), previous)) {
+	if (i >= lut_max_entries) {
 		ret = dev_err_probe(dev, -EINVAL,
-				    "domain-%u: prime LUT does not end in %u kHz full-core row\n",
-			domain, KONA_PRIME_STOCK_MAX_KHZ);
+				    "domain-%u: prime OC terminator validation failed: no duplicate frequency/core-count row\n",
+			domain);
+		goto validation_failed;
+	}
+	if (i + 1 >= lut_max_entries) {
+		ret = dev_err_probe(dev, -ENOSPC,
+				    "domain-%u: prime OC slot validation failed: no row after terminator\n",
+			domain);
 		goto validation_failed;
 	}
 
-	lval = DIV_ROUND_CLOSEST_ULL((u64)requested * 1000, c->xo_rate);
+	previous_l = FIELD_GET(GENMASK(7, 0), previous);
+	previous_src = FIELD_GET(GENMASK(31, 30), previous);
+	if (previous_freq != KONA_PRIME_STOCK_MAX_KHZ ||
+	    previous_l != KONA_PRIME_STOCK_MAX_L ||
+	    previous_cc != c->max_cores ||
+	    !previous_src ||
+	    FIELD_GET(GENMASK(11, 0), voltage) * 1000 !=
+					KONA_PRIME_STOCK_MAX_UV ||
+	    FIELD_GET(GENMASK(21, 16), voltage) !=
+					KONA_PRIME_STOCK_MAX_CORNER) {
+		ret = dev_err_probe(dev, -EINVAL,
+				    "domain-%u: prime OC stock-max validation failed: expected %u kHz/L%u, %u uV/corner %u full-core CXO row\n",
+			domain, KONA_PRIME_STOCK_MAX_KHZ,
+			KONA_PRIME_STOCK_MAX_L, KONA_PRIME_STOCK_MAX_UV,
+			KONA_PRIME_STOCK_MAX_CORNER);
+		goto validation_failed;
+	}
+
+	if (!c->xo_rate || ((u64)requested * 1000) % c->xo_rate) {
+		ret = dev_err_probe(dev, -EINVAL,
+				    "domain-%u: prime OC multiplier validation failed: %u kHz is not an exact CXO multiple\n",
+			domain, requested);
+		goto validation_failed;
+	}
+	lval = div_u64((u64)requested * 1000, c->xo_rate);
 	if (!lval || !FIELD_FIT(GENMASK(7, 0), lval)) {
 		ret = dev_err_probe(dev, -ERANGE,
-				    "domain-%u: prime OC multiplier %u is invalid\n",
+				    "domain-%u: prime OC multiplier validation failed: L%u is invalid\n",
 			domain, lval);
 		goto validation_failed;
 	}
 	actual = c->xo_rate * lval / 1000;
-	if (actual <= previous_freq) {
+	if (lval != KONA_PRIME_OC_TARGET_L || actual != requested ||
+	    actual <= previous_freq) {
 		ret = dev_err_probe(dev, -ERANGE,
-				    "domain-%u: prime OC rate %u kHz is not above stock\n",
-			domain, actual);
+				    "domain-%u: prime OC rate validation failed: requested %u kHz produced L%u/%u kHz\n",
+			domain, requested, lval, actual);
 		goto validation_failed;
 	}
 
-	voltage = readl_relaxed(base_volt + (i - 1) * lut_row_size);
-	terminator_voltage = readl_relaxed(base_volt + i * lut_row_size);
 	next = readl_relaxed(base_freq + (i + 1) * lut_row_size);
 	next_voltage = readl_relaxed(base_volt + (i + 1) * lut_row_size);
 	oc_row = (previous & ~GENMASK(7, 0)) | FIELD_PREP(GENMASK(7, 0), lval);
@@ -590,10 +630,19 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 	/* Complete both rows before checking that EPSS accepted the writes. */
 	wmb();
 
-	if (readl_relaxed(base_freq + i * lut_row_size) != oc_row ||
-	    readl_relaxed(base_volt + i * lut_row_size) != voltage ||
-	    readl_relaxed(base_freq + (i + 1) * lut_row_size) != oc_row ||
-	    readl_relaxed(base_volt + (i + 1) * lut_row_size) != voltage) {
+	read_oc = readl_relaxed(base_freq + i * lut_row_size);
+	read_oc_voltage = readl_relaxed(base_volt + i * lut_row_size);
+	read_terminator = readl_relaxed(base_freq +
+					(i + 1) * lut_row_size);
+	read_terminator_voltage = readl_relaxed(base_volt +
+						(i + 1) * lut_row_size);
+	if (read_oc != oc_row || read_oc_voltage != voltage ||
+	    FIELD_GET(GENMASK(31, 30), read_oc) != previous_src ||
+	    FIELD_GET(GENMASK(7, 0), read_oc) != KONA_PRIME_OC_TARGET_L ||
+	    qcom_cpufreq_hw_lut_freq(c, read_oc) != KONA_PRIME_OC_TARGET_KHZ ||
+	    CORE_COUNT_VAL(read_oc) != previous_cc ||
+	    read_terminator != read_oc ||
+	    read_terminator_voltage != read_oc_voltage) {
 		writel_relaxed(terminator, base_freq + i * lut_row_size);
 		writel_relaxed(terminator_voltage,
 			       base_volt + i * lut_row_size);
@@ -603,18 +652,21 @@ static int qcom_cpufreq_hw_extend_prime_lut(struct platform_device *pdev,
 		/* Make the restored firmware rows visible before LUT parsing. */
 		wmb();
 		ret = dev_err_probe(dev, -EIO,
-				    "domain-%u: prime OC LUT write was rejected\n", domain);
+				    "domain-%u: prime OC readback validation failed; restored firmware rows %u-%u\n",
+				    domain, i, i + 1);
 		goto validation_failed;
 	}
 
 	c->has_prime_oc = true;
 	c->oc_index = i;
 	dev_warn(dev,
-		 "domain-%u: intentional prime OC index %u: %u -> %u kHz, core count %u, voltage %u uV, corner %u\n",
-		 domain, i, previous_freq, actual,
-		 previous_cc,
+		 "domain-%u: prime OC stock max index %u=%u kHz/L%u, voltage %u uV corner %u (raw %#x)\n",
+		 domain, i - 1, previous_freq, previous_l,
 		 FIELD_GET(GENMASK(11, 0), voltage) * 1000,
-		 FIELD_GET(GENMASK(21, 16), voltage));
+		 FIELD_GET(GENMASK(21, 16), voltage), voltage);
+	dev_warn(dev,
+		 "domain-%u: prime OC inserted index %u=%u kHz/L%u; experimentally reused stock-max voltage word %#x; readback successful\n",
+		 domain, i, actual, lval, voltage);
 
 	return 0;
 
