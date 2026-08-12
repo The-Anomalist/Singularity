@@ -58,6 +58,49 @@ enum kona_icc_role {
         KONA_ROLE_DISPLAY,
 };
 
+/* Stage-5 families are separate from the Stage-4 CPU BCM group mask. */
+#define KONA_PACKED_FAMILY_GPU	BIT(0)
+#define KONA_PACKED_FAMILY_GMU	BIT(1)
+#define KONA_PACKED_FAMILY_ALL	(KONA_PACKED_FAMILY_GPU | \
+				 KONA_PACKED_FAMILY_GMU)
+
+enum kona_packed_owner {
+	KONA_PACKED_OWNER_PROVIDER,
+	KONA_PACKED_OWNER_KGSL_GMU,
+};
+
+struct kona_packed_client_desc {
+	u32 id;
+	unsigned int family;
+	const char *family_name;
+	const char *endpoint;
+	const char *candidate_bcms;
+	enum kona_packed_owner owner;
+	const char *blocked_reason;
+};
+
+/*
+ * Keep the ownership audit executable as data rather than inferring physical
+ * ownership from the legacy GPU_MEM/GPU_LLCC aliases.  On Kona those aliases
+ * are logical compatibility resources, while GMU HFI installs MC0/SH0/ACV
+ * TCS tables.  Until KGSL can explicitly transfer that table ownership, a
+ * second apps-RSC packed writer would race firmware, including during resume.
+ */
+static const struct kona_packed_client_desc kona_stage5_clients[] = {
+	{ KONA_ICC_GPU_TO_MEM, KONA_PACKED_FAMILY_GPU, "gpu", "ddr",
+	  "MC0/SH0/ACV (GMU HFI table)", KONA_PACKED_OWNER_KGSL_GMU,
+	  "KGSL/GMU runtime DCVS and firmware TCS retain physical ownership" },
+	{ KONA_ICC_GPU_TO_LLCC, KONA_PACKED_FAMILY_GPU, "gpu", "llcc",
+	  "SH0 (shared GMU HFI table)", KONA_PACKED_OWNER_KGSL_GMU,
+	  "no independently transferable GPU BCM is described by cmd-db/DT" },
+	{ KONA_ICC_GMU_TO_MEM, KONA_PACKED_FAMILY_GMU, "gmu", "ddr",
+	  "MC0/SH0/ACV", KONA_PACKED_OWNER_KGSL_GMU,
+	  "GMU firmware consumes and replays the HFI DDR bandwidth table" },
+	{ KONA_ICC_GMU_TO_LLCC, KONA_PACKED_FAMILY_GMU, "gmu", "llcc",
+	  "SH0", KONA_PACKED_OWNER_KGSL_GMU,
+	  "GMU firmware/TCS remains authoritative" },
+};
+
 struct kona_icc_node_desc {
         u32 id;
         const char *name;
@@ -485,6 +528,11 @@ static unsigned int kona_rpmh_model = 4;
 module_param_named(rpmh_model, kona_rpmh_model, uint, 0444);
 MODULE_PARM_DESC(rpmh_model,
 	"Packed BCM migration: 0=legacy, 1=telemetry, 2=SH4, 3=SH4+SH0, 4=CPU (default), 5=validated clients");
+
+static unsigned int kona_packed_family_mask;
+module_param_named(packed_family_mask, kona_packed_family_mask, uint, 0644);
+MODULE_PARM_DESC(packed_family_mask,
+		 "Stage-5 candidate families: bit 0=GPU, bit 1=GMU; arming does not override audited external ownership");
 
 static unsigned int kona_cpu_model_stage(void)
 {
@@ -4619,11 +4667,54 @@ static ssize_t physical_show(struct device *dev,
 	const char *packed_mode;
 	ssize_t len = 0;
 	unsigned int i;
+	const struct kona_packed_client_desc *client = NULL;
+	u64 aggregate_ab = 0, aggregate_ib = 0;
 
 	if (!node || !node->qp)
 		return -EINVAL;
-	if (!kona_icc_is_cpu_memory_path(&node->qp->nodes[node->index]))
-		return sysfs_emit(buf, "legacy-resource\n");
+	if (!kona_icc_is_cpu_memory_path(&node->qp->nodes[node->index])) {
+		for (i = 0; i < ARRAY_SIZE(kona_stage5_clients); i++)
+			if (kona_stage5_clients[i].id ==
+			    node->qp->nodes[node->index].id) {
+				client = &kona_stage5_clients[i];
+				break;
+			}
+		if (!client)
+			return sysfs_emit(buf, "legacy-resource\n");
+
+		/* U64_MAX is an invalid cache sentinel, never physical demand. */
+		for (i = 0; i < node->qp->num_nodes; i++) {
+			const struct kona_packed_client_desc *peer = NULL;
+			unsigned int j;
+
+			for (j = 0; j < ARRAY_SIZE(kona_stage5_clients); j++)
+				if (kona_stage5_clients[j].id == node->qp->nodes[i].id) {
+					peer = &kona_stage5_clients[j];
+					break;
+				}
+			if (!peer || peer->family != client->family)
+				continue;
+			if (node->qp->eff_ab[i] != U64_MAX)
+				aggregate_ab = max(aggregate_ab, node->qp->eff_ab[i]);
+			if (node->qp->eff_ib[i] != U64_MAX)
+				aggregate_ib = max(aggregate_ib, node->qp->eff_ib[i]);
+		}
+
+		return sysfs_emit(buf,
+			"stage=%u family=%s endpoint=%s owner=kgsl-gmu-firmware-tcs candidate_bcms=%s "
+			"stage5_armed=%u family_mask=%#x packed_writes=0 fallback=0 last_error=0 "
+			"aggregate=%llu/%llu raw_aliases=%s/%s blocked_reason=%s\n",
+			kona_cpu_model_stage(), client->family_name, client->endpoint,
+			client->candidate_bcms,
+			kona_cpu_model_stage() >= 5 &&
+			!!(READ_ONCE(kona_packed_family_mask) & client->family),
+			READ_ONCE(kona_packed_family_mask) & KONA_PACKED_FAMILY_ALL,
+			(unsigned long long)aggregate_ab,
+			(unsigned long long)aggregate_ib,
+			node->qp->nodes[node->index].ab,
+			node->qp->nodes[node->index].ib,
+			client->blocked_reason);
+	}
 	if (node->qp->packed_fallback_active)
 		packed_mode = "sticky-legacy-fallback";
 	else if (kona_cpu_model_stage() < 4 ||
