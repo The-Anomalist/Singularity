@@ -630,10 +630,7 @@ static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 
 #define DEFAULT_TARGET_LOAD 70
 #define DEFAULT_NEW_TASK_RATIO 60
-#define DEFAULT_HISPEED_LOAD 75
-#define DEFAULT_CPU0_HISPEED_FREQ 1400000
-#define DEFAULT_CPU4_HISPEED_FREQ 2000000
-#define DEFAULT_CPU7_HISPEED_FREQ 2500000
+#define DEFAULT_HISPEED_LOAD 90
 #define DEFAULT_CPU0_RTG_BOOST_FREQ 1000000
 #define DEFAULT_CPU4_RTG_BOOST_FREQ 0
 #define DEFAULT_CPU7_RTG_BOOST_FREQ 0
@@ -658,12 +655,21 @@ static void sugov_walt_adjust(struct sugov_cpu *sg_cpu, unsigned long *util,
 					   sg_policy->tunables->hispeed_load,
 					   100));
 
-	if (is_hiload && !is_migration)
+	if (is_hiload && !is_migration &&
+	    sg_policy->tunables->hispeed_freq)
 		*util = max(*util, sg_policy->hispeed_util);
 
+	/*
+	 * A large new-task signal used to force maximum utilization here.  On
+	 * platforms with a dense OPP table that turns an otherwise proportional
+	 * governor into a two-state governor: the hispeed floor followed by fmax.
+	 * Keep the wake-up response, but add headroom in proportion to the new
+	 * work instead.  map_util_freq() will still select fmax naturally once
+	 * the resulting demand reaches its schedutil tipping point.
+	 */
 	if (is_hiload && nl >= mult_frac(cpu_util,
 					 sg_policy->tunables->new_task_ratio, 100))
-		*util = *max;
+		*util = max(*util, min(*max, cpu_util + (nl >> 1)));
 
 	if (sg_policy->tunables->pl) {
 		if (conservative_pl())
@@ -1352,18 +1358,8 @@ static int sugov_init(struct cpufreq_policy *policy)
 	if (ret)
 		goto free_sg_policy;
 
-	switch (policy->cpu) {
-	default:
-	case 0:
-		sg_policy->default_hispeed_freq = DEFAULT_CPU0_HISPEED_FREQ;
-		break;
-	case 4:
-		sg_policy->default_hispeed_freq = DEFAULT_CPU4_HISPEED_FREQ;
-		break;
-	case 7:
-		sg_policy->default_hispeed_freq = DEFAULT_CPU7_HISPEED_FREQ;
-		break;
-	}
+	/* A zero floor keeps Atlas proportional across every policy OPP. */
+	sg_policy->default_hispeed_freq = 0;
 
 	mutex_lock(&global_tunables_lock);
 
@@ -1393,11 +1389,10 @@ static int sugov_init(struct cpufreq_policy *policy)
 	tunables->new_task_ratio = DEFAULT_NEW_TASK_RATIO;
 	/*
 	 * WALT's rolling utilization can take a window to reflect a newly
-	 * runnable, compute-heavy worker.  Give sustained high-utilization work
-	 * a sensible per-cluster floor while that signal converges.  The floor is
-	 * policy-local so it remains correct when this governor shares tunables
-	 * between clusters.  It is applied only after hispeed_load is reached and
-	 * userspace can override it through sysfs.
+	 * runnable, compute-heavy worker.  Use proportional new-task headroom while
+	 * that signal converges.  Do not set a default frequency floor: skipping
+	 * the middle OPPs wastes the dense SM8250 frequency tables.  Userspace can
+	 * still request a floor through hispeed_freq when a workload needs one.
 	 */
 	tunables->hispeed_load = DEFAULT_HISPEED_LOAD;
 	tunables->hispeed_freq = sg_policy->default_hispeed_freq;
