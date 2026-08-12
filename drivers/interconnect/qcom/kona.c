@@ -168,10 +168,10 @@ static void kona_icc_packed_force_generation(struct kona_icc_provider *qp);
 static void kona_icc_queue_replay(struct kona_icc_provider *qp,
 				 unsigned int delay_ms, const char *why);
 
-static bool kona_packed_runtime_enable;
-static bool kona_packed_dry_run = true;
-static bool kona_packed_real_write_enable;
-static bool kona_packed_real_write_once = true;
+static bool kona_packed_runtime_enable = true;
+static bool kona_packed_dry_run;
+static bool kona_packed_real_write_enable = true;
+static bool kona_packed_real_write_once;
 static bool kona_packed_real_write_rearm;
 static bool kona_packed_force_dirty;
 
@@ -481,10 +481,10 @@ module_param_named(rpmh_cpu_model, kona_rpmh_cpu_model, bool, 0444);
 MODULE_PARM_DESC(rpmh_cpu_model,
 		 "Deprecated: discover packed CPU BCM metadata without programming it");
 
-static unsigned int kona_rpmh_model;
+static unsigned int kona_rpmh_model = 4;
 module_param_named(rpmh_model, kona_rpmh_model, uint, 0444);
 MODULE_PARM_DESC(rpmh_model,
-	"Packed BCM migration: 0=legacy, 1=telemetry, 2=SH4, 3=SH4+SH0, 4=CPU, 5=validated clients");
+	"Packed BCM migration: 0=legacy, 1=telemetry, 2=SH4, 3=SH4+SH0, 4=CPU (default), 5=validated clients");
 
 static unsigned int kona_cpu_model_stage(void)
 {
@@ -5228,7 +5228,32 @@ static int kona_icc_probe(struct platform_device *pdev)
 
 	mutex_lock(&kona_packed_param_lock);
 	kona_packed_provider = qp;
+
+	/*
+	 * Production Stage-4 ownership is kernel-controlled.  Bootloader/ROM
+	 * command-line module parameters may still contain stale staged-bring-up
+	 * values (runtime_enable=0/group_mask=0), so normalize the packed CPU BCM
+	 * controls only after SH4/SH0/MC0 metadata validation has completed.
+	 *
+	 * A permanent metadata failure above demotes kona_rpmh_model to stage 1;
+	 * in that case leave packed ownership disabled and retain the legacy path.
+	 */
+	if (kona_cpu_model_stage() >= 4) {
+		WRITE_ONCE(kona_packed_group_mask, KONA_PACKED_GROUP_ALL);
+		WRITE_ONCE(kona_packed_dry_run, false);
+		WRITE_ONCE(kona_packed_real_write_enable, true);
+		WRITE_ONCE(kona_packed_real_write_once, false);
+		WRITE_ONCE(kona_packed_runtime_enable, false);
+	}
 	mutex_unlock(&kona_packed_param_lock);
+
+	/*
+	 * Use the normal ownership transition so every CPU<->LLCC/DDR path is
+	 * invalidated, marked dirty and replayed through the packed worker.  This
+	 * also avoids performing RPMh I/O directly from probe context.
+	 */
+	if (kona_cpu_model_stage() >= 4)
+		kona_icc_packed_parameter_changed(qp, true);
 
         return 0;
 
