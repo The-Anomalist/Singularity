@@ -46,6 +46,8 @@
 #include <sound/compress_offload.h>
 #include <sound/compress_driver.h>
 
+static DEFINE_MUTEX(device_mutex);
+
 /* struct snd_compr_codec_caps overflows the ioctl bit size for some
  * architectures, so we need to disable the relevant ioctls.
  */
