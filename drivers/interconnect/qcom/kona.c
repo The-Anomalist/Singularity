@@ -70,6 +70,7 @@ enum kona_packed_owner {
 	KONA_PACKED_OWNER_PROVIDER,
 	KONA_PACKED_OWNER_KGSL_GMU,
 	KONA_PACKED_OWNER_STORAGE_DRIVER,
+	KONA_PACKED_OWNER_DISPLAY_DRIVER,
 };
 
 struct kona_packed_client_desc {
@@ -122,6 +123,41 @@ static const struct kona_packed_client_desc kona_stage6_storage_clients[] = {
 	  "SH0/MC0/ACV (shared downstream BCMs)", KONA_PACKED_OWNER_STORAGE_DRIVER,
 	  "sdhci-msm can switch between ICC and legacy msm_bus voting" },
 };
+
+/*
+ * Stage 7 display ownership audit.  DISP0/DISP1 are compatibility endpoint
+ * names, not cmd-db BCM names.  The SDE power handle keeps both ICC and
+ * msm_bus clients alive and updates both; msm_bus in turn owns the display
+ * RSC MM0/MM1/SH0/MC0/ACV topology.  In particular, an ICC success does not
+ * retire the fallback client.  Keep Kona a logical policy/cache endpoint
+ * until that dual lifecycle (including SDE recovery and resume replay) is
+ * replaced by an explicit, atomic handoff.
+ */
+static const struct kona_packed_client_desc kona_stage7_display_clients[] = {
+	{ KONA_ICC_DISP0_TO_MEM, 0, "display", "disp0-ddr",
+	  "MM0/SH0/MC0/ACV (display RSC; downstream resources shared)",
+	  KONA_PACKED_OWNER_DISPLAY_DRIVER,
+	  "SDE/MDSS retain live ICC plus msm_bus lifecycle and resume/recovery replay" },
+	{ KONA_ICC_DISP1_TO_MEM, 0, "display", "disp1-ddr",
+	  "MM1/SH0/MC0/ACV (display RSC; downstream resources shared)",
+	  KONA_PACKED_OWNER_DISPLAY_DRIVER,
+	  "no uniquely named transferable cmd-db resource and msm_bus remains active" },
+	{ KONA_ICC_DISP_CFG, 0, "display", "disp-cfg",
+	  "MM0/CNOC plus display power-domain msm_bus vote",
+	  KONA_PACKED_OWNER_DISPLAY_DRIVER,
+	  "SDE/MDSS/dispcc can independently restore config bandwidth" },
+};
+
+static const struct kona_packed_client_desc *kona_display_audit_desc(u32 id)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(kona_stage7_display_clients); i++)
+		if (kona_stage7_display_clients[i].id == id)
+			return &kona_stage7_display_clients[i];
+
+	return NULL;
+}
 
 static const struct kona_packed_client_desc *kona_storage_audit_desc(u32 id)
 {
@@ -743,6 +779,12 @@ module_param_named(kona_storage_raw_icc_enable,
 MODULE_PARM_DESC(kona_storage_raw_icc_enable,
 	"Program UFS/SDHC RPMh votes instead of accepting storage ICC paths as cached no-ops during bring-up");
 
+static bool kona_display_raw_icc_enable;
+module_param_named(kona_display_raw_icc_enable,
+		   kona_display_raw_icc_enable, bool, 0644);
+MODULE_PARM_DESC(kona_display_raw_icc_enable,
+	"DEBUG ONLY: program legacy display aliases despite the active SDE/MDSS msm_bus owner");
+
 static bool kona_gpu_raw_icc_enable;
 module_param_named(kona_gpu_raw_icc_enable,
 		   kona_gpu_raw_icc_enable, bool, 0644);
@@ -902,6 +944,7 @@ static bool kona_icc_is_raw_role(const struct kona_icc_node_desc *desc)
 static bool kona_icc_is_replay_suppressed_path(const struct kona_icc_node_desc *desc)
 {
 	return kona_icc_is_crypto_path(desc) || kona_icc_is_raw_npu_path(desc) ||
+	       (!kona_display_raw_icc_enable && desc->role == KONA_ROLE_DISPLAY) ||
 	       (!kona_storage_raw_icc_enable && kona_icc_is_storage_path(desc)) ||
 	       (!kona_gpu_raw_icc_enable && kona_icc_is_gpu_path(desc)) ||
 	       (!kona_gmu_raw_icc_enable && kona_icc_is_gmu_path(desc)) ||
@@ -4649,6 +4692,16 @@ skip_perf_floor:
 		return 0;
 	}
 
+	/* Stage 7: preserve logical display policy without becoming a second BCM writer. */
+	if (desc->role == KONA_ROLE_DISPLAY && !kona_display_raw_icc_enable) {
+		if (qp->last_ab)
+			qp->last_ab[index] = ab;
+		if (qp->last_ib)
+			qp->last_ib[index] = ib;
+		kona_icc_clear_dirty(qp, index);
+		return 0;
+	}
+
 	/*
 	 * Best-effort synchronous programming:
 	 * - Apply the vote immediately when we're in a normal runtime window.
@@ -4861,6 +4914,28 @@ static ssize_t physical_show(struct device *dev,
 			(unsigned long long)(valid ? requested_ab : 0),
 			(unsigned long long)(valid ? requested_ib : 0),
 			audit->blocked_reason);
+	}
+	if (node->qp->nodes[node->index].role == KONA_ROLE_DISPLAY) {
+		const struct kona_packed_client_desc *audit =
+			kona_display_audit_desc(node->qp->nodes[node->index].id);
+		u64 requested_ab = node->qp->req_ab[node->index];
+		u64 requested_ib = node->qp->req_ib[node->index];
+		bool valid = requested_ab != U64_MAX && requested_ib != U64_MAX;
+
+		if (!audit)
+			return -EINVAL;
+		return sysfs_emit(buf,
+			"stage=7 family=display endpoint=%s integration_state=logical-policy-only "
+			"physical_owner=sde-mdss-msm_bus candidate_cmd_db_resources=%s "
+			"raw=%llu/%llu requested_packed=unavailable committed_packed=unavailable "
+			"generation=0 submissions=0 retries=0 failures=0 fallback=active "
+			"last_error=0 fully_migrated=0 externally_blocked=1 "
+			"kona_physical_writes=%u ownership_audited=1 display_private_context=1 "
+			"exclusive_resource_name=0 blocked_reason=%s\n",
+			audit->endpoint, audit->candidate_bcms,
+			(unsigned long long)(valid ? requested_ab : 0),
+			(unsigned long long)(valid ? requested_ib : 0),
+			kona_display_raw_icc_enable, audit->blocked_reason);
 	}
 	if (!kona_icc_is_cpu_memory_path(&node->qp->nodes[node->index]))
 		return sysfs_emit(buf, "legacy-resource\n");
