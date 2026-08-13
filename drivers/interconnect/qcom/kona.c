@@ -74,6 +74,8 @@ enum kona_packed_owner {
 	KONA_PACKED_OWNER_VIDEO_DRIVER,
 	KONA_PACKED_OWNER_CVP_DRIVER,
 	KONA_PACKED_OWNER_MEDIA_DRIVERS,
+	KONA_PACKED_OWNER_CPAS,
+	KONA_PACKED_OWNER_CAMERA_FIRMWARE,
 };
 
 enum kona_media_migration_status {
@@ -90,6 +92,7 @@ struct kona_media_owner_desc {
 	const char *firmware_owner;
 	const char *resume_replay_owner;
 	bool shared_resource;
+	bool private_context;
 	bool exclusive_handoff_possible;
 	enum kona_media_migration_status migration_status;
 	const char *blocked_reason;
@@ -183,31 +186,82 @@ static const struct kona_media_owner_desc kona_stage8_media_clients[] = {
 	  "CN0/MM0/MM1 plus shared config topology",
 	  KONA_PACKED_OWNER_MEDIA_DRIVERS, "vidc/cvp/videocc ICC clients",
 	  "none (HFI resource commands do not carry RPMh BCM votes)",
-	  "vidc, cvp and videocc probe/resume", true, false,
+	  "vidc, cvp and videocc probe/resume", true, false, false,
 	  KONA_MEDIA_MIGRATION_BLOCKED,
 	  "shared config path has multiple live ICC replay owners" },
 	{ KONA_ICC_VIDEO_TO_LLCC, "video-llcc", "video",
 	  "MM0/SH0 (shared downstream BCM)",
 	  KONA_PACKED_OWNER_VIDEO_DRIVER, "venus msm_bus client",
 	  "none (host governor computes and submits bandwidth)",
-	  "venus HFI power-collapse/resume/SSR", true, false,
+	  "venus HFI power-collapse/resume/SSR", true, false, false,
 	  KONA_MEDIA_MIGRATION_BLOCKED,
 	  "Venus retains ICC/msm_bus fallback and lifecycle replay" },
 	{ KONA_ICC_VIDEO_TO_MEM, "video-ddr", "video",
 	  "MM0/SH0/MC0/ACV (shared downstream BCMs)",
 	  KONA_PACKED_OWNER_VIDEO_DRIVER, "venus msm_bus client",
 	  "none (host governor computes and submits bandwidth)",
-	  "venus HFI power-collapse/resume/SSR", true, false,
+	  "venus HFI power-collapse/resume/SSR", true, false, false,
 	  KONA_MEDIA_MIGRATION_BLOCKED,
 	  "Venus retains ICC/msm_bus fallback; DDR BCMs are shared" },
 	{ KONA_ICC_CVP_TO_MEM, "cvp-ddr", "cvp",
 	  "MM1/MM2/SH0/MC0/ACV (identity selected by bus topology)",
 	  KONA_PACKED_OWNER_CVP_DRIVER, "none proven; CVP ICC remains live",
 	  "none (host CVP governor submits ICC bandwidth)",
-	  "cvp HFI boot/resume/power-collapse/recovery", true, false,
+	  "cvp HFI boot/resume/power-collapse/recovery", true, false, false,
 	  KONA_MEDIA_MIGRATION_BLOCKED,
 	  "CVP ICC lifecycle can replay and no private BCM is proven" },
 };
+
+/*
+ * Stage 9 CAMERA ownership audit.  CPAS aggregates every registered camera
+ * client's AHB and AXI votes, then selects ICC or its still-live msm_bus
+ * client for these DT ports.  MM1/MM2 provide camera-facing topology, but
+ * neither their apps-RSC context nor an exclusive handoff is described;
+ * SH0/MC0/ACV are shared downstream.  ICP firmware can restart camera
+ * accelerators, while host CPAS replays their votes.  These are audit rows,
+ * never writable packed BCM state.
+ */
+static const struct kona_media_owner_desc kona_stage9_camera_clients[] = {
+	{ KONA_ICC_CAM_CFG, "cam-cfg", "camera",
+	  "CN0/MM1/MM2 (apps RSC config topology)",
+	  KONA_PACKED_OWNER_CPAS, "CPAS msm_bus cam_ahb client",
+	  "none (no BCM address or packed vote in camera firmware ABI)",
+	  "CPAS start/reprobe and camera client restart", true, false, false,
+	  KONA_MEDIA_MIGRATION_BLOCKED,
+	  "CPAS owns AHB aggregation and its msm_bus fallback can replay" },
+	{ KONA_ICC_CAM_HF0_TO_MEM, "cam-hf0-ddr", "camera",
+	  "MM1/MM2/SH0/MC0/ACV (apps RSC; downstream shared)",
+	  KONA_PACKED_OWNER_CPAS, "CPAS msm_bus cam_hf_0_mnoc client",
+	  "ICP firmware drives workloads; host CPAS owns bandwidth replay",
+	  "CPAS client start/update after power collapse or recovery", true, false, false,
+	  KONA_MEDIA_MIGRATION_BLOCKED,
+	  "CPAS ICC/msm_bus dual lifecycle remains live and DDR BCMs are shared" },
+	{ KONA_ICC_CAM_SF0_TO_MEM, "cam-sf0-ddr", "camera",
+	  "MM1/MM2/SH0/MC0/ACV (apps RSC; downstream shared)",
+	  KONA_PACKED_OWNER_CPAS, "CPAS msm_bus cam_sf_0_mnoc client",
+	  "ICP firmware drives IPE/BPS work; host CPAS owns bandwidth replay",
+	  "CPAS client start/update after power collapse or recovery", true, false, false,
+	  KONA_MEDIA_MIGRATION_BLOCKED,
+	  "no camera-private cmd-db context is proven and CPAS can replay" },
+	{ KONA_ICC_CAM_SF_ICP_TO_MEM, "cam-sf-icp-ddr", "camera-icp",
+	  "MM1/MM2/SH0/MC0/ACV (apps RSC; downstream shared)",
+	  KONA_PACKED_OWNER_CPAS, "CPAS msm_bus cam_sf_icp_mnoc client",
+	  "ICP/A5 firmware lifecycle; no raw BCM commands found in HFI ABI",
+	  "ICP recovery restarts clients and CPAS restores aggregate vote", true, false, false,
+	  KONA_MEDIA_MIGRATION_BLOCKED,
+	  "firmware recovery plus CPAS fallback prevents exclusive handoff" },
+};
+
+static const struct kona_media_owner_desc *kona_camera_audit_desc(u32 id)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(kona_stage9_camera_clients); i++)
+		if (kona_stage9_camera_clients[i].logical_path == id)
+			return &kona_stage9_camera_clients[i];
+
+	return NULL;
+}
 
 static const struct kona_media_owner_desc *kona_media_audit_desc(u32 id)
 {
@@ -5008,6 +5062,32 @@ static ssize_t physical_show(struct device *dev,
 			(unsigned long long)(valid ? requested_ab : 0),
 			(unsigned long long)(valid ? requested_ib : 0),
 			kona_display_raw_icc_enable, audit->blocked_reason);
+	}
+	{
+		const struct kona_media_owner_desc *audit =
+			kona_camera_audit_desc(node->qp->nodes[node->index].id);
+		u64 requested_ab = node->qp->req_ab[node->index];
+		u64 requested_ib = node->qp->req_ib[node->index];
+		bool valid = requested_ab != U64_MAX && requested_ib != U64_MAX;
+
+		if (audit)
+			return sysfs_emit(buf,
+				"stage=9 family=%s endpoint=%s integration_state=logical-policy-only "
+				"physical_owner=cpas firmware_owner=%s fallback_owner=%s "
+				"resume_replay_owner=%s candidate_cmd_db_resources=%s "
+				"raw=%llu/%llu requested_packed=unavailable committed_packed=unavailable "
+				"generation=0 submissions=0 retries=0 failures=0 fallback=active "
+				"last_error=0 fully_migrated=0 externally_blocked=1 "
+				"kona_physical_writes=0 ownership_audited=1 shared_resource=%u "
+				"private_context=%u exclusive_handoff_possible=%u "
+				"migration_status=blocked blocked_reason=%s\n",
+				audit->family, audit->endpoint, audit->firmware_owner,
+				audit->fallback_owner, audit->resume_replay_owner,
+				audit->candidate_bcms,
+				(unsigned long long)(valid ? requested_ab : 0),
+				(unsigned long long)(valid ? requested_ib : 0),
+				audit->shared_resource, audit->private_context,
+				audit->exclusive_handoff_possible, audit->blocked_reason);
 	}
 	{
 		const struct kona_media_owner_desc *audit =
