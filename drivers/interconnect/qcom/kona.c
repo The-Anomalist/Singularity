@@ -219,18 +219,20 @@ static bool kona_gpu_contribution_equal(
 		const struct kona_icc_gpu_contribution *left,
 		const struct kona_icc_gpu_contribution *right)
 {
+	/*
+	 * Compare only the effective bandwidth contribution.  The publication
+	 * phase and applied fields describe request/ACK bookkeeping and must not
+	 * advance the contribution generation by themselves.
+	 */
 	return left->source == right->source &&
 		left->selected_level == right->selected_level &&
 		left->requested_level == right->requested_level &&
-		left->applied_level == right->applied_level &&
 		left->mc0_addr == right->mc0_addr &&
 		left->sh0_addr == right->sh0_addr &&
 		left->acv_addr == right->acv_addr &&
 		left->mc0_data == right->mc0_data &&
 		left->sh0_data == right->sh0_data &&
-		left->acv_data == right->acv_data &&
-		left->applied_valid == right->applied_valid &&
-		left->phase == right->phase;
+		left->acv_data == right->acv_data;
 }
 
 void kona_icc_gpu_publish_contribution(
@@ -245,17 +247,17 @@ void kona_icc_gpu_publish_contribution(
 	changed = !kona_gpu_contribution.valid ||
 		!kona_gpu_contribution_equal(&kona_gpu_contribution.value, value);
 	kona_gpu_contribution.publish_count++;
+	if (value->phase == KONA_ICC_GPU_PHASE_REQUESTED)
+		kona_gpu_contribution.requested_generation =
+			kona_gpu_contribution.publish_count;
+	else
+		kona_gpu_contribution.applied_generation =
+			kona_gpu_contribution.publish_count;
 	if (changed) {
 		kona_gpu_contribution.generation++;
-		if (value->phase == KONA_ICC_GPU_PHASE_REQUESTED)
-			kona_gpu_contribution.requested_generation =
-				kona_gpu_contribution.generation;
-		else
-			kona_gpu_contribution.applied_generation =
-				kona_gpu_contribution.generation;
-		kona_gpu_contribution.value = *value;
 		kona_gpu_contribution.timestamp_ns = ktime_get_mono_fast_ns();
 	}
+	kona_gpu_contribution.value = *value;
 	kona_gpu_contribution.valid = true;
 	kona_gpu_contribution.last_error = 0;
 	spin_unlock_irqrestore(&kona_gpu_contribution_lock, flags);
@@ -4755,6 +4757,8 @@ static ssize_t physical_show(struct device *dev,
 		unsigned long flags;
 		const char *source;
 		u32 mc0_x = 0, mc0_y = 0, sh0_x = 0, sh0_y = 0;
+		u64 logical_ab, logical_ib;
+		bool logical_valid;
 
 		spin_lock_irqsave(&kona_gpu_contribution_lock, flags);
 		state = kona_gpu_contribution;
@@ -4770,6 +4774,10 @@ static ssize_t physical_show(struct device *dev,
 				KONA_BCM_VOTE_MASK;
 			sh0_y = state.value.sh0_data & KONA_BCM_VOTE_MASK;
 		}
+		logical_valid = node->qp->last_ab[node->index] != U64_MAX &&
+			node->qp->last_ib[node->index] != U64_MAX;
+		logical_ab = logical_valid ? node->qp->last_ab[node->index] : 0;
+		logical_ib = logical_valid ? node->qp->last_ib[node->index] : 0;
 		return sysfs_emit(buf,
 			"stage=5 family=%s endpoint=%s integration_state=integrated-validated "
 			"owner=kona-logical physical_owner=gmu-firmware-tcs contribution_export=active "
@@ -4780,7 +4788,7 @@ static ssize_t physical_show(struct device *dev,
 			"requested_generation=%llu applied_generation=%llu publish_count=%llu "
 			"clear_count=%llu timestamp_ns=%llu packed_writes=0 fallback=%u "
 			"last_error=%d blocked_reason=firmware-abi shared_aggregation_capable=0 "
-			"handoff_blocked=1 logical_ab=%llu logical_ib=%llu\n",
+			"handoff_blocked=1 logical_valid=%u logical_ab=%llu logical_ib=%llu\n",
 			kona_icc_is_gpu_path(&node->qp->nodes[node->index]) ? "gpu" : "gmu",
 			node->qp->nodes[node->index].name, state.valid, source,
 			state.value.selected_level, state.value.requested_level,
@@ -4797,8 +4805,8 @@ static ssize_t physical_show(struct device *dev,
 			(unsigned long long)state.timestamp_ns,
 			state.value.source == KONA_ICC_GPU_SOURCE_MSM_BUS,
 			state.last_error,
-			(unsigned long long)node->qp->last_ab[node->index],
-			(unsigned long long)node->qp->last_ib[node->index]);
+			logical_valid, (unsigned long long)logical_ab,
+			(unsigned long long)logical_ib);
 	}
 	if (!kona_icc_is_cpu_memory_path(&node->qp->nodes[node->index]))
 		return sysfs_emit(buf, "legacy-resource\n");
