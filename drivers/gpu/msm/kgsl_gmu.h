@@ -225,6 +225,14 @@ struct gmu_device {
 	unsigned long fw_tcs_table_builds;
 	bool bootstrap_bw_vote_icc;
 	struct rpmh_votes_t rpmh_votes;
+	u32 kona_mc0_addr;
+	u32 kona_sh0_addr;
+	u32 kona_acv_addr;
+	int kona_mc0_idx;
+	int kona_sh0_idx;
+	int kona_acv_idx;
+	bool kona_ddr_contribution_valid;
+	int kona_ddr_contribution_error;
 	struct regulator *cx_gdsc;
 	struct regulator *gx_gdsc;
 	struct clk *clks[MAX_GMU_CLKS];

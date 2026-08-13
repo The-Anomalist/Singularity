@@ -9,6 +9,7 @@
 #include <linux/msm_kgsl.h>
 #include <linux/of_device.h>
 #include <linux/interconnect.h>
+#include <linux/interconnect/kona.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
@@ -417,6 +418,7 @@ static int kgsl_bus_scale_request(struct kgsl_device *device,
 	if (gmu_core_scales_bandwidth(device))
 		ret = gmu_core_dcvs_set(device, INVALID_DCVS_IDX, buslevel);
 	else if (pwr->num_icc_paths) {
+		kona_icc_gpu_clear_contribution(KONA_ICC_GPU_SOURCE_NONE, -ENODATA);
 		if (pwr->num_icc_bw_levels) {
 			unsigned int idx = min_t(unsigned int, buslevel,
 				pwr->num_icc_bw_levels - 1);
@@ -466,6 +468,8 @@ static int kgsl_bus_scale_request(struct kgsl_device *device,
 
 	else if (pwr->pcl) {
 		/* Linux bus driver scales BW */
+		kona_icc_gpu_clear_contribution(KONA_ICC_GPU_SOURCE_MSM_BUS,
+						-ENODATA);
 		ret = msm_bus_scale_client_update_request(pwr->pcl, buslevel);
 		if (!ret) {
 			pwr->msm_bus_runtime_fallback_votes++;
@@ -478,6 +482,8 @@ static int kgsl_bus_scale_request(struct kgsl_device *device,
 	if (ret && pwr->pcl) {
 		ret = msm_bus_scale_client_update_request(pwr->pcl, buslevel);
 		if (!ret) {
+			kona_icc_gpu_clear_contribution(KONA_ICC_GPU_SOURCE_MSM_BUS,
+						-ENODATA);
 			pwr->msm_bus_runtime_fallback_votes++;
 			dev_dbg_ratelimited(device->dev,
 				"GPU runtime BW vote via msm_bus fallback after ICC failure: level=%u total_fallback_votes=%lu\n",

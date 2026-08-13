@@ -8,6 +8,7 @@
 #include <linux/firmware.h>
 #include <linux/io.h>
 #include <linux/iommu.h>
+#include <linux/interconnect/kona.h>
 #include <linux/mailbox_client.h>
 #include <linux/moduleparam.h>
 #include <linux/msm-bus.h>
@@ -584,12 +585,16 @@ static int gmu_dcvs_set(struct kgsl_device *device,
 		.freq = INVALID_DCVS_IDX,
 		.bw = INVALID_DCVS_IDX,
 	};
+	struct kona_icc_gpu_contribution contribution = { };
+	bool contribution_valid = false;
 
 
 	/* If GMU has not been started, save it */
 	if (!test_bit(GMU_HFI_ON, &device->gmu_core.flags)) {
 		/* store clock change request */
 		set_bit(GMU_DCVS_REPLAY, &device->gmu_core.flags);
+		kona_icc_gpu_clear_contribution(KONA_ICC_GPU_SOURCE_GMU_HFI,
+			-ESHUTDOWN);
 		return 0;
 	}
 
@@ -604,6 +609,35 @@ static int gmu_dcvs_set(struct kgsl_device *device,
 	if (bus_level < gmu->num_bwlevels && bus_level > 0)
 		req.bw = bus_level;
 
+	/* Export the exact HFI row using identities validated at table creation. */
+	if (req.bw != INVALID_DCVS_IDX) {
+		struct hfi_bwtable_cmd *table = &gmu->hfi.bwtbl_cmd;
+
+		if (req.bw >= table->bw_level_num ||
+		    !gmu->kona_ddr_contribution_valid) {
+			kona_icc_gpu_clear_contribution(KONA_ICC_GPU_SOURCE_GMU_HFI,
+				req.bw >= table->bw_level_num ? -ERANGE :
+				gmu->kona_ddr_contribution_error);
+		} else {
+			contribution.source = KONA_ICC_GPU_SOURCE_GMU_HFI;
+			contribution.phase = KONA_ICC_GPU_PHASE_REQUESTED;
+			contribution.selected_level = req.bw;
+			contribution.requested_level = bus_level;
+			contribution.mc0_addr = gmu->kona_mc0_addr;
+			contribution.sh0_addr = gmu->kona_sh0_addr;
+			contribution.acv_addr = gmu->kona_acv_addr;
+			contribution.mc0_data = table->ddr_cmd_data[req.bw]
+				[gmu->kona_mc0_idx];
+			contribution.sh0_data = table->ddr_cmd_data[req.bw]
+				[gmu->kona_sh0_idx];
+			if (gmu->kona_acv_idx >= 0)
+				contribution.acv_data = table->ddr_cmd_data[req.bw]
+					[gmu->kona_acv_idx];
+			kona_icc_gpu_publish_contribution(&contribution);
+			contribution_valid = true;
+		}
+	}
+
 	/* GMU will vote for slumber levels through the sleep sequence */
 	if ((req.freq == INVALID_DCVS_IDX) &&
 		(req.bw == INVALID_DCVS_IDX)) {
@@ -616,6 +650,14 @@ static int gmu_dcvs_set(struct kgsl_device *device,
 			GMU_DCVS_NOHFI, req.freq, req.bw);
 	else if (test_bit(GMU_HFI_ON, &device->gmu_core.flags))
 		ret = hfi_send_req(gmu, H2F_MSG_GX_BW_PERF_VOTE, &req);
+
+	/* DCVS_ACK_BLOCK confirms firmware accepted the selected table index. */
+	if (!ret && contribution_valid) {
+		contribution.applied_valid = true;
+		contribution.phase = KONA_ICC_GPU_PHASE_APPLIED;
+		contribution.applied_level = req.bw;
+		kona_icc_gpu_publish_contribution(&contribution);
+	}
 
 	if (ret) {
 		dev_err_ratelimited(&gmu->pdev->dev,
@@ -1126,6 +1168,39 @@ static void build_bwtable_cmd_cache(struct gmu_device *gmu)
 	for (i = 0; i < MAX_CNOC_LEVELS; i++)
 		memcpy(cmd->cnoc_cmd_data[i], votes->cnoc_votes.cmd_data[i],
 				cmd->cnoc_cmds_num * sizeof(cmd->cnoc_cmd_data[0][0]));
+
+	/* Resolve static contribution identities once, outside the DVFS hot path. */
+	gmu->kona_mc0_addr = cmd_db_read_addr("MC0");
+	gmu->kona_sh0_addr = cmd_db_read_addr("SH0");
+	gmu->kona_acv_addr = cmd_db_read_addr("ACV");
+	gmu->kona_mc0_idx = -1;
+	gmu->kona_sh0_idx = -1;
+	gmu->kona_acv_idx = -1;
+	gmu->kona_ddr_contribution_valid = false;
+	gmu->kona_ddr_contribution_error = -EINVAL;
+
+	if (cmd->ddr_cmds_num > MAX_BW_CMDS || !cmd->bw_level_num ||
+	    !gmu->kona_mc0_addr || !gmu->kona_sh0_addr || !gmu->kona_acv_addr)
+		goto contribution_done;
+
+	for (i = 0; i < cmd->ddr_cmds_num; i++) {
+		if (cmd->ddr_cmd_addrs[i] == gmu->kona_mc0_addr)
+			gmu->kona_mc0_idx = i;
+		else if (cmd->ddr_cmd_addrs[i] == gmu->kona_sh0_addr)
+			gmu->kona_sh0_idx = i;
+		else if (cmd->ddr_cmd_addrs[i] == gmu->kona_acv_addr)
+			gmu->kona_acv_idx = i;
+	}
+
+	if (gmu->kona_mc0_idx < 0 || gmu->kona_sh0_idx < 0) {
+		gmu->kona_ddr_contribution_error = -ENOENT;
+		goto contribution_done;
+	}
+
+	gmu->kona_ddr_contribution_valid = true;
+	gmu->kona_ddr_contribution_error = 0;
+
+contribution_done:
 
 	gmu_dbg_dump_hfi_bwtable(gmu);
 }

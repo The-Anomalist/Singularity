@@ -4,6 +4,7 @@
  */
 
 #include <linux/of.h>
+#include <linux/interconnect/kona.h>
 
 #include "adreno.h"
 #include "kgsl_device.h"
@@ -136,14 +137,21 @@ void gmu_core_stop(struct kgsl_device *device)
 
 	if (gmu_core_ops && gmu_core_ops->stop)
 		gmu_core_ops->stop(device);
+	kona_icc_gpu_clear_contribution(KONA_ICC_GPU_SOURCE_GMU_HFI, -ESHUTDOWN);
 }
 
 int gmu_core_suspend(struct kgsl_device *device)
 {
 	struct gmu_core_ops *gmu_core_ops = GMU_CORE_OPS(device);
 
-	if (gmu_core_ops && gmu_core_ops->suspend)
-		return gmu_core_ops->suspend(device);
+	if (gmu_core_ops && gmu_core_ops->suspend) {
+		int ret = gmu_core_ops->suspend(device);
+
+		if (!ret)
+			kona_icc_gpu_clear_contribution(KONA_ICC_GPU_SOURCE_GMU_HFI,
+				-ESHUTDOWN);
+		return ret;
+	}
 
 	return -EINVAL;
 }
