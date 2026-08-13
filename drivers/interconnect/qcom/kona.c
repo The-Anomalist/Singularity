@@ -69,6 +69,7 @@ enum kona_icc_role {
 enum kona_packed_owner {
 	KONA_PACKED_OWNER_PROVIDER,
 	KONA_PACKED_OWNER_KGSL_GMU,
+	KONA_PACKED_OWNER_STORAGE_DRIVER,
 };
 
 struct kona_packed_client_desc {
@@ -102,6 +103,36 @@ static const struct kona_packed_client_desc kona_stage5_clients[] = {
 	  "SH0", KONA_PACKED_OWNER_KGSL_GMU,
 	  "GMU firmware/TCS remains authoritative" },
 };
+
+/*
+ * Stage 6 storage ownership audit.  The endpoint BCMs are deliberately
+ * descriptive rather than writable state: both storage drivers retain a
+ * live ICC-to-msm_bus fallback, and the Kona bus topology attaches the
+ * shared SH0/MC0/ACV BCMs downstream of the storage masters.  Therefore no
+ * storage-only cmd-db BCM can be exclusively transferred here.
+ */
+static const struct kona_packed_client_desc kona_stage6_storage_clients[] = {
+	{ KONA_ICC_UFS_TO_MEM, 0, "ufs", "kona-ufs-ddr",
+	  "SH0/MC0/ACV (shared downstream BCMs)", KONA_PACKED_OWNER_STORAGE_DRIVER,
+	  "ufs-qcom retains runtime ICC voting and registered msm_bus fallback" },
+	{ KONA_ICC_UFS_TO_LLCC, 0, "ufs", "kona-ufs-llcc",
+	  "SH0 (shared downstream BCM)", KONA_PACKED_OWNER_STORAGE_DRIVER,
+	  "ufs-qcom retains runtime ICC voting and registered msm_bus fallback" },
+	{ KONA_ICC_SDHC2_TO_MEM, 0, "sdhc2", "kona-sdhc2-ddr",
+	  "SH0/MC0/ACV (shared downstream BCMs)", KONA_PACKED_OWNER_STORAGE_DRIVER,
+	  "sdhci-msm can switch between ICC and legacy msm_bus voting" },
+};
+
+static const struct kona_packed_client_desc *kona_storage_audit_desc(u32 id)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(kona_stage6_storage_clients); i++)
+		if (kona_stage6_storage_clients[i].id == id)
+			return &kona_stage6_storage_clients[i];
+
+	return NULL;
+}
 
 struct kona_icc_node_desc {
         u32 id;
@@ -4807,6 +4838,29 @@ static ssize_t physical_show(struct device *dev,
 			state.last_error,
 			logical_valid, (unsigned long long)logical_ab,
 			(unsigned long long)logical_ib);
+	}
+	if (kona_icc_is_storage_path(&node->qp->nodes[node->index])) {
+		const struct kona_packed_client_desc *audit =
+			kona_storage_audit_desc(node->qp->nodes[node->index].id);
+		u64 requested_ab = node->qp->req_ab[node->index];
+		u64 requested_ib = node->qp->req_ib[node->index];
+		bool valid = requested_ab != U64_MAX && requested_ib != U64_MAX;
+
+		if (!audit)
+			return -EINVAL;
+		return sysfs_emit(buf,
+			"stage=6 diagnostic=%s physical_owner=%s cmd_db_resource=%s "
+			"raw=%llu/%llu requested_packed=unavailable committed_packed=unavailable "
+			"generation=0 submissions=0 retries=0 fallback=1 errors=0 "
+			"fully_migrated=0 externally_blocked=1 kona_physical_writes=0 "
+			"legacy_owner_unchanged=1 ownership_audited=1 blocked_reason=%s\n",
+			audit->endpoint,
+			audit->id == KONA_ICC_SDHC2_TO_MEM ?
+				"sdhci-msm/icc-or-msm_bus" : "ufs-qcom/icc-or-msm_bus",
+			audit->candidate_bcms,
+			(unsigned long long)(valid ? requested_ab : 0),
+			(unsigned long long)(valid ? requested_ib : 0),
+			audit->blocked_reason);
 	}
 	if (!kona_icc_is_cpu_memory_path(&node->qp->nodes[node->index]))
 		return sysfs_emit(buf, "legacy-resource\n");
