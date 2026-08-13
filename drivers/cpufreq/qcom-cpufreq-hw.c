@@ -100,6 +100,7 @@ struct cpufreq_qcom {
 	u32 up_rate_limit_us;
 	u32 down_rate_limit_us;
 	u32 transition_hyst_khz;
+	u32 max_frequency_khz;
 	u64 last_freq_update_ns;
 	u32 last_index;
 	u32 blocked_up_transitions;
@@ -973,6 +974,20 @@ static int qcom_cpufreq_update_opp(struct device *cpu_dev,
 	return dev_pm_opp_enable(cpu_dev, freq);
 }
 
+static bool qcom_cpufreq_opp_is_described(struct device *cpu_dev,
+					  unsigned int freq_khz)
+{
+	struct dev_pm_opp *opp;
+	unsigned long freq = (unsigned long)freq_khz * 1000;
+
+	opp = dev_pm_opp_find_freq_exact(cpu_dev, freq, false);
+	if (IS_ERR(opp))
+		return false;
+
+	dev_pm_opp_put(opp);
+	return true;
+}
+
 static int qcom_cpufreq_load_opp_table(struct cpufreq_qcom *c)
 {
 	struct device_node *cpu_np, *opp_np, *child;
@@ -1121,9 +1136,19 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		c->freqs[i] = raw_freq;
 		selectable_freq = raw_freq;
 
-		/* A firmware row is selectable only when DT describes that OPP. */
-		ret = qcom_cpufreq_update_opp(cpu_dev, raw_freq, volt);
-		dt_match = !ret;
+		/*
+		 * A firmware row is selectable only when DT describes that OPP and
+		 * the board's domain ceiling permits it.  Capped rows stay present in
+		 * the hardware LUT and disabled in the OPP table, so raising policy
+		 * limits cannot make them selectable accidentally.
+		 */
+		if (raw_freq > c->max_frequency_khz) {
+			dt_match = qcom_cpufreq_opp_is_described(cpu_dev, raw_freq);
+			ret = -ERANGE;
+		} else {
+			ret = qcom_cpufreq_update_opp(cpu_dev, raw_freq, volt);
+			dt_match = !ret;
+		}
 		if (ret)
 			selectable_freq = CPUFREQ_ENTRY_INVALID;
 		if (c->has_prime_oc && i == c->oc_index)
@@ -1272,6 +1297,7 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 	c->up_rate_limit_us = hw_up_rate_limit_us;
 	c->down_rate_limit_us = hw_down_rate_limit_us;
 	c->transition_hyst_khz = hw_transition_hyst_khz;
+	c->max_frequency_khz = U32_MAX;
 	c->last_index = U32_MAX;
 	c->has_prime_oc = false;
 	c->prime_oc_write_through = false;
@@ -1284,11 +1310,14 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 			     &c->down_rate_limit_us);
 	of_property_read_u32(dev->of_node, "qcom,driver-transition-hyst-khz",
 			     &c->transition_hyst_khz);
+	of_property_read_u32_index(dev->of_node,
+				   "qcom,domain-max-frequency-khz", index,
+				   &c->max_frequency_khz);
 
 	dev_info(dev,
-		 "domain-%d driver limits: up=%u us down=%u us hyst=%u kHz\n",
+		 "domain-%d driver limits: up=%u us down=%u us hyst=%u kHz max=%u kHz\n",
 		 index, c->up_rate_limit_us, c->down_rate_limit_us,
-		 c->transition_hyst_khz);
+		 c->transition_hyst_khz, c->max_frequency_khz);
 
 	ret = qcom_cpufreq_hw_extend_prime_lut(pdev, c, index);
 	if (ret) {

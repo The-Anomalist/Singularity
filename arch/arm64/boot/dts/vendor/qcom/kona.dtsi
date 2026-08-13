@@ -418,6 +418,8 @@
 
 			qcom,lut-row-size = <4>;
 			qcom,skip-enable-check;
+			/* Keep higher LUT rows present, but unavailable to CPUFreq. */
+			qcom,domain-max-frequency-khz = <1708800 2342400 2745600>;
 			/* Domain 2 is CPU7; EPSS can represent this as CXO L154. */
 			qcom,prime-oc-domain-id = <2>;
 			qcom,prime-oc-frequency-khz = <2956800>;
