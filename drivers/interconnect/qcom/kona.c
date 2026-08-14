@@ -76,6 +76,8 @@ enum kona_packed_owner {
 	KONA_PACKED_OWNER_MEDIA_DRIVERS,
 	KONA_PACKED_OWNER_CPAS,
 	KONA_PACKED_OWNER_CAMERA_FIRMWARE,
+	KONA_PACKED_OWNER_NPU_DEVBW,
+	KONA_PACKED_OWNER_NPUDSP,
 };
 
 enum kona_media_migration_status {
@@ -90,6 +92,25 @@ struct kona_media_owner_desc {
 	enum kona_packed_owner physical_owner;
 	const char *fallback_owner;
 	const char *firmware_owner;
+	const char *resume_replay_owner;
+	bool shared_resource;
+	bool private_context;
+	bool exclusive_handoff_possible;
+	enum kona_media_migration_status migration_status;
+	const char *blocked_reason;
+};
+
+struct kona_npu_owner_desc {
+	u32 logical_path;
+	const char *endpoint;
+	const char *family;
+	const char *candidate_bcms;
+	enum kona_packed_owner physical_owner;
+	const char *fallback_owner;
+	const char *firmware_owner;
+	const char *devbw_owner;
+	const char *bwmon_owner;
+	const char *latency_owner;
 	const char *resume_replay_owner;
 	bool shared_resource;
 	bool private_context;
@@ -251,6 +272,55 @@ static const struct kona_media_owner_desc kona_stage9_camera_clients[] = {
 	  KONA_MEDIA_MIGRATION_BLOCKED,
 	  "firmware recovery plus CPAS fallback prevents exclusive handoff" },
 };
+
+/*
+ * Stage 10 NPU/NPUDSP ownership audit.  These logical endpoints are consumed
+ * by independent devbw and BWMON devices.  devbw prefers ICC but retains an
+ * msm_bus fallback, BWMON has its own keepalive ICC/msm_bus vote, and both
+ * layers restore state across resume.  The NPU driver also controls the three
+ * devbw devices and the static-map latency-floor device.  No NPU-private
+ * cmd-db name, apps/NPU RSC context, or atomic lifecycle handoff is described
+ * by DT.  Consequently these rows are diagnostics only: they must never be
+ * interpreted as packed BCM state or folded into the Stage 4 CPU aggregate.
+ */
+static const struct kona_npu_owner_desc kona_stage10_npu_clients[] = {
+	{ KONA_ICC_NPU_TO_LLCC, "npu-llcc", "npu",
+	  "NPU upstream unknown; SH0 shared downstream",
+	  KONA_PACKED_OWNER_NPU_DEVBW, "devbw and BWMON msm_bus clients",
+	  "NPU firmware selects performance; direct BCM/TCS ownership unproven",
+	  "npu-npu-llcc-bw", "npu-npu-llcc-bwmon", "none",
+	  "devfreq/BWMON resume and NPU driver reprobe", true, false, false,
+	  KONA_MEDIA_MIGRATION_BLOCKED,
+	  "private upstream BCM/context unproven; devbw/BWMON fallback and replay remain live" },
+	{ KONA_ICC_NPU_TO_MEM, "npu-ddr", "npu",
+	  "NPU upstream unknown; SH0/MC0/ACV shared downstream",
+	  KONA_PACKED_OWNER_NPU_DEVBW, "devbw msm_bus client",
+	  "NPU firmware selects performance; direct BCM/TCS ownership unproven",
+	  "npu-llcc-ddr-bw and npu-npu-ddr-latfloor",
+	  "npu-llcc-ddr-bwmon", "npu-staticmap-mon -> npu-npu-ddr-latfloor",
+	  "devfreq/BWMON resume, static-map update and NPU driver reprobe",
+	  true, false, false, KONA_MEDIA_MIGRATION_BLOCKED,
+	  "latency-floor is independent and shared DDR BCM ownership cannot be transferred" },
+	{ KONA_ICC_NPUDSP_TO_MEM, "npudsp-ddr", "npudsp",
+	  "NPUDSP upstream unknown; SH0/MC0/ACV shared downstream",
+	  KONA_PACKED_OWNER_NPUDSP, "devbw and BWMON msm_bus clients",
+	  "NPUDSP/CDSP lifecycle participates; direct BCM/TCS ownership unproven",
+	  "npudsp-npu-ddr-bw", "npudsp-npu-ddr-bwmon", "none",
+	  "devfreq/BWMON resume, NPU SSR/CDSP recovery and driver reprobe",
+	  true, false, false, KONA_MEDIA_MIGRATION_BLOCKED,
+	  "DSP recovery plus fallback can revive votes and no private BCM/context is proven" },
+};
+
+static const struct kona_npu_owner_desc *kona_npu_audit_desc(u32 id)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(kona_stage10_npu_clients); i++)
+		if (kona_stage10_npu_clients[i].logical_path == id)
+			return &kona_stage10_npu_clients[i];
+
+	return NULL;
+}
 
 static const struct kona_media_owner_desc *kona_camera_audit_desc(u32 id)
 {
@@ -5062,6 +5132,37 @@ static ssize_t physical_show(struct device *dev,
 			(unsigned long long)(valid ? requested_ab : 0),
 			(unsigned long long)(valid ? requested_ib : 0),
 			kona_display_raw_icc_enable, audit->blocked_reason);
+	}
+	{
+		const struct kona_npu_owner_desc *audit =
+			kona_npu_audit_desc(node->qp->nodes[node->index].id);
+		u64 requested_ab = node->qp->req_ab[node->index];
+		u64 requested_ib = node->qp->req_ib[node->index];
+		bool valid = requested_ab != U64_MAX && requested_ib != U64_MAX;
+
+		if (audit)
+			return sysfs_emit(buf,
+				"stage=10 family=%s endpoint=%s integration_state=logical-policy-only "
+				"physical_owner=%s devbw_owner=%s bwmon_owner=%s latency_owner=%s "
+				"firmware_owner=%s fallback_owner=%s resume_replay_owner=%s "
+				"candidate_cmd_db_resources=%s raw=%llu/%llu "
+				"requested_packed=unavailable committed_packed=unavailable "
+				"generation=0 submissions=0 retries=0 failures=0 fallback=active "
+				"last_error=0 fully_migrated=0 externally_blocked=1 "
+				"kona_physical_writes=0 ownership_audited=1 shared_resource=%u "
+				"private_context=%u exclusive_handoff_possible=%u "
+				"migration_status=blocked blocked_reason=%s\n",
+				audit->family, audit->endpoint,
+				audit->physical_owner == KONA_PACKED_OWNER_NPUDSP ?
+					"npudsp-devbw" : "npu-devbw",
+				audit->devbw_owner, audit->bwmon_owner,
+				audit->latency_owner, audit->firmware_owner,
+				audit->fallback_owner, audit->resume_replay_owner,
+				audit->candidate_bcms,
+				(unsigned long long)(valid ? requested_ab : 0),
+				(unsigned long long)(valid ? requested_ib : 0),
+				audit->shared_resource, audit->private_context,
+				audit->exclusive_handoff_possible, audit->blocked_reason);
 	}
 	{
 		const struct kona_media_owner_desc *audit =
