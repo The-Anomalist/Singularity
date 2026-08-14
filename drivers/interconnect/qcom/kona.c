@@ -79,6 +79,12 @@ enum kona_packed_owner {
 	KONA_PACKED_OWNER_NPU_DEVBW,
 	KONA_PACKED_OWNER_NPUDSP,
 	KONA_PACKED_OWNER_IPA_DRIVER,
+	KONA_PACKED_OWNER_USB_DRIVER,
+	KONA_PACKED_OWNER_PCIE_DRIVER,
+	KONA_PACKED_OWNER_PERIPHERAL_DRIVER,
+	KONA_PACKED_OWNER_CONFIG_CLIENTS,
+	KONA_PACKED_OWNER_MSM_BUS,
+	KONA_PACKED_OWNER_EXTERNAL_DRIVER,
 };
 
 enum kona_media_migration_status {
@@ -128,6 +134,21 @@ struct kona_ipa_owner_desc {
 	const char *firmware_owner;
 	const char *gsi_owner;
 	const char *pm_owner;
+	const char *resume_replay_owner;
+	bool shared_resource;
+	bool private_context;
+	bool exclusive_handoff_possible;
+	const char *blocked_reason;
+};
+
+struct kona_stage12_owner_desc {
+	u32 logical_path;
+	const char *endpoint;
+	const char *family;
+	const char *candidate_bcms;
+	const char *physical_owner;
+	const char *fallback_owner;
+	const char *firmware_owner;
 	const char *resume_replay_owner;
 	bool shared_resource;
 	bool private_context;
@@ -361,6 +382,58 @@ static const struct kona_ipa_owner_desc kona_stage11_ipa_clients[] = {
 	  "ipa_pm -> ipa3 performance index", "ipa3 clock enable, uC restart and reprobe",
 	  false, false, false, "IPA-core private BCM, packing, and restart-safe handoff are unproven" },
 };
+
+/*
+ * Stage 12 closes the remaining peripheral, config and helper endpoints.
+ * Candidate names describe topology only: no row proves a private cmd-db
+ * resource or enables a packed write.  The consuming drivers retain their
+ * ICC/msm_bus and PM/recovery lifecycles, while SH0/MC0/ACV and CN0/CN1 are
+ * shared downstream resources.
+ */
+static const struct kona_stage12_owner_desc kona_stage12_clients[] = {
+	{ KONA_ICC_CPU_TO_GPU_CFG, "cpu-gpu-cfg", "config", "CN0/CN1 (unproven)",
+	  "kgsl-gmu", "kgsl msm_bus", "gmu-firmware-tcs", "kgsl probe/resume/recovery",
+	  true, false, false, "GPU config is shared with the Stage-5 KGSL/GMU lifecycle" },
+	{ KONA_ICC_CPU_TO_PRNG, "cpu-prng", "helper", "CN0/CN1 (unproven)",
+	  "msm-rng", "msm-rng msm_bus", "none", "msm-rng probe/resume",
+	  true, false, false, "logical config alias has no proven private cmd-db resource" },
+	{ KONA_ICC_PAS_TO_MEM, "pas-ddr", "helper", "SN0/SH0/MC0/ACV (shared)",
+	  "subsys-pil-tz", "PIL msm_bus", "remoteproc/PAS firmware", "PIL proxy/SSR/reprobe",
+	  true, false, false, "multiple PAS clients and SSR replay retain ownership" },
+	{ KONA_ICC_USB0_TO_MEM, "usb0-ddr", "usb", "SN0/SN1/SH0/MC0/ACV (shared)",
+	  "dwc3-msm", "usb0 msm_bus", "none", "DWC3 role/runtime-PM resume",
+	  true, false, false, "controller keeps ICC/msm_bus fallback across role and PM transitions" },
+	{ KONA_ICC_USB1_TO_MEM, "usb1-ddr", "usb", "SN0/SN1/SH0/MC0/ACV (shared)",
+	  "dwc3-msm", "usb1 msm_bus", "none", "DWC3 role/runtime-PM resume",
+	  true, false, false, "controller keeps ICC/msm_bus fallback across role and PM transitions" },
+	{ KONA_ICC_QUP_TO_MEM, "qup-ddr", "qup", "CN0/SN0/SH0/MC0 (shared/unproven)",
+	  "GENI serial-engine clients", "per-client msm_bus where present", "none",
+	  "UART/I2C/SPI probe and runtime resume", true, false, false,
+	  "one logical alias is shared by many independently managed serial engines" },
+	{ KONA_ICC_PCIE0_TO_MEM, "pcie0-ddr", "pcie", "SN0/SN1/SH0/MC0/ACV (shared)",
+	  "pci-msm", "pcie0 msm_bus", "none", "PCIe link/runtime-PM/recovery",
+	  true, false, false, "host keeps ICC/msm_bus fallback and link recovery replay" },
+	{ KONA_ICC_PCIE1_TO_MEM, "pcie1-ddr", "pcie", "SN0/SN1/SH0/MC0/ACV (shared)",
+	  "pci-msm", "pcie1 msm_bus", "none", "PCIe link/runtime-PM/recovery",
+	  true, false, false, "host keeps ICC/msm_bus fallback and link recovery replay" },
+	{ KONA_ICC_PCIE2_TO_MEM, "pcie2-ddr", "pcie", "SN0/SN1/SH0/MC0/ACV (shared)",
+	  "pci-msm", "pcie2 msm_bus", "none", "PCIe link/runtime-PM/recovery",
+	  true, false, false, "host keeps ICC/msm_bus fallback and link recovery replay" },
+	{ KONA_ICC_TSIF_TO_MEM, "tsif-ddr", "peripheral", "SN0/SH0/MC0/ACV (shared)",
+	  "msm-tsif", "tsif msm_bus", "none", "TSIF/BAM probe and resume",
+	  true, false, false, "BAM data path and shared downstream BCM ownership remain external" },
+};
+
+static const struct kona_stage12_owner_desc *kona_stage12_audit_desc(u32 id)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(kona_stage12_clients); i++)
+		if (kona_stage12_clients[i].logical_path == id)
+			return &kona_stage12_clients[i];
+
+	return NULL;
+}
 
 static const struct kona_ipa_owner_desc *kona_ipa_audit_desc(u32 id)
 {
@@ -5304,6 +5377,31 @@ static ssize_t physical_show(struct device *dev,
 				(unsigned long long)(valid ? requested_ab : 0),
 				(unsigned long long)(valid ? requested_ib : 0),
 				audit->shared_resource,
+				audit->exclusive_handoff_possible, audit->blocked_reason);
+	}
+	{
+		const struct kona_stage12_owner_desc *audit =
+			kona_stage12_audit_desc(node->qp->nodes[node->index].id);
+		u64 requested_ab = node->qp->req_ab[node->index];
+		u64 requested_ib = node->qp->req_ib[node->index];
+		bool valid = requested_ab != U64_MAX && requested_ib != U64_MAX;
+
+		if (audit)
+			return sysfs_emit(buf,
+				"stage=12 family=%s endpoint=%s integration_state=logical-policy-only "
+				"physical_owner=%s firmware_owner=%s fallback_owner=%s "
+				"resume_replay_owner=%s candidate_cmd_db_resources=%s raw=%llu/%llu "
+				"requested_packed=unavailable committed_packed=unavailable generation=0 "
+				"submissions=0 retries=0 failures=0 fallback=available last_error=0 "
+				"fully_migrated=0 externally_blocked=1 kona_physical_writes=0 "
+				"ownership_audited=1 shared_resource=%u private_context=%u "
+				"exclusive_handoff_possible=%u migration_status=blocked blocked_reason=%s\n",
+				audit->family, audit->endpoint, audit->physical_owner,
+				audit->firmware_owner, audit->fallback_owner,
+				audit->resume_replay_owner, audit->candidate_bcms,
+				(unsigned long long)(valid ? requested_ab : 0),
+				(unsigned long long)(valid ? requested_ib : 0),
+				audit->shared_resource, audit->private_context,
 				audit->exclusive_handoff_possible, audit->blocked_reason);
 	}
 	if (!kona_icc_is_cpu_memory_path(&node->qp->nodes[node->index]))
