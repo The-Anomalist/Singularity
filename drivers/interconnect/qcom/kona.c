@@ -84,6 +84,7 @@ enum kona_packed_owner {
 	KONA_PACKED_OWNER_PERIPHERAL_DRIVER,
 	KONA_PACKED_OWNER_CONFIG_CLIENTS,
 	KONA_PACKED_OWNER_MSM_BUS,
+	KONA_PACKED_OWNER_CRYPTO_MSM_BUS,
 	KONA_PACKED_OWNER_EXTERNAL_DRIVER,
 };
 
@@ -154,6 +155,31 @@ struct kona_stage12_owner_desc {
 	bool private_context;
 	bool exclusive_handoff_possible;
 	const char *blocked_reason;
+};
+
+struct kona_crypto_owner_desc {
+	u32 logical_path;
+	const char *endpoint;
+	const char *family;
+	const char *candidate_bcms;
+	enum kona_packed_owner physical_owner;
+	const char *bridge_owner;
+	const char *fallback_owner;
+	const char *firmware_owner;
+	const char *resume_replay_owner;
+	bool shared_resource;
+	bool private_context;
+	bool exclusive_handoff_possible;
+	const char *migration_status;
+	const char *blocked_reason;
+};
+
+static const struct kona_crypto_owner_desc kona_stage13_crypto = {
+	KONA_ICC_CRYPTO_TO_MEM, "crypto-ddr", "crypto", "CE0; downstream shared",
+	KONA_PACKED_OWNER_CRYPTO_MSM_BUS, "kona-ce0-msm_bus", "qcedev/qcrypto msm_bus",
+	"none proven", "kona-ce0-msm_bus", true, false, false,
+	"bridge-retained",
+	"CE0 cmd-db metadata and an exclusive apps-RSC handoff are not proven",
 };
 
 struct kona_packed_client_desc {
@@ -1100,9 +1126,30 @@ MODULE_PARM_DESC(kona_crypto_icc_enable,
 	"Expose CRYPTO ICC path while qcedev/qcrypto remain on legacy msm_bus");
 
 static bool kona_crypto_raw_icc_enable;
-module_param_named(kona_crypto_raw_icc_enable, kona_crypto_raw_icc_enable, bool, 0644);
+
+static int kona_param_set_crypto_raw(const char *val,
+				     const struct kernel_param *kp)
+{
+	bool enabled;
+	int ret = kstrtobool(val, &enabled);
+
+	if (ret)
+		return ret;
+	/* Stage 13: raw CE0 ownership cannot be made exclusive in this tree. */
+	if (enabled)
+		return -EPERM;
+	return param_set_bool(val, kp);
+}
+
+static const struct kernel_param_ops kona_crypto_raw_ops = {
+	.set = kona_param_set_crypto_raw,
+	.get = param_get_bool,
+};
+
+module_param_cb(kona_crypto_raw_icc_enable, &kona_crypto_raw_ops,
+		&kona_crypto_raw_icc_enable, 0644);
 MODULE_PARM_DESC(kona_crypto_raw_icc_enable,
-	"Program CRYPTO RPMh votes instead of accepting the ICC path as a no-op during bring-up");
+	"Deprecated Stage-13 raw CRYPTO writer (enabling is rejected to preserve CE0 exclusivity)");
 
 static bool kona_storage_raw_icc_enable;
 module_param_named(kona_storage_raw_icc_enable,
@@ -1137,8 +1184,8 @@ MODULE_PARM_DESC(kona_gmu_raw_icc_enable,
  * provider. Instead, bridge the CRYPTO ICC path to the exported msm-bus
  * client API so the existing Qualcomm RPMh/BCM backend encodes CE0 safely.
  */
-#define KONA_CRYPTO_CE0_MASTER          125
-#define KONA_CRYPTO_CE0_SLAVE           512
+#define KONA_CRYPTO_CE0_MASTER          MSM_BUS_MASTER_CRYPTO_CORE_0
+#define KONA_CRYPTO_CE0_SLAVE           MSM_BUS_SLAVE_EBI_CH0
 #define KONA_CRYPTO_CE0_BW_KBPS         393600ULL
 
 static bool kona_crypto_ce0_msm_bus_enable = true;
@@ -1190,6 +1237,13 @@ static DEFINE_MUTEX(kona_crypto_ce0_lock);
 static u32 kona_crypto_ce0_client;
 static bool kona_crypto_ce0_last_valid;
 static unsigned int kona_crypto_ce0_last_idx;
+static u64 kona_crypto_ce0_registrations;
+static u64 kona_crypto_ce0_updates;
+static u64 kona_crypto_ce0_unchanged_skips;
+static u64 kona_crypto_ce0_failures;
+static int kona_crypto_ce0_last_error;
+static u64 kona_crypto_ce0_last_requested_ab;
+static u64 kona_crypto_ce0_last_requested_ib;
 
 static bool kona_npu_raw_safe_mode = true;
 module_param_named(kona_npu_raw_safe_mode, kona_npu_raw_safe_mode, bool, 0644);
@@ -3478,10 +3532,14 @@ static int kona_icc_register_crypto_ce0_client(struct device *dev)
 	kona_crypto_ce0_client =
 		msm_bus_scale_register_client(&kona_crypto_ce0_pdata);
 	if (!kona_crypto_ce0_client) {
+		kona_crypto_ce0_failures++;
+		kona_crypto_ce0_last_error = -EPROBE_DEFER;
 		dev_warn(dev,
 			 "kona-icc: failed to register CRYPTO CE0 msm_bus client\n");
 		return -EPROBE_DEFER;
 	}
+	kona_crypto_ce0_registrations++;
+	kona_crypto_ce0_last_error = 0;
 
 	dev_info(dev,
 		 "kona-icc: registered CRYPTO CE0 msm_bus bridge client\n");
@@ -3497,14 +3555,19 @@ static int kona_icc_send_crypto_ce0_vote(struct kona_icc_provider *qp,
 
 	if (!kona_crypto_ce0_msm_bus_enable)
 		return 0;
+	if (ab == U64_MAX || ib == U64_MAX)
+		return -EINVAL;
 
 	mutex_lock(&kona_crypto_ce0_lock);
+	kona_crypto_ce0_last_requested_ab = ab;
+	kona_crypto_ce0_last_requested_ib = ib;
 
 	ret = kona_icc_register_crypto_ce0_client(dev);
 	if (ret)
 		goto out_unlock;
 
 	if (kona_crypto_ce0_last_valid && kona_crypto_ce0_last_idx == vote_idx) {
+		kona_crypto_ce0_unchanged_skips++;
 		ret = 0;
 		goto out_cache;
 	}
@@ -3512,6 +3575,8 @@ static int kona_icc_send_crypto_ce0_vote(struct kona_icc_provider *qp,
 	ret = msm_bus_scale_client_update_request(kona_crypto_ce0_client,
 						    vote_idx);
 	if (ret) {
+		kona_crypto_ce0_failures++;
+		kona_crypto_ce0_last_error = ret;
 		dev_warn_ratelimited(dev,
 			"kona-icc: CRYPTO CE0 msm_bus vote idx=%u failed ret=%d\n",
 			vote_idx, ret);
@@ -3520,6 +3585,8 @@ static int kona_icc_send_crypto_ce0_vote(struct kona_icc_provider *qp,
 
 	kona_crypto_ce0_last_idx = vote_idx;
 	kona_crypto_ce0_last_valid = true;
+	kona_crypto_ce0_updates++;
+	kona_crypto_ce0_last_error = 0;
 
 	if (kona_crypto_ce0_msm_bus_debug)
 		dev_info_ratelimited(dev,
@@ -5165,6 +5232,56 @@ static ssize_t physical_show(struct device *dev,
 
 	if (!node || !node->qp)
 		return -EINVAL;
+
+	if (kona_icc_is_crypto_path(&node->qp->nodes[node->index])) {
+		u64 requested_ab = node->qp->req_ab[node->index];
+		u64 requested_ib = node->qp->req_ib[node->index];
+		u64 raw_ab = requested_ab == U64_MAX ? 0 : requested_ab;
+		u64 raw_ib = requested_ib == U64_MAX ? 0 : requested_ib;
+		u64 registrations, updates, skips, failures, last_ab, last_ib;
+		unsigned int last_idx;
+		bool registered;
+		int last_error;
+
+		mutex_lock(&kona_crypto_ce0_lock);
+		registrations = kona_crypto_ce0_registrations;
+		updates = kona_crypto_ce0_updates;
+		skips = kona_crypto_ce0_unchanged_skips;
+		failures = kona_crypto_ce0_failures;
+		last_ab = kona_crypto_ce0_last_requested_ab;
+		last_ib = kona_crypto_ce0_last_requested_ib;
+		last_idx = kona_crypto_ce0_last_idx;
+		registered = !!kona_crypto_ce0_client;
+		last_error = kona_crypto_ce0_last_error;
+		mutex_unlock(&kona_crypto_ce0_lock);
+
+		return sysfs_emit(buf,
+			"stage=13 family=%s endpoint=%s integration_state=logical-bridge "
+			"physical_owner=ce0-msm_bus bridge_owner=%s fallback_owner=%s "
+			"firmware_owner=%s resume_replay_owner=%s candidate_cmd_db_resources=%s "
+			"raw=%llu/%llu bridge_enabled=%u bridge_registered=%u bridge_usecase=%u "
+			"bridge_registrations=%llu bridge_updates=%llu bridge_unchanged_skips=%llu "
+			"bridge_failures=%llu last_bridge_error=%d last_bridge_request=%llu/%llu "
+			"requested_packed=unavailable committed_packed=unavailable "
+			"kona_direct_physical_writes=0 ownership_audited=1 shared_resource=%u "
+			"private_context=%u exclusive_handoff_possible=%u migration_status=%s "
+			"blocked_reason=%s\n",
+			kona_stage13_crypto.family, kona_stage13_crypto.endpoint,
+			kona_stage13_crypto.bridge_owner, kona_stage13_crypto.fallback_owner,
+			kona_stage13_crypto.firmware_owner,
+			kona_stage13_crypto.resume_replay_owner,
+			kona_stage13_crypto.candidate_bcms,
+			(unsigned long long)raw_ab, (unsigned long long)raw_ib,
+			kona_crypto_ce0_msm_bus_enable, registered, last_idx,
+			(unsigned long long)registrations, (unsigned long long)updates,
+			(unsigned long long)skips, (unsigned long long)failures, last_error,
+			(unsigned long long)last_ab, (unsigned long long)last_ib,
+			kona_stage13_crypto.shared_resource,
+			kona_stage13_crypto.private_context,
+			kona_stage13_crypto.exclusive_handoff_possible,
+			kona_stage13_crypto.migration_status,
+			kona_stage13_crypto.blocked_reason);
+	}
 
 	if (kona_icc_is_gpu_path(&node->qp->nodes[node->index]) ||
 	    kona_icc_is_gmu_path(&node->qp->nodes[node->index])) {
