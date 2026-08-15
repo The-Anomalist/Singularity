@@ -43,13 +43,13 @@ EXPORT_SYMBOL_GPL(init_uts_ns);
 
 /* Singularity kernel identity banner */
 const char linux_banner[] =
-	"Singularity-Kernel by The_Anomalist | Linux " UTS_RELEASE
-	" | ST-18 CIP-134\n";
+	"Singularity Kernel by The_Anomalist | Linux " UTS_RELEASE
+	" | ST-16 CIP-133\n";
 
 const char *linux_banner_ptr = linux_banner;
 EXPORT_SYMBOL_GPL(linux_banner_ptr);
 
 const char linux_proc_banner[] =
-	"Singularity-Kernel by The_Anomalist | %s %s | ST16 CIP133\n";
+	"Singularity Kernel by The_Anomalist | %s %s | ST16 CIP133\n";
 
 BUILD_SALT;
