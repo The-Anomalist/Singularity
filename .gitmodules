@@ -1,0 +1,3 @@
+[submodule "KernelSU-Next"]
+	path = KernelSU-Next
+	url = https://github.com/The-Anomalist/KernelSU-Next.git
