@@ -247,10 +247,20 @@ struct irq_affinity_notify {
  *			the MSI(-X) vector space
  * @post_vectors:	Don't apply affinity to @post_vectors at end of
  *			the MSI(-X) vector space
+ * @nr_sets:		Number of independent affinity sets
+ * @set_size:		Number of vectors in each affinity set
+ * @calc_sets:		Optional callback to size the affinity sets
+ * @priv:		Private data for @calc_sets
  */
+#define IRQ_AFFINITY_MAX_SETS	4
+
 struct irq_affinity {
 	int	pre_vectors;
 	int	post_vectors;
+	unsigned int	nr_sets;
+	unsigned int	set_size[IRQ_AFFINITY_MAX_SETS];
+	void	(*calc_sets)(struct irq_affinity *affd, unsigned int nvecs);
+	void	*priv;
 };
 
 #if defined(CONFIG_SMP)
