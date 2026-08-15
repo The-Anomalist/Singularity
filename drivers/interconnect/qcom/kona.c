@@ -1123,7 +1123,7 @@ MODULE_PARM_DESC(kona_icc_stage,
 static bool kona_crypto_icc_enable = true;
 module_param_named(kona_crypto_icc_enable, kona_crypto_icc_enable, bool, 0644);
 MODULE_PARM_DESC(kona_crypto_icc_enable,
-	"Expose CRYPTO ICC path while qcedev/qcrypto remain on legacy msm_bus");
+	"Expose CRYPTO ICC path used by qcedev/qcrypto workload voting");
 
 static bool kona_crypto_raw_icc_enable;
 
@@ -1190,9 +1190,9 @@ MODULE_PARM_DESC(kona_gmu_raw_icc_enable,
 
 static bool kona_crypto_ce0_msm_bus_enable = true;
 module_param_named(kona_crypto_ce0_msm_bus_enable,
-		   kona_crypto_ce0_msm_bus_enable, bool, 0644);
+		   kona_crypto_ce0_msm_bus_enable, bool, 0444);
 MODULE_PARM_DESC(kona_crypto_ce0_msm_bus_enable,
-	"Bridge KONA_ICC_CRYPTO_TO_MEM votes to the legacy CE0 msm_bus BCM client");
+	"Read-only Stage-13 CE0 msm_bus bridge state (production enabled)");
 
 static bool kona_crypto_ce0_msm_bus_debug;
 module_param_named(kona_crypto_ce0_msm_bus_debug,
@@ -3550,7 +3550,15 @@ static int kona_icc_send_crypto_ce0_vote(struct kona_icc_provider *qp,
 					 unsigned int index, u64 ab, u64 ib)
 {
 	struct device *dev = qp->provider.dev;
-	unsigned int vote_idx = (ab || ib) ? 1 : 0;
+	/*
+	 * qcedev/qcrypto translate their legacy zero vector to 1/1 before
+	 * calling icc_set_bw().  That value is an ICC keepalive sentinel, not
+	 * crypto traffic.  Only the native active vector (or a larger aggregate)
+	 * may select the CE0 active usecase.
+	 */
+	unsigned int vote_idx =
+		(ab >= KONA_CRYPTO_CE0_BW_KBPS ||
+		 ib >= KONA_CRYPTO_CE0_BW_KBPS) ? 1 : 0;
 	int ret;
 
 	if (!kona_crypto_ce0_msm_bus_enable)
@@ -5257,7 +5265,9 @@ static ssize_t physical_show(struct device *dev,
 
 		return sysfs_emit(buf,
 			"stage=13 family=%s endpoint=%s integration_state=logical-bridge "
-			"physical_owner=ce0-msm_bus bridge_owner=%s fallback_owner=%s "
+			"logical_client_model=aggregated-msm_bus logical_clients=3 "
+			"physical_owner=msm_bus-rpmh-bcm physical_backend_writer=msm_bus "
+			"physical_backend_writers=1 bridge_owner=%s fallback_owner=%s "
 			"firmware_owner=%s resume_replay_owner=%s candidate_cmd_db_resources=%s "
 			"raw=%llu/%llu bridge_enabled=%u bridge_registered=%u bridge_usecase=%u "
 			"bridge_registrations=%llu bridge_updates=%llu bridge_unchanged_skips=%llu "
