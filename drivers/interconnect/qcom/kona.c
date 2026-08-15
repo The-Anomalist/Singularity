@@ -558,10 +558,15 @@ struct kona_icc_provider {
 	u64 packed_dry_run_skip_count;
 	u64 packed_aggregate_build_count;
 	u64 packed_aggregate_unchanged_skip_count;
+	u64 packed_aggregate_evaluation_count;
+	u64 packed_cpu_client_update_count;
+	u64 packed_forced_submission_count;
+	u64 packed_dynamic_submission_count;
 	u64 packed_config_generation;
 	u64 packed_observed_generation;
 	int last_packed_dry_run_error;
 	struct kona_packed_inputs packed_current_inputs;
+	struct kona_packed_inputs packed_dynamic_inputs;
 	struct kona_packed_inputs packed_last_dry_run_inputs;
 	struct kona_packed_inputs packed_last_real_inputs;
 	atomic64_t packed_update_generation;
@@ -724,6 +729,10 @@ static bool kona_packed_real_write_enable = true;
 static bool kona_packed_real_write_once;
 static bool kona_packed_real_write_rearm;
 static bool kona_packed_force_dirty;
+static bool kona_cpu_bcm_force_high;
+
+static int kona_param_get_cpu_bcm_stats(char *buffer,
+					 const struct kernel_param *kp);
 
 static int kona_param_set_packed_real_write_enable(const char *val,
 						    const struct kernel_param *kp)
@@ -878,6 +887,59 @@ static unsigned int kona_cpu_downvote_hold_ms = 40;
 module_param_named(cpu_downvote_hold_ms, kona_cpu_downvote_hold_ms, uint, 0644);
 MODULE_PARM_DESC(cpu_downvote_hold_ms,
 	"Minimum packed CPU BCM residency before a pure downvote (default: 40 ms)");
+
+static int kona_param_set_cpu_bcm_force_high(const char *val,
+					      const struct kernel_param *kp)
+{
+	struct kona_icc_provider *qp;
+	bool enabled;
+	unsigned int i;
+	int ret;
+
+	ret = kstrtobool(val, &enabled);
+	if (ret)
+		return ret;
+
+	mutex_lock(&kona_packed_param_lock);
+	if (enabled == kona_cpu_bcm_force_high)
+		goto unlock;
+	WRITE_ONCE(kona_cpu_bcm_force_high, enabled);
+	qp = kona_packed_provider;
+	if (qp && READ_ONCE(kona_packed_runtime_enable)) {
+		mutex_lock(&qp->vote_lock);
+		/* The override supersedes a pending downvote residency decision. */
+		qp->cpu_downvote_deadline = 0;
+		qp->cpu_downvote_expired = false;
+		cancel_delayed_work(&qp->cpu_downvote_work);
+		kona_icc_packed_force_generation(qp);
+		for (i = 0; i < qp->num_nodes; i++)
+			if (kona_icc_is_cpu_memory_path(&qp->nodes[i]))
+				kona_icc_mark_dirty(qp, i);
+		mutex_unlock(&qp->vote_lock);
+		kona_icc_queue_replay(qp, 0, enabled ?
+				      "cpu-bcm-force-high-on" :
+				      "cpu-bcm-force-high-off");
+	}
+unlock:
+	mutex_unlock(&kona_packed_param_lock);
+	return 0;
+}
+
+static const struct kernel_param_ops kona_cpu_bcm_force_high_ops = {
+	.set = kona_param_set_cpu_bcm_force_high,
+	.get = param_get_bool,
+};
+module_param_cb(cpu_bcm_force_high, &kona_cpu_bcm_force_high_ops,
+		&kona_cpu_bcm_force_high, 0644);
+MODULE_PARM_DESC(cpu_bcm_force_high,
+	"Diagnostic: force CPU SH4/SH0/MC0 active BCM X/Y to the valid 14-bit maximum");
+
+static const struct kernel_param_ops kona_cpu_bcm_stats_ops = {
+	.get = kona_param_get_cpu_bcm_stats,
+};
+module_param_cb(cpu_bcm_stats, &kona_cpu_bcm_stats_ops, NULL, 0444);
+MODULE_PARM_DESC(cpu_bcm_stats,
+	"Read-only packed CPU aggregate, BCM command, and update diagnostics");
 
 static int kona_param_set_packed_group_mask(const char *val,
 					     const struct kernel_param *kp)
@@ -3720,11 +3782,21 @@ static bool kona_icc_cpu_generic(u32 id)
 	return id == KONA_ICC_CPU_TO_LLCC || id == KONA_ICC_CPU_TO_MEM;
 }
 
+static void kona_icc_add_cpu_ab(u64 *total, u64 vote)
+{
+	if (U64_MAX - *total < vote)
+		*total = U64_MAX;
+	else
+		*total += vote;
+}
+
 static void kona_icc_cpu_endpoint_vote(struct kona_icc_provider *qp,
 				       bool memory, u64 *avg, u64 *peak)
 {
-	u64 generic_avg = 0, per_cpu_avg = 0, policy_avg = 0, policy_peak = 0;
+	u64 generic_avg = 0, per_cpu_avg = 0;
+	u64 generic_eff_avg = 0, per_cpu_eff_avg = 0;
 	u64 raw_peak = 0;
+	u64 policy_peak = 0;
 	unsigned int i;
 
 	for (i = 0; i < qp->num_nodes; i++) {
@@ -3740,19 +3812,26 @@ static void kona_icc_cpu_endpoint_vote(struct kona_icc_provider *qp,
 
 		raw_avg = qp->req_ab[i];
 		raw_ib = qp->req_ib[i];
-		if (kona_icc_cpu_generic(node->id))
+		if (kona_icc_cpu_generic(node->id)) {
 			generic_avg = max(generic_avg, raw_avg);
-		else if (U64_MAX - per_cpu_avg < raw_avg)
-			per_cpu_avg = U64_MAX;
-		else
-			per_cpu_avg += raw_avg;
+			generic_eff_avg = max(generic_eff_avg, qp->eff_ab[i]);
+		} else {
+			kona_icc_add_cpu_ab(&per_cpu_avg, raw_avg);
+			kona_icc_add_cpu_ab(&per_cpu_eff_avg, qp->eff_ab[i]);
+		}
 		raw_peak = max(raw_peak, raw_ib);
-		policy_avg = max(policy_avg, qp->eff_ab[i]);
 		policy_peak = max(policy_peak, qp->eff_ib[i]);
 	}
 
-	/* Generic and per-CPU paths overlap; never blindly add both views. */
-	*avg = max(max(generic_avg, per_cpu_avg), policy_avg);
+	/*
+	 * Generic and per-CPU paths are overlapping views, so do not add the
+	 * generic request to the per-CPU total.  Within the per-CPU view AB must
+	 * remain a sum after policy floors are applied, however.  Taking only the
+	 * largest eff_ab here collapsed simultaneous LITTLE and big/prime floors
+	 * into one cluster's vote whenever the source requests were IB-only.
+	 */
+	*avg = max(max(generic_avg, generic_eff_avg),
+		   max(per_cpu_avg, per_cpu_eff_avg));
 	*peak = max(raw_peak, policy_peak);
 }
 
@@ -3960,6 +4039,7 @@ static int kona_icc_commit_cpu_bcms(struct kona_icc_provider *qp,
 		const struct kona_qnode_vote *qnode = i == KONA_CPU_BCM_SH4 ?
 			&apps : i == KONA_CPU_BCM_SH0 ? &llcc : &ebi;
 		u64 requested_x, requested_y, raw_x, raw_y;
+		bool force_high = READ_ONCE(kona_cpu_bcm_force_high);
 
 		/* A masked group is neither attempted nor failed. */
 		if (!(mask & group))
@@ -3973,6 +4053,17 @@ static int kona_icc_commit_cpu_bcms(struct kona_icc_provider *qp,
 		}
 		requested_x = kona_icc_cpu_normalize(qnode->avg, bcm, qnode, true, &raw_x);
 		requested_y = kona_icc_cpu_normalize(qnode->peak, bcm, qnode, false, &raw_y);
+		/*
+		 * Preserve raw_x/raw_y as the dynamic calculation.  The override is
+		 * deliberately applied only at the final BCM construction boundary.
+		 * GENMASK(13, 0) is the complete, valid X/Y field defined by the RPMh
+		 * BCM wire format; it selects the highest representable normal vote,
+		 * without changing client accounting or command-db addressing.
+		 */
+		if (force_high) {
+			requested_x = KONA_BCM_VOTE_MASK;
+			requested_y = KONA_BCM_VOTE_MASK;
+		}
 		if (requested_x != bcm->requested_x || requested_y != bcm->requested_y ||
 		    raw_x != bcm->raw_x || raw_y != bcm->raw_y)
 			bcm->requested_generation++;
@@ -4042,6 +4133,12 @@ static int kona_icc_commit_cpu_bcms(struct kona_icc_provider *qp,
 	if (READ_ONCE(kona_packed_real_write_once))
 		qp->packed_real_write_consumed = true;
 	qp->packed_submission_count++;
+	if (READ_ONCE(kona_cpu_bcm_force_high))
+		qp->packed_forced_submission_count++;
+	else
+		qp->packed_dynamic_submission_count++;
+	for (i = 0; i < num_cmds; i++)
+		bcms[cmd_indices[i]].submission_count++;
 	/*
 	 * Do not call rpmh_invalidate() here.  It invalidates every cached active
 	 * and sleep set owned by the APPS RSC, while this transaction can rebuild
@@ -4208,8 +4305,11 @@ static int kona_icc_process_packed_aggregate(struct kona_icc_provider *qp,
 		return 0;
 
 	dry_run = READ_ONCE(kona_packed_dry_run);
+	qp->packed_aggregate_evaluation_count++;
 	kona_packed_snapshot_inputs(qp, &inputs);
-	if (!dry_run)
+	qp->packed_dynamic_inputs = inputs;
+	/* Force-high must not inherit or extend a lower-vote hold. */
+	if (!dry_run && !READ_ONCE(kona_cpu_bcm_force_high))
 		kona_icc_hold_cpu_downvote(qp, &inputs,
 					   &qp->packed_last_real_inputs);
 	qp->packed_current_inputs = inputs;
@@ -4902,6 +5002,8 @@ static int __kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 		return -EINVAL;
 
 	desc = &qp->nodes[index];
+	if (kona_icc_is_cpu_memory_path(desc))
+		qp->packed_cpu_client_update_count++;
 	KONA_VOTE_TRACE(qp, desc, "callback-entry", avg_bw, peak_bw);
 	KONA_VOTE_TRACE(qp, desc, "after-initialization", ab, ib);
 
@@ -5283,6 +5385,83 @@ static int kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	mutex_unlock(&qp->vote_lock);
 
 	return ret;
+}
+
+static int kona_param_get_cpu_bcm_stats(char *buffer,
+					 const struct kernel_param *kp)
+{
+	struct kona_icc_provider *qp;
+	struct kona_packed_inputs dynamic, effective;
+	ssize_t len = 0;
+	unsigned int i;
+
+	mutex_lock(&kona_packed_param_lock);
+	qp = kona_packed_provider;
+	if (!qp) {
+		len = scnprintf(buffer, PAGE_SIZE, "provider=unbound\n");
+		goto unlock_param;
+	}
+
+	mutex_lock(&qp->vote_lock);
+	dynamic = qp->packed_dynamic_inputs;
+	effective = qp->packed_current_inputs;
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"force_high=%u context=ACTIVE_ONLY vote_limit=%u "
+		"effective_source=%s "
+		"dynamic_llcc_avg_kBps=%llu dynamic_llcc_peak_kBps=%llu "
+		"dynamic_mem_avg_kBps=%llu dynamic_mem_peak_kBps=%llu\n"
+		"effective_llcc_avg_kBps=%llu effective_llcc_peak_kBps=%llu "
+		"effective_mem_avg_kBps=%llu effective_mem_peak_kBps=%llu\n"
+		"aggregate_evaluations=%llu aggregate_changes=%llu "
+		"aggregate_unchanged_skips=%llu cpu_client_updates=%llu "
+		"rpmh_submissions=%llu forced_submissions=%llu "
+		"dynamic_submissions=%llu replays=%d\n",
+		READ_ONCE(kona_cpu_bcm_force_high), KONA_BCM_VOTE_MASK,
+		READ_ONCE(kona_cpu_bcm_force_high) ?
+			"forced_final_bcm" : "dynamic",
+		(unsigned long long)dynamic.llcc_avg,
+		(unsigned long long)dynamic.llcc_peak,
+		(unsigned long long)dynamic.mem_avg,
+		(unsigned long long)dynamic.mem_peak,
+		(unsigned long long)effective.llcc_avg,
+		(unsigned long long)effective.llcc_peak,
+		(unsigned long long)effective.mem_avg,
+		(unsigned long long)effective.mem_peak,
+		(unsigned long long)qp->packed_aggregate_evaluation_count,
+		(unsigned long long)qp->packed_aggregate_build_count,
+		(unsigned long long)qp->packed_aggregate_unchanged_skip_count,
+		(unsigned long long)qp->packed_cpu_client_update_count,
+		(unsigned long long)qp->packed_submission_count,
+		(unsigned long long)qp->packed_forced_submission_count,
+		(unsigned long long)qp->packed_dynamic_submission_count,
+		atomic_read(&qp->replay_runs));
+
+	for (i = 0; i < KONA_CPU_BCM_COUNT && len < PAGE_SIZE; i++) {
+		struct kona_bcm_state *bcm = &qp->cpu_bcms[i];
+
+		len += scnprintf(buffer + len, PAGE_SIZE - len,
+			"%s addr=0x%08x vcd=%u unit_Bps=%u width=%u "
+			"dynamic_raw_x=%llu dynamic_raw_y=%llu "
+			"effective_x=%llu effective_y=%llu tcs_data=0x%08x "
+			"committed_x=%llu committed_y=%llu committed_data=0x%08x "
+			"submissions=%llu failures=%u retries=%u saturations=%u\n",
+			bcm->name, bcm->addr, bcm->vcd, bcm->unit, bcm->width,
+			(unsigned long long)bcm->raw_x,
+			(unsigned long long)bcm->raw_y,
+			(unsigned long long)bcm->requested_x,
+			(unsigned long long)bcm->requested_y,
+			bcm->requested_data,
+			(unsigned long long)bcm->committed_x,
+			(unsigned long long)bcm->committed_y,
+			bcm->committed_data,
+			(unsigned long long)bcm->submission_count,
+			bcm->failure_count, bcm->retry_count,
+			bcm->saturation_count);
+	}
+	mutex_unlock(&qp->vote_lock);
+unlock_param:
+	mutex_unlock(&kona_packed_param_lock);
+	return len;
 }
 
 static ssize_t ab_show(struct device *dev,

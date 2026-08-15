@@ -52,6 +52,7 @@ struct kona_bcm_state {
 	u32 retry_count;
 	u32 failure_count;
 	u32 saturation_count;
+	u64 submission_count;
 	int last_error;
 };
 
