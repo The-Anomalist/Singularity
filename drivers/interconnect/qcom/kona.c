@@ -594,6 +594,9 @@ struct kona_icc_provider {
 	unsigned long resume_jiffies;
 	u8 resume_phase;
 	struct delayed_work retry_work;
+	struct delayed_work cpu_downvote_work;
+	unsigned long cpu_downvote_deadline;
+	bool cpu_downvote_expired;
 	atomic_t deferred_votes;
 	atomic_t replay_runs;
 	atomic_t display_replay_skips;
@@ -871,6 +874,10 @@ MODULE_PARM_DESC(packed_runtime_enable,
 #define KONA_PACKED_REAL_WRITE_BLOCKED	1
 
 static unsigned int kona_packed_group_mask = KONA_PACKED_GROUP_ALL;
+static unsigned int kona_cpu_downvote_hold_ms = 40;
+module_param_named(cpu_downvote_hold_ms, kona_cpu_downvote_hold_ms, uint, 0644);
+MODULE_PARM_DESC(cpu_downvote_hold_ms,
+	"Minimum packed CPU BCM residency before a pure downvote (default: 40 ms)");
 
 static int kona_param_set_packed_group_mask(const char *val,
 					     const struct kernel_param *kp)
@@ -4116,6 +4123,69 @@ static void kona_icc_validate_vote(struct kona_icc_provider *qp,
 				   const struct kona_icc_node_desc *desc,
 				   u64 raw_ab, u64 raw_ib, u64 *ab, u64 *ib);
 
+static bool kona_packed_vote_increased(const struct kona_packed_inputs *new,
+				       const struct kona_packed_inputs *old)
+{
+	return new->llcc_avg > old->llcc_avg || new->llcc_peak > old->llcc_peak ||
+		new->mem_avg > old->mem_avg || new->mem_peak > old->mem_peak;
+}
+
+static bool kona_packed_vote_decreased(const struct kona_packed_inputs *new,
+				       const struct kona_packed_inputs *old)
+{
+	return new->llcc_avg < old->llcc_avg || new->llcc_peak < old->llcc_peak ||
+		new->mem_avg < old->mem_avg || new->mem_peak < old->mem_peak;
+}
+
+/*
+ * BWMON may report an idle sample between adjacent CPU bursts.  Upvotes must
+ * always reach RPMh immediately, but a pure downvote is held briefly so the
+ * shared GEM_NOC/LLCC/MC path does not restart from its idle corner for every
+ * burst.  The delayed replay guarantees eventual decay even if no client
+ * issues another request.
+ */
+static void kona_icc_hold_cpu_downvote(struct kona_icc_provider *qp,
+				       struct kona_packed_inputs *inputs,
+				       const struct kona_packed_inputs *committed)
+{
+	unsigned long delay;
+
+	if (!kona_cpu_downvote_hold_ms ||
+	    (!committed->llcc_avg && !committed->llcc_peak &&
+	     !committed->mem_avg && !committed->mem_peak))
+		return;
+
+	if (kona_packed_vote_increased(inputs, committed)) {
+		qp->cpu_downvote_deadline = 0;
+		qp->cpu_downvote_expired = false;
+		cancel_delayed_work(&qp->cpu_downvote_work);
+		return;
+	}
+
+	if (!kona_packed_vote_decreased(inputs, committed))
+		return;
+	if (qp->cpu_downvote_expired) {
+		qp->cpu_downvote_expired = false;
+		return;
+	}
+
+	if (!qp->cpu_downvote_deadline) {
+		qp->cpu_downvote_deadline = jiffies +
+			msecs_to_jiffies(kona_cpu_downvote_hold_ms);
+		delay = msecs_to_jiffies(kona_cpu_downvote_hold_ms);
+		mod_delayed_work(system_wq, &qp->cpu_downvote_work, delay);
+	}
+
+	if (time_before(jiffies, qp->cpu_downvote_deadline)) {
+		inputs->llcc_avg = max(inputs->llcc_avg, committed->llcc_avg);
+		inputs->llcc_peak = max(inputs->llcc_peak, committed->llcc_peak);
+		inputs->mem_avg = max(inputs->mem_avg, committed->mem_avg);
+		inputs->mem_peak = max(inputs->mem_peak, committed->mem_peak);
+	} else {
+		qp->cpu_downvote_deadline = 0;
+	}
+}
+
 static int kona_icc_process_packed_aggregate(struct kona_icc_provider *qp,
 						 bool *skip_legacy)
 {
@@ -4139,6 +4209,9 @@ static int kona_icc_process_packed_aggregate(struct kona_icc_provider *qp,
 
 	dry_run = READ_ONCE(kona_packed_dry_run);
 	kona_packed_snapshot_inputs(qp, &inputs);
+	if (!dry_run)
+		kona_icc_hold_cpu_downvote(qp, &inputs,
+					   &qp->packed_last_real_inputs);
 	qp->packed_current_inputs = inputs;
 	observed = dry_run ? &qp->packed_last_dry_run_inputs :
 		&qp->packed_last_real_inputs;
@@ -4714,6 +4787,25 @@ static bool kona_icc_replay_req_votes_phased(struct kona_icc_provider *qp)
 
 	/* Normal steady-state replay path. */
 	return kona_icc_replay_req_votes(qp);
+}
+
+static void kona_icc_cpu_downvote_workfn(struct work_struct *work)
+{
+	struct kona_icc_provider *qp =
+		container_of(to_delayed_work(work), struct kona_icc_provider,
+			     cpu_downvote_work);
+	unsigned int i;
+
+	mutex_lock(&qp->vote_lock);
+	qp->cpu_downvote_deadline = 0;
+	qp->cpu_downvote_expired = true;
+	kona_icc_packed_force_generation(qp);
+	for (i = 0; i < qp->num_nodes; i++)
+		if (kona_icc_is_cpu_memory_path(&qp->nodes[i]))
+			kona_icc_mark_dirty(qp, i);
+	mutex_unlock(&qp->vote_lock);
+
+	kona_icc_queue_replay(qp, 0, "cpu-downvote-hold-expired");
 }
 
 static void kona_icc_retry_workfn(struct work_struct *work)
@@ -5994,6 +6086,8 @@ static int kona_icc_probe(struct platform_device *pdev)
 
 
 	INIT_DELAYED_WORK(&qp->retry_work, kona_icc_retry_workfn);
+	INIT_DELAYED_WORK(&qp->cpu_downvote_work,
+			  kona_icc_cpu_downvote_workfn);
 	/* Use phased replay only after resume(); steady-state retries stay immediate. */
 	qp->resume_phase = 3;
 	atomic_set(&qp->deferred_votes, 0);
@@ -6185,6 +6279,7 @@ static int kona_icc_remove(struct platform_device *pdev)
 	mutex_unlock(&kona_packed_param_lock);
 
 	cancel_delayed_work_sync(&qp->retry_work);
+	cancel_delayed_work_sync(&qp->cpu_downvote_work);
 
 	if (qp->display_nb_registered) {
 		msm_drm_unregister_client(&qp->display_nb);
