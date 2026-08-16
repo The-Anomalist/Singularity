@@ -443,7 +443,7 @@ static struct sk_buff *sfb_dequeue(struct Qdisc *sch)
 	struct Qdisc *child = q->qdisc;
 	struct sk_buff *skb;
 
-	skb = child->dequeue(q->qdisc);
+	skb = qdisc_dequeue_peeked(child);
 
 	if (skb) {
 		qdisc_bstats_update(sch, skb);
@@ -596,7 +596,7 @@ static int sfb_dump(struct Qdisc *sch, struct sk_buff *skb)
 	};
 
 	sch->qstats.backlog = q->qdisc->qstats.backlog;
-	opts = nla_nest_start(skb, TCA_OPTIONS);
+	opts = nla_nest_start_noflag(skb, TCA_OPTIONS);
 	if (opts == NULL)
 		goto nla_put_failure;
 	if (nla_put(skb, TCA_SFB_PARMS, sizeof(opt), &opt))

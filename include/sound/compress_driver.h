@@ -155,7 +155,6 @@ struct snd_compr {
 /* compress device register APIs */
 int snd_compress_new(struct snd_card *card, int device,
 			int type, const char *id, struct snd_compr *compr);
-void snd_compress_free(struct snd_card *card, struct snd_compr *compr);
 
 /* dsp driver callback apis
  * For playback: driver should call snd_compress_fragment_elapsed() to let the

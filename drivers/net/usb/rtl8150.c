@@ -704,7 +704,8 @@ static netdev_tx_t rtl8150_start_xmit(struct sk_buff *skb,
 {
 	rtl8150_t *dev = netdev_priv(netdev);
 	unsigned int skb_len;
-	int count, res;
+	int res;
+	unsigned int count;
 
 	/* pad the frame and ensure terminating USB packet, datasheet 9.2.3 */
 	count = max_t(unsigned int, skb->len, ETH_ZLEN);
