@@ -111,17 +111,12 @@ static int susfs_update_sus_path_inode(char *target_pathname) {
 	return 0;
 }
 
-int susfs_add_sus_path(struct st_susfs_sus_path* __user user_info) {
-	struct st_susfs_sus_path info;
+static int susfs_add_sus_path_impl(struct st_susfs_sus_path info) {
 	struct st_susfs_sus_path_hlist *new_entry, *tmp_entry;
 	struct hlist_node *tmp_node;
 	int bkt;
 	bool update_hlist = false;
 
-	if (copy_from_user(&info, user_info, sizeof(info))) {
-		SUSFS_LOGE("failed copying from userspace\n");
-		return 1;
-	}
 
 	susfs_terminate_path(info.target_pathname);
 	spin_lock(&susfs_spin_lock);
@@ -159,6 +154,47 @@ int susfs_add_sus_path(struct st_susfs_sus_path* __user user_info) {
 	}
 	spin_unlock(&susfs_spin_lock);
 	return 0;
+}
+
+int susfs_add_sus_path(struct st_susfs_sus_path* __user user_info)
+{
+	struct st_susfs_sus_path info;
+
+	if (copy_from_user(&info, user_info, sizeof(info))) {
+		SUSFS_LOGE("failed copying from userspace\n");
+		return 1;
+	}
+
+	return susfs_add_sus_path_impl(info);
+}
+
+int susfs_add_sus_path_from_kernel(const char *pathname)
+{
+	struct st_susfs_sus_path info = { 0 };
+	struct path path;
+	struct inode *inode;
+	int err;
+
+	if (!pathname || !pathname[0])
+		return 1;
+
+	strscpy(info.target_pathname, pathname, sizeof(info.target_pathname));
+	err = kern_path(info.target_pathname, LOOKUP_FOLLOW, &path);
+	if (err) {
+		SUSFS_LOGE("Failed opening file '%s'\n", info.target_pathname);
+		return 1;
+	}
+
+	inode = d_inode(path.dentry);
+	if (!inode) {
+		path_put(&path);
+		SUSFS_LOGE("inode is NULL\n");
+		return 1;
+	}
+
+	info.target_ino = inode->i_ino;
+	path_put(&path);
+	return susfs_add_sus_path_impl(info);
 }
 
 int susfs_sus_ino_for_filldir64(unsigned long ino) {
@@ -383,17 +419,12 @@ static int susfs_update_sus_kstat_inode(char *target_pathname) {
 	return 0;
 }
 
-int susfs_add_sus_kstat(struct st_susfs_sus_kstat* __user user_info) {
-	struct st_susfs_sus_kstat info;
+static int susfs_add_sus_kstat_impl(struct st_susfs_sus_kstat info) {
 	struct st_susfs_sus_kstat_hlist *new_entry, *tmp_entry;
 	struct hlist_node *tmp_node;
 	int bkt;
 	bool update_hlist = false;
 
-	if (copy_from_user(&info, user_info, sizeof(info))) {
-		SUSFS_LOGE("failed copying from userspace\n");
-		return 1;
-	}
 
 	susfs_terminate_path(info.target_pathname);
 	if (strlen(info.target_pathname) == 0) {
@@ -479,17 +510,30 @@ int susfs_add_sus_kstat(struct st_susfs_sus_kstat* __user user_info) {
 	return 0;
 }
 
-int susfs_update_sus_kstat(struct st_susfs_sus_kstat* __user user_info) {
-	struct st_susfs_sus_kstat info, old_info;
+int susfs_add_sus_kstat(struct st_susfs_sus_kstat* __user user_info)
+{
+	struct st_susfs_sus_kstat info;
+	if (copy_from_user(&info, user_info, sizeof(info))) {
+		SUSFS_LOGE("failed copying from userspace\n");
+		return 1;
+	}
+	return susfs_add_sus_kstat_impl(info);
+}
+
+int susfs_add_sus_kstat_from_kernel(const struct st_susfs_sus_kstat *info)
+{
+	if (!info)
+		return 1;
+	return susfs_add_sus_kstat_impl(*info);
+}
+
+static int susfs_update_sus_kstat_impl(struct st_susfs_sus_kstat info) {
+	struct st_susfs_sus_kstat old_info;
 	struct st_susfs_sus_kstat_hlist *new_entry, *tmp_entry;
 	struct hlist_node *tmp_node;
 	int bkt;
 	bool found = false;
 
-	if (copy_from_user(&info, user_info, sizeof(info))) {
-		SUSFS_LOGE("failed copying from userspace\n");
-		return 1;
-	}
 	susfs_terminate_path(info.target_pathname);
 
 	spin_lock(&susfs_spin_lock);
@@ -544,6 +588,23 @@ int susfs_update_sus_kstat(struct st_susfs_sus_kstat* __user user_info) {
 
 	kfree(new_entry);
 	return 0;
+}
+
+int susfs_update_sus_kstat(struct st_susfs_sus_kstat* __user user_info)
+{
+	struct st_susfs_sus_kstat info;
+	if (copy_from_user(&info, user_info, sizeof(info))) {
+		SUSFS_LOGE("failed copying from userspace\n");
+		return 1;
+	}
+	return susfs_update_sus_kstat_impl(info);
+}
+
+int susfs_update_sus_kstat_from_kernel(const struct st_susfs_sus_kstat *info)
+{
+	if (!info)
+		return 1;
+	return susfs_update_sus_kstat_impl(*info);
 }
 
 void susfs_sus_ino_for_generic_fillattr(unsigned long ino, struct kstat *stat) {
