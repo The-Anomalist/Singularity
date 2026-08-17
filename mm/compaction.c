@@ -2525,12 +2525,23 @@ static inline bool kcompactd_work_requested(pg_data_t *pgdat)
 #define HPAGE_FRAG_CHECK_INTERVAL_MSEC	500
 
 /*
+ * HPAGE_PMD_ORDER deliberately expands to BUILD_BUG() when transparent huge
+ * pages are disabled.  Proactive compaction can still use the architecture's
+ * PMD-sized order in that configuration.
+ */
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+#define COMPACTION_HPAGE_ORDER	HPAGE_PMD_ORDER
+#else
+#define COMPACTION_HPAGE_ORDER	(PMD_SHIFT - PAGE_SHIFT)
+#endif
+
+/*
  * Return a 0..100 score. A higher value means that free memory is more
  * fragmented for a transparent-huge-page-sized allocation.
  */
 static unsigned int fragmentation_score_zone(struct zone *zone)
 {
-	int score = fragmentation_index(zone, HPAGE_PMD_ORDER);
+	int score = fragmentation_index(zone, COMPACTION_HPAGE_ORDER);
 
 	return score < 0 ? 0 : min(score / 10, 100);
 }
