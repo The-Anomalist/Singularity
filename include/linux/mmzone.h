@@ -853,9 +853,14 @@ static inline bool is_dev_zone(const struct zone *zone)
  * populated_zone(). If the whole zone is reserved then we can easily
  * end up with populated_zone() && !managed_zone().
  */
-static inline bool managed_zone(struct zone *zone)
+static inline unsigned long zone_managed_pages(struct zone *zone)
 {
 	return zone->managed_pages;
+}
+
+static inline bool managed_zone(struct zone *zone)
+{
+	return zone_managed_pages(zone);
 }
 
 /* Returns true if a zone has memory */
