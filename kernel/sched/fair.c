@@ -7522,11 +7522,11 @@ static unsigned long cpu_util_next(int cpu, struct task_struct *p, int dst_cpu)
 
 #ifdef CONFIG_SCHED_WALT
 static inline unsigned long
-cpu_util_next_walt(int cpu, struct task_struct *p, int dst_cpu)
+__cpu_util_next_walt(int cpu, struct task_struct *p, int dst_cpu,
+		     unsigned long p_util, bool queued)
 {
 	unsigned long util =
 			cpu_rq(cpu)->walt_stats.cumulative_runnable_avg_scaled;
-	bool queued = task_on_rq_queued(p);
 
 	/*
 	 * When task is queued,
@@ -7552,15 +7552,22 @@ cpu_util_next_walt(int cpu, struct task_struct *p, int dst_cpu)
 	if (unlikely(queued)) {
 		if (task_cpu(p) == cpu) {
 			if (dst_cpu != cpu)
-				util = max_t(long, util - task_util(p), 0);
+				util = max_t(long, util - p_util, 0);
 		} else if (dst_cpu == cpu) {
-			util += task_util(p);
+			util += p_util;
 		}
 	} else if (dst_cpu == cpu) {
-		util += task_util(p);
+		util += p_util;
 	}
 
 	return min_t(unsigned long, util, capacity_orig_of(cpu));
+}
+
+static inline unsigned long
+cpu_util_next_walt(int cpu, struct task_struct *p, int dst_cpu)
+{
+	return __cpu_util_next_walt(cpu, p, dst_cpu, task_util(p),
+				    task_on_rq_queued(p));
 }
 #endif
 
@@ -7577,6 +7584,11 @@ compute_energy(struct task_struct *p, int dst_cpu, struct perf_domain *pd)
 	unsigned int max_util, cpu_util, cpu_cap;
 	unsigned long sum_util, energy = 0;
 	int cpu;
+#ifdef CONFIG_SCHED_WALT
+	/* These values are invariant across every CPU in the EM walk. */
+	unsigned long p_util = task_util(p);
+	bool queued = task_on_rq_queued(p);
+#endif
 
 	/* Evaluate the complete post-placement energy landscape. */
 	for (; pd; pd = pd->next) {
@@ -7601,7 +7613,8 @@ compute_energy(struct task_struct *p, int dst_cpu, struct perf_domain *pd)
 		 */
 		for_each_cpu_and(cpu, pd_mask, cpu_online_mask) {
 #ifdef CONFIG_SCHED_WALT
-			cpu_util = cpu_util_next_walt(cpu, p, dst_cpu);
+			cpu_util = __cpu_util_next_walt(cpu, p, dst_cpu,
+						p_util, queued);
 			sum_util += cpu_util;
 #else
 			unsigned int util_cfs;
