@@ -164,6 +164,7 @@ int susfs_sus_path_by_path(const struct path *path, int *error, int syscall_fami
 /* sus_mount */
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 int susfs_add_sus_mount(struct st_susfs_sus_mount* __user user_info);
+int susfs_add_sus_mount_from_kernel(const struct st_susfs_sus_mount *info);
 #ifdef CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
 int susfs_auto_add_sus_bind_mount(const char *pathname, struct path *path_target);
 #endif // #ifdef CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
@@ -185,6 +186,7 @@ void susfs_sus_kstat(unsigned long ino, struct stat *stat);
 /* try_umount */
 #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
 int susfs_add_try_umount(struct st_susfs_try_umount* __user user_info);
+int susfs_add_try_umount_from_kernel(const struct st_susfs_try_umount *info);
 void susfs_try_umount(uid_t target_uid);
 #ifdef CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
 void susfs_auto_add_try_umount_for_bind_mount(struct path *path);
@@ -193,6 +195,7 @@ void susfs_auto_add_try_umount_for_bind_mount(struct path *path);
 /* spoof_uname */
 #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
 int susfs_set_uname(struct st_susfs_uname* __user user_info);
+int susfs_set_uname_from_kernel(const struct st_susfs_uname *info);
 void susfs_spoof_uname(struct new_utsname* tmp);
 #endif
 /* set_log */
@@ -202,11 +205,13 @@ void susfs_set_log(bool enabled);
 /* spoof_cmdline_or_bootconfig */
 #ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
 int susfs_set_cmdline_or_bootconfig(char* __user user_fake_boot_config);
+int susfs_set_cmdline_or_bootconfig_from_kernel(const char *fake_cmdline_or_bootconfig);
 int susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);
 #endif
 /* open_redirect */
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 int susfs_add_open_redirect(struct st_susfs_open_redirect* __user user_info);
+int susfs_add_open_redirect_from_kernel(const struct st_susfs_open_redirect *info);
 struct filename* susfs_get_redirected_path(unsigned long ino);
 #endif
 /* sus_su */
