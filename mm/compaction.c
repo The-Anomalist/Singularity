@@ -2326,6 +2326,7 @@ static enum compact_result compact_zone_order(struct zone *zone, int order,
 }
 
 int sysctl_extfrag_threshold = 500;
+int sysctl_compaction_proactiveness = 20;
 
 /**
  * try_to_compact_pages - Direct compact to satisfy a high-order allocation
@@ -2467,6 +2468,26 @@ int sysctl_extfrag_handler(struct ctl_table *table, int write,
 	return 0;
 }
 
+int compaction_proactiveness_sysctl_handler(struct ctl_table *table, int write,
+		void __user *buffer, size_t *length, loff_t *ppos)
+{
+	int ret;
+
+	ret = proc_dointvec_minmax(table, write, buffer, length, ppos);
+	if (ret || !write)
+		return ret;
+
+	/* Apply a new policy immediately instead of waiting for the timer. */
+	if (sysctl_compaction_proactiveness) {
+		int nid;
+
+		for_each_online_node(nid)
+			wake_up_interruptible(&NODE_DATA(nid)->kcompactd_wait);
+	}
+
+	return 0;
+}
+
 #if defined(CONFIG_SYSFS) && defined(CONFIG_NUMA)
 static ssize_t sysfs_compact_node(struct device *dev,
 			struct device_attribute *attr,
@@ -2499,6 +2520,76 @@ void compaction_unregister_node(struct node *node)
 static inline bool kcompactd_work_requested(pg_data_t *pgdat)
 {
 	return pgdat->kcompactd_max_order > 0 || kthread_should_stop();
+}
+
+#define HPAGE_FRAG_CHECK_INTERVAL_MSEC	500
+
+/*
+ * Return a 0..100 score. A higher value means that free memory is more
+ * fragmented for a transparent-huge-page-sized allocation.
+ */
+static unsigned int fragmentation_score_zone(struct zone *zone)
+{
+	int score = fragmentation_index(zone, HPAGE_PMD_ORDER);
+
+	return score < 0 ? 0 : min(score / 10, 100);
+}
+
+static unsigned int fragmentation_score_node(pg_data_t *pgdat)
+{
+	unsigned long score = 0, total = 0;
+	int zoneid;
+
+	for (zoneid = 0; zoneid < MAX_NR_ZONES; zoneid++) {
+		struct zone *zone = &pgdat->node_zones[zoneid];
+		unsigned long managed = zone_managed_pages(zone);
+
+		if (!managed)
+			continue;
+		score += fragmentation_score_zone(zone) * managed;
+		total += managed;
+	}
+
+	return total ? div64_ul(score, total) : 0;
+}
+
+static bool should_proactive_compact_node(pg_data_t *pgdat)
+{
+	unsigned int high;
+
+	if (!sysctl_compaction_proactiveness)
+		return false;
+
+	high = 100 - sysctl_compaction_proactiveness;
+	high = min(high + 10, 100U);
+	return fragmentation_score_node(pgdat) > high;
+}
+
+static void proactive_compact_node(pg_data_t *pgdat)
+{
+	unsigned int low = 100 - sysctl_compaction_proactiveness;
+	struct compact_control cc = {
+		.order = -1,
+		.mode = MIGRATE_SYNC_LIGHT,
+		.ignore_skip_hint = true,
+		.whole_zone = true,
+		.gfp_mask = GFP_KERNEL,
+	};
+	int zoneid;
+
+	for (zoneid = 0; zoneid < MAX_NR_ZONES; zoneid++) {
+		struct zone *zone = &pgdat->node_zones[zoneid];
+
+		if (!populated_zone(zone) || fragmentation_score_zone(zone) <= low)
+			continue;
+		if (kthread_should_stop())
+			return;
+
+		cc.zone = zone;
+		compact_zone(&cc, NULL);
+		VM_BUG_ON(!list_empty(&cc.freepages));
+		VM_BUG_ON(!list_empty(&cc.migratepages));
+	}
 }
 
 static bool kcompactd_node_suitable(pg_data_t *pgdat)
@@ -2646,13 +2737,21 @@ static int kcompactd(void *p)
 
 	while (!kthread_should_stop()) {
 		unsigned long pflags;
+		long timeout = msecs_to_jiffies(HPAGE_FRAG_CHECK_INTERVAL_MSEC);
 
 		trace_mm_compaction_kcompactd_sleep(pgdat->node_id);
-		wait_event_freezable(pgdat->kcompactd_wait,
-				kcompactd_work_requested(pgdat));
+		if (sysctl_compaction_proactiveness)
+			wait_event_freezable_timeout(pgdat->kcompactd_wait,
+					kcompactd_work_requested(pgdat), timeout);
+		else
+			wait_event_freezable(pgdat->kcompactd_wait,
+					kcompactd_work_requested(pgdat));
 
 		psi_memstall_enter(&pflags);
-		kcompactd_do_work(pgdat);
+		if (kcompactd_work_requested(pgdat))
+			kcompactd_do_work(pgdat);
+		if (should_proactive_compact_node(pgdat))
+			proactive_compact_node(pgdat);
 		psi_memstall_leave(&pflags);
 	}
 
