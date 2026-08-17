@@ -1465,10 +1465,6 @@ static bool kona_icc_is_policy_suppressed_path(const struct kona_icc_node_desc *
 #define KONA_NPU_DDR_IB_FLOOR_KB	(48000000ULL) /* 48 GB/s */
 #define KONA_NPU_LLCC_AB_FLOOR_KB	(3000000ULL)  /* 3 GB/s */
 #define KONA_NPU_LLCC_IB_FLOOR_KB	(56000000ULL) /* 56 GB/s */
-#define KONA_MEDIA_DDR_AB_FLOOR_KB	(4000000ULL)  /* 4 GB/s */
-#define KONA_MEDIA_DDR_IB_FLOOR_KB	(48000000ULL) /* 48 GB/s */
-#define KONA_MEDIA_LLCC_AB_FLOOR_KB	(3000000ULL)  /* 3 GB/s */
-#define KONA_MEDIA_LLCC_IB_FLOOR_KB	(56000000ULL) /* 56 GB/s */
 #define KONA_UX_DDR_AB_FLOOR_KB	(4000000ULL)  /* 4 GB/s */
 #define KONA_UX_DDR_IB_FLOOR_KB	(56000000ULL) /* 56 GB/s */
 /*
@@ -1532,6 +1528,8 @@ static unsigned long kona_perf_turbo_kb = 6000000;  /* 6 GB/s */
 static bool kona_perf_sustain_boost_enable = true;
 static unsigned long kona_perf_sustain_kb = 2000000; /* 2 GB/s */
 static unsigned int kona_perf_sustain_extra_bias = 15;
+/* Media governors already calculate codec bandwidth; add only a small margin. */
+static unsigned int kona_media_perf_bias = 105;
 module_param(kona_perf_bias, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias,
         "Percent headroom added on CPU/DDR/LLCC/GPU/NPU paths (default: 120)");
@@ -1556,6 +1554,9 @@ MODULE_PARM_DESC(kona_perf_sustain_kb,
 module_param(kona_perf_sustain_extra_bias, uint, 0644);
 MODULE_PARM_DESC(kona_perf_sustain_extra_bias,
 	"Additional headroom percent added above sustained-performance threshold");
+module_param(kona_media_perf_bias, uint, 0644);
+MODULE_PARM_DESC(kona_media_perf_bias,
+		 "Percent headroom applied to media requests without synthetic bandwidth floors (default: 105)");
 
 /*
  * GPU keep-alive floor and IB prioritization for gpu-ddr path.
@@ -2174,7 +2175,6 @@ static unsigned int kona_icc_pick_bias(const struct kona_icc_node_desc *desc,
         case KONA_ROLE_GPU:
         case KONA_ROLE_NPU:
         case KONA_ROLE_DSP:
-        case KONA_ROLE_MEDIA:
                 if (vote >= kona_perf_turbo_kb)
                         bias = kona_perf_bias_turbo;
                 else if (vote <= kona_perf_light_kb)
@@ -2182,6 +2182,10 @@ static unsigned int kona_icc_pick_bias(const struct kona_icc_node_desc *desc,
                 else
                         bias = kona_perf_bias;
                 break;
+	case KONA_ROLE_MEDIA:
+		/* Preserve the media driver's workload-proportional bandwidth vote. */
+		bias = clamp_val(kona_media_perf_bias, 100, 125);
+		break;
         case KONA_ROLE_CPU_PRIME:
                 if (vote >= kona_perf_turbo_kb)
                         bias = kona_perf_bias_turbo;
@@ -2197,7 +2201,7 @@ static unsigned int kona_icc_pick_bias(const struct kona_icc_node_desc *desc,
         }
 
 	if (kona_perf_sustain_boost_enable && vote >= kona_perf_sustain_kb &&
-	    desc->role != KONA_ROLE_DISPLAY)
+	    desc->role != KONA_ROLE_DISPLAY && desc->role != KONA_ROLE_MEDIA)
 		bias = min_t(unsigned int, bias + kona_perf_sustain_extra_bias, 200);
 
 	return bias;
@@ -2356,7 +2360,7 @@ static bool kona_icc_has_aux_cpu_backing(const struct kona_icc_node_desc *desc)
 	case KONA_ROLE_IPA:
 		return true;
 	case KONA_ROLE_MEDIA:
-		/* Video paths have dedicated floors; camera/config paths use CPU BCMs. */
+		/* Video data votes are direct; camera/config paths use CPU BCMs. */
 		return desc->id != KONA_ICC_VIDEO_TO_MEM &&
 		       desc->id != KONA_ICC_VIDEO_TO_LLCC;
 	default:
@@ -2487,10 +2491,7 @@ kona_icc_calculate_floor(struct kona_icc_provider *qp,
 			kona_icc_apply_cpu_ib_headroom(false, false, ab, ib);
 		break;
 	case KONA_ICC_VIDEO_TO_MEM:
-		if (active && *ab < KONA_MEDIA_DDR_AB_FLOOR_KB)
-			*ab = KONA_MEDIA_DDR_AB_FLOOR_KB;
-		if (active && *ib < KONA_MEDIA_DDR_IB_FLOOR_KB)
-			*ib = KONA_MEDIA_DDR_IB_FLOOR_KB;
+		/* Venus computes this vote from stream dimensions and frame rate. */
 		break;
 	case KONA_ICC_UFS_TO_MEM:
 	case KONA_ICC_SDHC2_TO_MEM:
@@ -2515,10 +2516,7 @@ kona_icc_calculate_floor(struct kona_icc_provider *qp,
 			*ib = mul_u64_u32_div(*ab, kona_storage_ib_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_VIDEO_CFG:
-		if (active && *ab < KONA_MEDIA_DDR_AB_FLOOR_KB)
-			*ab = KONA_MEDIA_DDR_AB_FLOOR_KB;
-		if (active && *ib < KONA_MEDIA_DDR_IB_FLOOR_KB)
-			*ib = KONA_MEDIA_DDR_IB_FLOOR_KB;
+		/* Configuration traffic needs no multi-GB/s data-path floor. */
 		break;
 	case KONA_ICC_DISP_CFG:
 		/*
@@ -2639,10 +2637,7 @@ kona_icc_calculate_floor(struct kona_icc_provider *qp,
 				     kona_npu_ib_min_ratio_percent, 100);
 		break;
 	case KONA_ICC_VIDEO_TO_LLCC:
-		if (active && *ab < KONA_MEDIA_LLCC_AB_FLOOR_KB)
-			*ab = KONA_MEDIA_LLCC_AB_FLOOR_KB;
-		if (active && *ib < KONA_MEDIA_LLCC_IB_FLOOR_KB)
-			*ib = KONA_MEDIA_LLCC_IB_FLOOR_KB;
+		/* Keep the governor's LLCC request workload-proportional too. */
 		break;
 	case KONA_ICC_GPU_TO_MEM:
 		if (gpu_pin_active) {
