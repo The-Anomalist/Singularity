@@ -85,10 +85,16 @@ module_param(upclock_bus_boost, uint, 0644);
 MODULE_PARM_DESC(upclock_bus_boost,
 	"Additional bus vote steps to apply while ramping GPU clocks up");
 
-static bool enable_midframe_timer;
+/*
+ * Newer KGSL releases sample long-running submissions before retirement so
+ * DCVS does not have to wait for the next draw boundary to see sustained
+ * load.  Keep the feature enabled by default on this older kernel as well;
+ * the timer only remains armed while the GPU has active contexts.
+ */
+static bool enable_midframe_timer = true;
 module_param_named(midframe_timer, enable_midframe_timer, bool, 0644);
 MODULE_PARM_DESC(midframe_timer,
-		 "Enable KGSL mid-frame devfreq sampling for faster active-workload DCVS (default: off)");
+		 "Enable KGSL mid-frame devfreq sampling for faster active-workload DCVS (default: on)");
 
 static uint midframe_timer_us = 16000;
 module_param(midframe_timer_us, uint, 0644);
@@ -1262,8 +1268,16 @@ int kgsl_pwrscale_init(struct device *dev, const char *governor)
 		clamp_t(unsigned int, pwrscale->wakeup_boost_pwrlevel,
 			pwr->max_pwrlevel, pwr->min_pwrlevel);
 
-	use_midframe_timer = enable_midframe_timer ||
-		of_property_read_bool(node, "qcom,enable-midframe-timer");
+	/*
+	 * Preserve the downstream opt-in property for existing device trees and
+	 * provide an explicit escape hatch for platforms where the extra sample
+	 * is undesirable.  The disable property wins over both the default and
+	 * the legacy enable property.
+	 */
+	use_midframe_timer = !of_property_read_bool(node,
+		"qcom,disable-midframe-timer") &&
+		(enable_midframe_timer || of_property_read_bool(node,
+			"qcom,enable-midframe-timer"));
 
 	if (use_midframe_timer) {
 		kgsl_midframe = kzalloc(
