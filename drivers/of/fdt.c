@@ -1223,7 +1223,31 @@ int __init early_init_dt_scan_chosen(unsigned long node, const char *uname,
 			strncpy(cmdline + cmdline_len, p, copy_len);
 			cmdline[cmdline_len + copy_len] = '\0';
 		} else {
-			strlcpy(cmdline, p, min((int)l, COMMAND_LINE_SIZE));
+			size_t copy_len = 0;
+			size_t max_len;
+
+			/*
+			 * bootargs is an FDT string property. Some bootloaders
+			 * provide malformed bootargs with trailing binary data
+			 * included in the property length. Do not expose that
+			 * adjacent FDT data through boot_command_line.
+			 *
+			 * Kernel command lines are textual, so stop at NUL or
+			 * the first non-printable byte.
+			 */
+			max_len = min_t(size_t, l, COMMAND_LINE_SIZE - 1);
+
+			while (copy_len < max_len) {
+				unsigned char c = p[copy_len];
+
+				if (!c || c < ' ' || c > '~')
+					break;
+
+				copy_len++;
+			}
+
+			memcpy(cmdline, p, copy_len);
+			cmdline[copy_len] = '\0';
 		}
 	}
 
