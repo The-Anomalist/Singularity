@@ -12,30 +12,15 @@
 #include <linux/security.h>
 #include <linux/fs_struct.h>
 #include <linux/sched/task.h>
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-#include <linux/susfs_def.h>
-#endif
 
 #include "proc/internal.h" /* only for get_proc_task() in ->open() */
 
 #include "pnode.h"
 #include "internal.h"
 
-#ifdef CONFIG_KSU_SUSFS
-#include <linux/susfs.h>
-#endif
 
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-extern int susfs_sus_mount(struct vfsmount *mnt, struct path *root);
-#endif
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT_MNT_ID_REORDER
-extern bool uid_matches_proc_need_to_reorder_mnt_id(void);
-extern int susfs_get_fake_mnt_id(int mnt_id, int *out_mnt_id, int *out_parent_mnt_id);
-extern void susfs_add_mnt_id_recorder(struct mnt_namespace *mnt_ns);
-extern void susfs_remove_mnt_id_recorder(void);
-#endif
 
 static __poll_t mounts_poll(struct file *file, poll_table *wait)
 {
@@ -121,10 +106,6 @@ static int show_vfsmnt(struct seq_file *m, struct vfsmount *mnt)
 	struct super_block *sb = mnt_path.dentry->d_sb;
 	int err;
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-	if (susfs_sus_mount(mnt, &p->root))
-		return 0;
-#endif
 
 	if (sb->s_op->show_devname) {
 		err = sb->s_op->show_devname(m, mnt_path.dentry);
@@ -162,30 +143,8 @@ static int show_mountinfo(struct seq_file *m, struct vfsmount *mnt)
 	struct path mnt_path = { .dentry = mnt->mnt_root, .mnt = mnt };
 	int err;
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT_MNT_ID_REORDER
-	int out_mnt_id = 0, out_parent_mnt_id = 0;
-	int status = 1;
-#endif
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-	if (susfs_sus_mount(mnt, &p->root))
-		return 0;
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT_MNT_ID_REORDER
-	if (!uid_matches_proc_need_to_reorder_mnt_id())
-		goto orig_flow;
-	status = susfs_get_fake_mnt_id(r->mnt_id, &out_mnt_id, &out_parent_mnt_id);
-	if (status)
-		goto orig_flow;
-	seq_printf(m, "%i %i %u:%u ", out_mnt_id, out_parent_mnt_id,
-		   MAJOR(sb->s_dev), MINOR(sb->s_dev));
-	goto bypass_orig_flow;
-orig_flow:
-#endif
-#endif
 	seq_printf(m, "%i %i %u:%u ", r->mnt_id, r->mnt_parent->mnt_id,
 		   MAJOR(sb->s_dev), MINOR(sb->s_dev));
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT_MNT_ID_REORDER
-bypass_orig_flow:
-#endif
 	if (sb->s_op->show_path) {
 		err = sb->s_op->show_path(m, mnt->mnt_root);
 		if (err)
@@ -248,10 +207,6 @@ static int show_vfsstat(struct seq_file *m, struct vfsmount *mnt)
 	struct super_block *sb = mnt_path.dentry->d_sb;
 	int err;
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-	if (susfs_sus_mount(mnt, &p->root))
-		return 0;
-#endif
 
 	/* device */
 	if (sb->s_op->show_devname) {
@@ -336,10 +291,6 @@ static int mounts_open_common(struct inode *inode, struct file *file,
 	p->show = show;
 	p->cached_event = ~0ULL;
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT_MNT_ID_REORDER
-	if (uid_matches_proc_need_to_reorder_mnt_id())
-		susfs_add_mnt_id_recorder(p->ns);
-#endif
 
 	return 0;
 
@@ -356,10 +307,6 @@ static int mounts_release(struct inode *inode, struct file *file)
 	struct seq_file *m = file->private_data;
 	struct proc_mounts *p = m->private;
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT_MNT_ID_REORDER
-	if (uid_matches_proc_need_to_reorder_mnt_id())
-		susfs_remove_mnt_id_recorder();
-#endif
 
 	path_put(&p->root);
 	put_mnt_ns(p->ns);

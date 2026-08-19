@@ -1896,14 +1896,6 @@ static int do_proc_readlink(struct path *path, char __user *buffer, int buflen)
 	char *pathname;
 	int len;
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MAPS
-	struct mm_struct *mm;
-	struct vm_area_struct *vma;
-	struct file *vma_file;
-	struct dentry *vma_dentry;
-	struct inode *vma_inode;
-	unsigned long ino;
-#endif
 
 	if (!tmp)
 		return -ENOMEM;
@@ -1924,25 +1916,6 @@ static int do_proc_readlink(struct path *path, char __user *buffer, int buflen)
 	}
 #endif
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MAPS
-	if (!susfs_is_sus_maps_list_empty()) {
-		mm = current->mm;
-		down_read(&mm->mmap_sem);
-		for (vma = mm->mmap; vma; vma = vma->vm_next) {
-			if (vma->vm_file) {
-				vma_file = vma->vm_file;
-				vma_dentry = vma_file->f_path.dentry;
-				if (vma_dentry == path->dentry) {
-					vma_inode = file_inode(vma_file);
-					ino = vma_inode->i_ino;
-					susfs_sus_map_files_readlink(ino, pathname);
-					break;
-				}
-			}
-		}
-		up_read(&mm->mmap_sem);
-	}
-#endif
 
 #ifdef CONFIG_KSU_SUSFS_SUS_PROC_FD_LINK
 orig_flow:
@@ -2351,9 +2324,6 @@ struct map_files_info {
 	unsigned long	start;
 	unsigned long	end;
 	fmode_t		mode;
-#ifdef CONFIG_KSU_SUSFS_SUS_MAPS
-	int		susfs_action;
-#endif
 };
 
 /*
@@ -2414,9 +2384,6 @@ static struct dentry *proc_map_files_lookup(struct inode *dir,
 	struct dentry *result;
 	struct mm_struct *mm;
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MAPS
-	int ret = 0;
-#endif
 
 	result = ERR_PTR(-ENOENT);
 	task = get_proc_task(dir);
@@ -2444,21 +2411,6 @@ static struct dentry *proc_map_files_lookup(struct inode *dir,
 	if (!vma)
 		goto out_no_vma;
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MAPS
-	if (vma->vm_file) {
-		ret = susfs_sus_map_files_instantiate(vma);
-		if (ret == 1) {
-			if (vma->vm_file->f_mode & FMODE_WRITE)
-				vma->vm_file->f_mode &= ~FMODE_WRITE;
-			goto orig_flow;
-		}
-		if (ret == 2) {
-			result = ERR_PTR(-ENOENT);
-			goto out_no_vma;
-		}
-	}
-orig_flow:
-#endif
 
 	if (vma->vm_file)
 		result = proc_map_files_instantiate(dentry, task,
@@ -2492,9 +2444,6 @@ proc_map_files_readdir(struct file *file, struct dir_context *ctx)
 	struct map_files_info *p;
 	int ret;
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MAPS
-	int susfs_ret = 0;
-#endif
 
 	ret = -ENOENT;
 	task = get_proc_task(file_inode(file));
@@ -2558,10 +2507,6 @@ proc_map_files_readdir(struct file *file, struct dir_context *ctx)
 			info.start = vma->vm_start;
 			info.end = vma->vm_end;
 			info.mode = vma->vm_file->f_mode;
-#ifdef CONFIG_KSU_SUSFS_SUS_MAPS
-			susfs_ret = susfs_sus_map_files_instantiate(vma);
-			info.susfs_action = susfs_ret;
-#endif
 			if (flex_array_put(fa, i++, &info, GFP_KERNEL))
 				BUG();
 		}
@@ -2575,23 +2520,12 @@ proc_map_files_readdir(struct file *file, struct dir_context *ctx)
 
 		p = flex_array_get(fa, i);
 		len = snprintf(buf, sizeof(buf), "%lx-%lx", p->start, p->end);
-#ifdef CONFIG_KSU_SUSFS_SUS_MAPS
-		if (p->susfs_action == SUSFS_MAP_FILES_ACTION_REMOVE_WRITE_PERM) {
-			if (p->mode & FMODE_WRITE)
-				p->mode &= ~FMODE_WRITE;
-		} else if (p->susfs_action == SUSFS_MAP_FILES_ACTION_HIDE_DENTRY) {
-			goto skip_proc_fill_cache;
-		}
-#endif
 		if (!proc_fill_cache(file, ctx,
 				      buf, len,
 				      proc_map_files_instantiate,
 				      task,
 				      (void *)(unsigned long)p->mode))
 			break;
-#ifdef CONFIG_KSU_SUSFS_SUS_MAPS
-skip_proc_fill_cache:
-#endif
 		ctx->pos++;
 	}
 	if (fa)
