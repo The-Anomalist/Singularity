@@ -1710,6 +1710,12 @@ static struct cpufreq_governor atlas_gov = {
 	.limits			= sugov_limits,
 };
 
+#ifdef CONFIG_CPU_FREQ_DEFAULT_GOV_ATLAS
+struct cpufreq_governor *cpufreq_default_governor(void)
+{
+	return &atlas_gov;
+}
+#endif
 
 static int __init atlas_register(void)
 {
