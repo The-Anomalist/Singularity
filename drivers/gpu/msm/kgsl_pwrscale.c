@@ -101,6 +101,18 @@ module_param(midframe_timer_us, uint, 0644);
 MODULE_PARM_DESC(midframe_timer_us,
 		 "KGSL mid-frame devfreq sampling interval in microseconds (default: 16000)");
 
+/*
+ * Mid-frame sampling is latency sensitive, but it does not need to expire on
+ * an exact microsecond boundary.  Give the hrtimer core a small scheduling
+ * window so it can coalesce this housekeeping timer with an existing CPU
+ * wakeup.  This mirrors the timer-slack approach used by newer power-aware
+ * drivers and avoids paying a separate wakeup for every long GPU submission.
+ */
+static uint midframe_timer_slack_us = 1000;
+module_param(midframe_timer_slack_us, uint, 0644);
+MODULE_PARM_DESC(midframe_timer_slack_us,
+		 "Maximum KGSL mid-frame timer slack in microseconds (default: 1000)");
+
 static uint wakeup_boost_ms;
 module_param(wakeup_boost_ms, uint, 0644);
 MODULE_PARM_DESC(wakeup_boost_ms,
@@ -362,7 +374,7 @@ EXPORT_SYMBOL(kgsl_pwrscale_update);
 
 void kgsl_pwrscale_midframe_timer_restart(struct kgsl_device *device)
 {
-	uint interval_us;
+	uint interval_us, slack_us;
 
 	if (kgsl_midframe) {
 		WARN_ON(!mutex_is_locked(&device->mutex));
@@ -383,8 +395,16 @@ void kgsl_pwrscale_midframe_timer_restart(struct kgsl_device *device)
 			return;
 
 		interval_us = clamp_t(uint, midframe_timer_us, 1000, 20000);
-		hrtimer_start(&kgsl_midframe->timer,
-				ns_to_ktime(interval_us * NSEC_PER_USEC),
+		/*
+		 * Bound slack to a quarter of the sampling period.  Apart from
+		 * preventing a bad runtime parameter from defeating DCVS response,
+		 * this keeps the default 16 ms sample inside a display-frame-sized
+		 * window while still allowing useful wakeup coalescing.
+		 */
+		slack_us = min(midframe_timer_slack_us, interval_us / 4);
+		hrtimer_start_range_ns(&kgsl_midframe->timer,
+				ns_to_ktime((u64) interval_us * NSEC_PER_USEC),
+				(u64) slack_us * NSEC_PER_USEC,
 				HRTIMER_MODE_REL);
 	}
 }
