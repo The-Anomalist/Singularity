@@ -883,10 +883,17 @@ MODULE_PARM_DESC(packed_runtime_enable,
 #define KONA_PACKED_REAL_WRITE_BLOCKED	1
 
 static unsigned int kona_packed_group_mask = KONA_PACKED_GROUP_ALL;
-static unsigned int kona_cpu_downvote_hold_ms = 40;
+/*
+ * Do not retain a CPU fabric corner after demand has gone away.  BWMON already
+ * provides sampling hysteresis and the per-node policy has its own bounded
+ * downscale handling; adding another residency timer here makes short, common
+ * CPU bursts look continuous to LLCC and DDR.  The tunable remains available
+ * for devices which demonstrably need a hold.
+ */
+static unsigned int kona_cpu_downvote_hold_ms;
 module_param_named(cpu_downvote_hold_ms, kona_cpu_downvote_hold_ms, uint, 0644);
 MODULE_PARM_DESC(cpu_downvote_hold_ms,
-	"Minimum packed CPU BCM residency before a pure downvote (default: 40 ms)");
+	"Minimum packed CPU BCM residency before a pure downvote (default: disabled)");
 
 static int kona_param_set_cpu_bcm_force_high(const char *val,
 					      const struct kernel_param *kp)
@@ -1519,26 +1526,26 @@ MODULE_PARM_DESC(kona_max_downscale_percent,
  * - kona_perf_bias_turbo: extra bias for very large votes (race-to-performance).
  * - kona_perf_light_kb / kona_perf_turbo_kb: thresholds for selecting a profile.
  */
-static unsigned int kona_perf_bias = 120;
-static unsigned int kona_perf_bias_light = 112;
-static unsigned int kona_perf_bias_turbo = 145;
+static unsigned int kona_perf_bias = 108;
+static unsigned int kona_perf_bias_light = 100;
+static unsigned int kona_perf_bias_turbo = 120;
 #define KONA_PRIME_EXTRA_BIAS_PERCENT	15
 static unsigned long kona_perf_light_kb = 750000;   /* 750 MB/s */
 static unsigned long kona_perf_turbo_kb = 6000000;  /* 6 GB/s */
-static bool kona_perf_sustain_boost_enable = true;
+static bool kona_perf_sustain_boost_enable;
 static unsigned long kona_perf_sustain_kb = 2000000; /* 2 GB/s */
 static unsigned int kona_perf_sustain_extra_bias = 15;
 /* Media governors already calculate codec bandwidth; add only a small margin. */
 static unsigned int kona_media_perf_bias = 105;
 module_param(kona_perf_bias, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias,
-        "Percent headroom added on CPU/DDR/LLCC/GPU/NPU paths (default: 120)");
+        "Percent headroom added on CPU/DDR/LLCC/GPU/NPU paths (default: 108)");
 module_param(kona_perf_bias_light, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias_light,
-        "Percent headroom added for light requests to save power (default: 112)");
+        "Percent headroom added for light requests to save power (default: 100)");
 module_param(kona_perf_bias_turbo, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias_turbo,
-        "Percent headroom added for very large votes (default: 145)");
+        "Percent headroom added for very large votes (default: 120)");
 module_param(kona_perf_light_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_perf_light_kb,
         "Threshold KB/s for light-load bias selection (default: 750000)");
@@ -1568,7 +1575,7 @@ MODULE_PARM_DESC(kona_media_perf_bias,
 static bool kona_gpu_keepalive_enable = false;
 static unsigned long kona_gpu_keepalive_ab_kb = 1000000;   /* 1 GB/s */
 static unsigned long kona_gpu_keepalive_ib_kb = 2400000;  /* 2.4 GB/s */
-static bool kona_cpu_keepalive_enable = true;
+static bool kona_cpu_keepalive_enable;
 static unsigned long kona_cpu_keepalive_ab_kb = 512000;   /* 512 MB/s */
 static unsigned long kona_cpu_keepalive_ib_kb = 1200000;   /* 1.2 GB/s */
 static bool kona_npu_keepalive_enable = false;
@@ -1615,7 +1622,7 @@ MODULE_PARM_DESC(kona_sleep_floor_decay_percent,
  * multi-GB/s DDR votes for housekeeping traffic.
  */
 static bool kona_active_floor_scaling_enable = true;
-static unsigned long kona_active_floor_trigger_kb = 64000; /* 64 MB/s */
+static unsigned long kona_active_floor_trigger_kb = 512000; /* 512 MB/s */
 /*
  * Reach full floors early enough to cover short interactive memory bursts.
  * The Kona and Kona-v2 compatibles share this provider and both use these
@@ -1629,7 +1636,7 @@ module_param_named(kona_active_floor_scaling_enable, kona_active_floor_scaling_e
 MODULE_PARM_DESC(kona_active_floor_scaling_enable,
 	"Enable display-on workload-aware downscaling of non-display performance floors");
 module_param_named(kona_active_floor_trigger_kb, kona_active_floor_trigger_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_active_floor_trigger_kb, "Minimum non-display request for large active floors (default: 64000 KB/s)");
+MODULE_PARM_DESC(kona_active_floor_trigger_kb, "Minimum non-display request for large active floors (default: 512000 KB/s)");
 module_param_named(kona_active_floor_low_kb, kona_active_floor_low_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_active_floor_low_kb,
 	"Display-on request threshold KB/s for low floor scaling bucket");
@@ -3812,7 +3819,17 @@ static void kona_icc_cpu_endpoint_vote(struct kona_icc_provider *qp,
 			generic_eff_avg = max(generic_eff_avg, qp->eff_ab[i]);
 		} else {
 			kona_icc_add_cpu_ab(&per_cpu_avg, raw_avg);
-			kona_icc_add_cpu_ab(&per_cpu_eff_avg, qp->eff_ab[i]);
+			/*
+			 * The raw AB requests belong to independent CPU domains and are
+			 * additive.  Policy floors do not: every per-CPU alias ultimately
+			 * controls the same SH4/SH0/MC0 backing BCMs.  Summing eff_ab here
+			 * multiplied a single shared floor by the number of active aliases
+			 * (up to eight), pinning the memory fabric at a high corner during
+			 * both light and sustained workloads.  Preserve the strongest
+			 * policy-adjusted requirement while separately retaining summed
+			 * real traffic below.
+			 */
+			per_cpu_eff_avg = max(per_cpu_eff_avg, qp->eff_ab[i]);
 		}
 		raw_peak = max(raw_peak, raw_ib);
 		policy_peak = max(policy_peak, qp->eff_ib[i]);
@@ -3820,10 +3837,11 @@ static void kona_icc_cpu_endpoint_vote(struct kona_icc_provider *qp,
 
 	/*
 	 * Generic and per-CPU paths are overlapping views, so do not add the
-	 * generic request to the per-CPU total.  Within the per-CPU view AB must
-	 * remain a sum after policy floors are applied, however.  Taking only the
-	 * largest eff_ab here collapsed simultaneous LITTLE and big/prime floors
-	 * into one cluster's vote whenever the source requests were IB-only.
+	 * generic request to the per-CPU total.  Within the per-CPU view raw AB
+	 * remains a sum, while only the strongest policy-adjusted floor is used.
+	 * Actual sustained traffic is therefore still accumulated in per_cpu_avg,
+	 * preserving concurrent LITTLE and big/prime demand without multiplying a
+	 * shared floor by the number of aliases.
 	 */
 	*avg = max(max(generic_avg, generic_eff_avg),
 		   max(per_cpu_avg, per_cpu_eff_avg));
