@@ -28,6 +28,8 @@ struct sugov_tunables {
 	unsigned int		rtg_boost_freq;
 	unsigned int		target_load;
 	unsigned int		new_task_ratio;
+	unsigned int		sustained_load;
+	unsigned int		sustained_duration_us;
 	bool			convex_map;
 	bool			pl;
 };
@@ -45,6 +47,8 @@ struct sugov_policy {
 	unsigned long rtg_boost_util;
 	unsigned long max;
 	unsigned int default_hispeed_freq;
+	u64 sustained_load_start;
+	bool sustained_mode;
 
 	raw_spinlock_t		update_lock;	/* For shared policies */
 	u64			last_freq_update_time;
@@ -331,23 +335,79 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 }
 
 /*
- * Optional experimental mapping.  Keep this separate from WALT adjustment:
- * WALT, iowait and clamps select the demand while this knob only changes the
- * final demand-to-frequency curve.  The default remains schedutil's linear
- * map so an A/B test does not silently stack two sources of headroom.
+ * Keep frequency mapping separate from WALT adjustment: WALT, iowait and
+ * clamps select demand while this stage controls Atlas' energy/performance
+ * curve.  The optional convex map remains an explicit extra boost.
  */
 static unsigned long sugov_map_util(struct sugov_policy *sg_policy,
-				    unsigned long util, unsigned long max)
+				    unsigned long util, unsigned long max,
+				    u64 time, bool latency_sensitive)
 {
-	u64 squared;
+	u64 mapped, headroom;
+	unsigned long sustained_util, release_util;
 
-	if (!sg_policy->tunables->convex_map || !max)
+	if (!max)
+		return util;
+
+	util = min(util, max);
+	sustained_util = mult_frac(max, sg_policy->tunables->sustained_load,
+				   100);
+	release_util = mult_frac(sustained_util, 3, 4);
+
+	/*
+	 * Short utilization spikes rarely benefit from the most expensive OPP.
+	 * Qualify high demand briefly before allowing fmax. RTG work bypasses
+	 * qualification so games and explicitly latency-sensitive workloads keep
+	 * immediate throughput. The lower release point prevents mode flapping.
+	 */
+	if (latency_sensitive) {
+		sg_policy->sustained_load_start = time;
+		sg_policy->sustained_mode = true;
+	} else if (util >= sustained_util) {
+		if (!sg_policy->sustained_mode &&
+		    !sg_policy->sustained_load_start)
+			sg_policy->sustained_load_start = time;
+		if (!sg_policy->sustained_mode &&
+		    time - sg_policy->sustained_load_start <
+			 (u64)sg_policy->tunables->sustained_duration_us *
+			 NSEC_PER_USEC)
+			util = min(util, mult_frac(max, 79, 100));
+		else
+			sg_policy->sustained_mode = true;
+	} else if (util < release_util) {
+		sg_policy->sustained_load_start = 0;
+		sg_policy->sustained_mode = false;
+	} else if (!sg_policy->sustained_mode) {
+		/* Qualification requires continuous high demand. */
+		sg_policy->sustained_load_start = 0;
+	}
+
+	/*
+	 * map_util_freq() carries schedutil's fixed 25% headroom, which reaches
+	 * fmax at only 80% utilization.  That is useful for a throughput-only
+	 * governor, but needlessly holds the voltage high during ordinary UI and
+	 * background work.  Make Atlas' headroom demand-dependent instead: 6.25%
+	 * at light load, smoothly increasing to the full 25% at saturation.
+	 *
+	 * Very small demand is deliberately mapped to zero.  The cpufreq core
+	 * resolves zero to policy->min, so every cluster can actually use its own
+	 * lowest OPP rather than inheriting a hard-coded frequency floor.
+	 */
+	if (util <= mult_frac(max, 12, 100))
+		return 0;
+
+	headroom = 85 * max + 15 * util;
+	mapped = (u64)util * headroom;
+	do_div(mapped, 100 * max);
+	util = min_t(unsigned long, max, mapped);
+
+	if (!sg_policy->tunables->convex_map)
 		return util;
 
 	/* u + u * (max - u) / (2 * max), bounded and monotonic. */
-	squared = (u64)util * (max - min(util, max));
-	do_div(squared, 2 * max);
-	return min_t(unsigned long, max, util + squared);
+	mapped = (u64)util * (max - util);
+	do_div(mapped, 2 * max);
+	return min_t(unsigned long, max, util + mapped);
 }
 
 extern long
@@ -631,6 +691,8 @@ static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #define DEFAULT_TARGET_LOAD 70
 #define DEFAULT_NEW_TASK_RATIO 60
 #define DEFAULT_HISPEED_LOAD 90
+#define DEFAULT_SUSTAINED_LOAD 85
+#define DEFAULT_SUSTAINED_DURATION_US 30000
 #define DEFAULT_CPU0_RTG_BOOST_FREQ 1000000
 #define DEFAULT_CPU4_RTG_BOOST_FREQ 0
 #define DEFAULT_CPU7_RTG_BOOST_FREQ 0
@@ -755,7 +817,8 @@ static void sugov_update_single(struct update_util_data *hook, u64 time,
 				sg_cpu->walt_load.rtgb_active, flags);
 
 	sugov_walt_adjust(sg_cpu, &util, &max);
-	util = sugov_map_util(sg_policy, util, max);
+	util = sugov_map_util(sg_policy, util, max, time,
+			      sg_cpu->walt_load.rtgb_active);
 	next_f = get_next_freq(sg_policy, util, max);
 	/*
 	 * Do not reduce the frequency if the CPU has not been idle
@@ -788,6 +851,7 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time)
 	struct cpufreq_policy *policy = sg_policy->policy;
 	u64 last_freq_update_time = sg_policy->last_freq_update_time;
 	unsigned long util = 0, max = 1;
+	bool latency_sensitive = false;
 	unsigned int j;
 
 	for_each_cpu(j, policy->cpus) {
@@ -825,6 +889,7 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time)
 		 * on cpumask iteration order.
 		 */
 		sugov_walt_adjust(j_sg_cpu, &j_util, &j_max);
+		latency_sensitive |= j_sg_cpu->walt_load.rtgb_active;
 
 		if (j_util * max >= j_max * util) {
 			util = j_util;
@@ -832,7 +897,7 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time)
 		}
 	}
 
-	util = sugov_map_util(sg_policy, util, max);
+	util = sugov_map_util(sg_policy, util, max, time, latency_sensitive);
 	return get_next_freq(sg_policy, util, max);
 }
 
@@ -1150,6 +1215,62 @@ static ssize_t new_task_ratio_store(struct gov_attr_set *attr_set,
 static struct governor_attr target_load = __ATTR_RW(target_load);
 static struct governor_attr new_task_ratio = __ATTR_RW(new_task_ratio);
 
+static void sugov_reset_sustained(struct gov_attr_set *attr_set)
+{
+	struct sugov_policy *sg_policy;
+	unsigned long flags;
+
+	list_for_each_entry(sg_policy, &attr_set->policy_list, tunables_hook) {
+		raw_spin_lock_irqsave(&sg_policy->update_lock, flags);
+		sg_policy->sustained_load_start = 0;
+		sg_policy->sustained_mode = false;
+		raw_spin_unlock_irqrestore(&sg_policy->update_lock, flags);
+	}
+}
+
+static ssize_t sustained_load_show(struct gov_attr_set *attr_set, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 to_sugov_tunables(attr_set)->sustained_load);
+}
+
+static ssize_t sustained_load_store(struct gov_attr_set *attr_set,
+				    const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+	unsigned int value;
+
+	if (kstrtouint(buf, 10, &value) || !value || value > 100)
+		return -EINVAL;
+	tunables->sustained_load = value;
+	sugov_reset_sustained(attr_set);
+	return count;
+}
+
+static ssize_t sustained_duration_us_show(struct gov_attr_set *attr_set,
+					  char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 to_sugov_tunables(attr_set)->sustained_duration_us);
+}
+
+static ssize_t sustained_duration_us_store(struct gov_attr_set *attr_set,
+					   const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+	unsigned int value;
+
+	if (kstrtouint(buf, 10, &value) || value > USEC_PER_SEC)
+		return -EINVAL;
+	tunables->sustained_duration_us = value;
+	sugov_reset_sustained(attr_set);
+	return count;
+}
+
+static struct governor_attr sustained_load = __ATTR_RW(sustained_load);
+static struct governor_attr sustained_duration_us =
+	__ATTR_RW(sustained_duration_us);
+
 static ssize_t convex_map_show(struct gov_attr_set *attr_set, char *buf)
 {
 	return scnprintf(buf, PAGE_SIZE, "%u\n",
@@ -1176,6 +1297,8 @@ static struct attribute *sugov_attributes[] = {
 	&rtg_boost_freq.attr,
 	&target_load.attr,
 	&new_task_ratio.attr,
+	&sustained_load.attr,
+	&sustained_duration_us.attr,
 	&convex_map.attr,
 	&pl.attr,
 	NULL
@@ -1302,6 +1425,8 @@ static void sugov_tunables_save(struct cpufreq_policy *policy,
 	cached->rtg_boost_freq = tunables->rtg_boost_freq;
 	cached->target_load = tunables->target_load;
 	cached->new_task_ratio = tunables->new_task_ratio;
+	cached->sustained_load = tunables->sustained_load;
+	cached->sustained_duration_us = tunables->sustained_duration_us;
 	cached->convex_map = tunables->convex_map;
 	cached->hispeed_freq = tunables->hispeed_freq;
 	cached->up_rate_limit_us = tunables->up_rate_limit_us;
@@ -1329,6 +1454,8 @@ static void sugov_tunables_restore(struct cpufreq_policy *policy)
 	tunables->rtg_boost_freq = cached->rtg_boost_freq;
 	tunables->target_load = cached->target_load;
 	tunables->new_task_ratio = cached->new_task_ratio;
+	tunables->sustained_load = cached->sustained_load;
+	tunables->sustained_duration_us = cached->sustained_duration_us;
 	tunables->convex_map = cached->convex_map;
 	tunables->hispeed_freq = cached->hispeed_freq;
 	tunables->up_rate_limit_us = cached->up_rate_limit_us;
@@ -1384,9 +1511,11 @@ static int sugov_init(struct cpufreq_policy *policy)
 	tunables->up_rate_limit_us =
 		max(100U, cpufreq_policy_transition_delay_us(policy));
 	tunables->down_rate_limit_us =
-		max(2000U, cpufreq_policy_transition_delay_us(policy));
+		max(1000U, cpufreq_policy_transition_delay_us(policy));
 	tunables->target_load = DEFAULT_TARGET_LOAD;
 	tunables->new_task_ratio = DEFAULT_NEW_TASK_RATIO;
+	tunables->sustained_load = DEFAULT_SUSTAINED_LOAD;
+	tunables->sustained_duration_us = DEFAULT_SUSTAINED_DURATION_US;
 	/*
 	 * WALT's rolling utilization can take a window to reflect a newly
 	 * runnable, compute-heavy worker.  Use proportional new-task headroom while
@@ -1488,6 +1617,8 @@ static int sugov_start(struct cpufreq_policy *policy)
 	sg_policy->need_freq_update		= false;
 	sg_policy->cached_raw_freq		= 0;
 	sg_policy->prev_cached_raw_freq		= 0;
+	sg_policy->sustained_load_start		= 0;
+	sg_policy->sustained_mode		= false;
 
 	for_each_cpu(cpu, policy->cpus) {
 		struct sugov_cpu *sg_cpu = &per_cpu(sugov_cpu, cpu);
