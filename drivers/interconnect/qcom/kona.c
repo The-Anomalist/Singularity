@@ -1145,23 +1145,28 @@ module_param_named(kona_display_nonzero_floor_enable, kona_display_nonzero_floor
 MODULE_PARM_DESC(kona_display_nonzero_floor_enable,
 	"Force non-zero fallback floor for DISPLAY paths when clients request 0/0");
 
-/* Match the active SDE data-bus floor; 80 MB/s cannot cover a modeset burst. */
-static unsigned int kona_display_nonzero_floor_ab_kBps = 384000; /* 384 MB/s */
+/*
+ * A 0/0 vote is an idle/modeset gap, not evidence of peak scanout demand.
+ * Keep the fabric alive at the proven resume floor and let the next real SDE
+ * vote select the bandwidth corner.  A peak-sized fallback can otherwise pin
+ * DDR for the entire time a mostly-static panel remains at 0/0.
+ */
+static unsigned int kona_display_nonzero_floor_ab_kBps = 256000; /* 256 MB/s */
 module_param_named(kona_display_nonzero_floor_ab_kBps, kona_display_nonzero_floor_ab_kBps, uint, 0644);
 MODULE_PARM_DESC(kona_display_nonzero_floor_ab_kBps,
 	"Fallback DISPLAY floor average BW (kB/s) when a 0/0 vote is requested");
 
-static unsigned int kona_display_nonzero_floor_ib_kBps = 9600000; /* 9.6 GB/s */
+static unsigned int kona_display_nonzero_floor_ib_kBps = 2000000; /* 2 GB/s */
 module_param_named(kona_display_nonzero_floor_ib_kBps, kona_display_nonzero_floor_ib_kBps, uint, 0644);
 MODULE_PARM_DESC(kona_display_nonzero_floor_ib_kBps,
 	"Fallback DISPLAY floor peak BW (kB/s) when a 0/0 vote is requested");
 
-static unsigned int kona_display_cfg_nonzero_floor_ab_kBps = 256000; /* 256 MB/s */
+static unsigned int kona_display_cfg_nonzero_floor_ab_kBps = 120000; /* 120 MB/s */
 module_param_named(kona_display_cfg_nonzero_floor_ab_kBps, kona_display_cfg_nonzero_floor_ab_kBps, uint, 0644);
 MODULE_PARM_DESC(kona_display_cfg_nonzero_floor_ab_kBps,
 	"Fallback DISPLAY config-path floor average BW (kB/s) for 0/0 votes");
 
-static unsigned int kona_display_cfg_nonzero_floor_ib_kBps = 512000; /* 512 MB/s */
+static unsigned int kona_display_cfg_nonzero_floor_ib_kBps = 240000; /* 240 MB/s */
 module_param_named(kona_display_cfg_nonzero_floor_ib_kBps, kona_display_cfg_nonzero_floor_ib_kBps, uint, 0644);
 MODULE_PARM_DESC(kona_display_cfg_nonzero_floor_ib_kBps,
 	"Fallback DISPLAY config-path floor peak BW (kB/s) for 0/0 votes");
