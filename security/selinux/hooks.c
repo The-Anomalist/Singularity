@@ -6306,6 +6306,10 @@ bad:
 	return error;
 }
 
+#ifdef CONFIG_KSU
+extern struct selinux_state *ksu_selinux_hide_state_for_current(void);
+#endif
+
 static int selinux_setprocattr(const char *name, void *value, size_t size)
 {
 	struct task_security_struct *tsec;
@@ -6313,6 +6317,10 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 	u32 mysid = current_sid(), sid = 0, ptsid;
 	int error;
 	char *str = value;
+#ifdef CONFIG_KSU
+	struct selinux_state *hidden_state;
+	u32 hidden_sid;
+#endif
 
 	/*
 	 * Basic control over ability to set these attributes at all.
@@ -6348,6 +6356,26 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 			str[size-1] = 0;
 			size--;
 		}
+#ifdef CONFIG_KSU
+		/*
+		 * SELinux Hide: for application UIDs, reject a setprocattr
+		 * "current" context that does not exist in the pristine policy.
+		 *
+		 * This is validation only.  Do not reuse hidden_sid below:
+		 * the normal SELinux path must still resolve the context against
+		 * the live policy and use the live SID.
+		 */
+		if (!strcmp(name, "current")) {
+			hidden_state = ksu_selinux_hide_state_for_current();
+			if (hidden_state) {
+				error = security_context_to_sid(hidden_state, value,
+								size, &hidden_sid,
+								GFP_KERNEL);
+				if (error)
+					return error;
+			}
+		}
+#endif
 		error = security_context_to_sid(&selinux_state, value, size,
 						&sid, GFP_KERNEL);
 		if (error == -EINVAL && !strcmp(name, "fscreate")) {
