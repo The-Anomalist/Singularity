@@ -341,7 +341,8 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
  */
 static unsigned long sugov_map_util(struct sugov_policy *sg_policy,
 				    unsigned long util, unsigned long max,
-				    u64 time, bool latency_sensitive)
+				    u64 time, bool latency_sensitive,
+				    bool ux_burst)
 {
 	u64 mapped, headroom;
 	unsigned long sustained_util, release_util;
@@ -381,6 +382,16 @@ static unsigned long sugov_map_util(struct sugov_policy *sg_policy,
 		/* Qualification requires continuous high demand. */
 		sg_policy->sustained_load_start = 0;
 	}
+
+	/*
+	 * WALT's new-task signal identifies the short fan-out bursts behind app
+	 * launches, scrolling and view inflation.  Give only those bursts the
+	 * normal schedutil mapping, including its established 25% headroom.  This
+	 * avoids making global fabric floors or steady background CPU demand more
+	 * expensive merely to improve foreground UX.
+	 */
+	if (ux_burst)
+		return util;
 
 	/*
 	 * map_util_freq() carries schedutil's fixed 25% headroom, which reaches
@@ -696,7 +707,7 @@ static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #define DEFAULT_CPU0_RTG_BOOST_FREQ 1000000
 #define DEFAULT_CPU4_RTG_BOOST_FREQ 0
 #define DEFAULT_CPU7_RTG_BOOST_FREQ 0
-static void sugov_walt_adjust(struct sugov_cpu *sg_cpu, unsigned long *util,
+static bool sugov_walt_adjust(struct sugov_cpu *sg_cpu, unsigned long *util,
 			      unsigned long *max)
 {
 	struct sugov_policy *sg_policy = sg_cpu->sg_policy;
@@ -706,9 +717,10 @@ static void sugov_walt_adjust(struct sugov_cpu *sg_cpu, unsigned long *util,
 	unsigned long cpu_util = sg_cpu->util;
 	bool is_hiload;
 	unsigned long pl = sg_cpu->walt_load.pl;
+	bool ux_burst = false;
 
 	if (use_pelt())
-		return;
+		return false;
 
 	if (is_rtg_boost)
 		*util = max(*util, sg_policy->rtg_boost_util);
@@ -730,14 +742,18 @@ static void sugov_walt_adjust(struct sugov_cpu *sg_cpu, unsigned long *util,
 	 * the resulting demand reaches its schedutil tipping point.
 	 */
 	if (is_hiload && nl >= mult_frac(cpu_util,
-					 sg_policy->tunables->new_task_ratio, 100))
+					 sg_policy->tunables->new_task_ratio, 100)) {
 		*util = max(*util, min(*max, cpu_util + (nl >> 1)));
+		ux_burst = true;
+	}
 
 	if (sg_policy->tunables->pl) {
 		if (conservative_pl())
 			pl = mult_frac(pl, sg_policy->tunables->target_load, 100);
 		*util = max(*util, pl);
 	}
+
+	return ux_burst;
 }
 
 /*
@@ -776,6 +792,7 @@ static void sugov_update_single(struct update_util_data *hook, u64 time,
 	unsigned long util, max, hs_util, boost_util;
 	unsigned int next_f;
 	bool busy;
+	bool ux_burst;
 
 	if (!sg_policy->tunables->pl && flags & SCHED_CPUFREQ_PL)
 		return;
@@ -816,9 +833,9 @@ static void sugov_update_single(struct update_util_data *hook, u64 time,
 				sg_cpu->walt_load.pl,
 				sg_cpu->walt_load.rtgb_active, flags);
 
-	sugov_walt_adjust(sg_cpu, &util, &max);
+	ux_burst = sugov_walt_adjust(sg_cpu, &util, &max);
 	util = sugov_map_util(sg_policy, util, max, time,
-			      sg_cpu->walt_load.rtgb_active);
+			      sg_cpu->walt_load.rtgb_active, ux_burst);
 	next_f = get_next_freq(sg_policy, util, max);
 	/*
 	 * Do not reduce the frequency if the CPU has not been idle
@@ -852,6 +869,7 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time)
 	u64 last_freq_update_time = sg_policy->last_freq_update_time;
 	unsigned long util = 0, max = 1;
 	bool latency_sensitive = false;
+	bool ux_burst = false;
 	unsigned int j;
 
 	for_each_cpu(j, policy->cpus) {
@@ -888,7 +906,7 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time)
 		 * numerator with another CPU's denominator and makes the result depend
 		 * on cpumask iteration order.
 		 */
-		sugov_walt_adjust(j_sg_cpu, &j_util, &j_max);
+		ux_burst |= sugov_walt_adjust(j_sg_cpu, &j_util, &j_max);
 		latency_sensitive |= j_sg_cpu->walt_load.rtgb_active;
 
 		if (j_util * max >= j_max * util) {
@@ -897,7 +915,8 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time)
 		}
 	}
 
-	util = sugov_map_util(sg_policy, util, max, time, latency_sensitive);
+	util = sugov_map_util(sg_policy, util, max, time, latency_sensitive,
+			      ux_burst);
 	return get_next_freq(sg_policy, util, max);
 }
 
