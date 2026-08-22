@@ -143,6 +143,7 @@ struct kgsl_pwrscale {
 	seqcount_t pipeline_seq;
 	struct kgsl_pipeline_snapshot pipeline;
 	u64 pipeline_last_notify_ns;
+	struct msm_adreno_devfreq_status devfreq_status;
 };
 
 int kgsl_pwrscale_init(struct device *dev, const char *governor);

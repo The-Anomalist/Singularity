@@ -869,6 +869,7 @@ int kgsl_devfreq_get_dev_status(struct device *dev,
 	struct kgsl_device *device = dev_get_drvdata(dev);
 	struct kgsl_pwrctrl *pwrctrl;
 	struct kgsl_pwrscale *pwrscale;
+	struct kgsl_pipeline_snapshot pipeline;
 	ktime_t tmp1, tmp2;
 
 	if (device == NULL)
@@ -897,7 +898,17 @@ int kgsl_devfreq_get_dev_status(struct device *dev,
 
 	stat->current_frequency = kgsl_pwrctrl_active_freq(&device->pwrctrl);
 
-	stat->private_data = &device->active_context_count;
+	/*
+	 * Newer KGSL governors consume queue pressure as well as utilization.
+	 * A busy-only governor cannot distinguish a draining queue from a growing
+	 * one and commonly compensates by holding an unnecessarily high OPP.
+	 */
+	kgsl_pwrscale_get_pipeline_snapshot(device, &pipeline);
+	pwrscale->devfreq_status.context_count = device->active_context_count;
+	pwrscale->devfreq_status.queued_commands = pipeline.queued_commands;
+	pwrscale->devfreq_status.inflight_commands = pipeline.inflight_commands;
+	pwrscale->devfreq_status.ram_wait_pct = pipeline.ram_wait_pct;
+	stat->private_data = &pwrscale->devfreq_status;
 
 	/*
 	 * keep the latest devfreq_dev_status values

@@ -34,6 +34,14 @@ struct xstats {
 	int mod;
 };
 
+/* Producer-side scheduling signals for queue-aware GPU DCVS governors. */
+struct msm_adreno_devfreq_status {
+	int context_count;
+	u16 queued_commands;
+	u16 inflight_commands;
+	u8 ram_wait_pct;
+};
+
 struct devfreq_msm_adreno_tz_data {
 	struct notifier_block nb;
 	struct {
