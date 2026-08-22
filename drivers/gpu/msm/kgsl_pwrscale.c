@@ -379,10 +379,20 @@ void kgsl_pwrscale_midframe_timer_restart(struct kgsl_device *device)
 	if (kgsl_midframe) {
 		WARN_ON(!mutex_is_locked(&device->mutex));
 
-		/* If the timer is already running, stop it */
+		/*
+		 * Keep an already armed deadline instead of moving it every time a
+		 * command is submitted.  Busy command streams can call this path much
+		 * faster than the sampling period; cancelling and restarting here lets
+		 * them postpone the sample indefinitely and leaves DCVS blind until a
+		 * command retires.  Newer KGSL implementations treat the mid-frame
+		 * sample as a periodic deadline for exactly this reason.
+		 *
+		 * Power-state transitions use kgsl_pwrscale_midframe_timer_cancel(), so
+		 * preserving an active timer here cannot keep the sampler alive while
+		 * the GPU is idle.
+		 */
 		if (hrtimer_active(&kgsl_midframe->timer))
-			hrtimer_cancel(
-				&kgsl_midframe->timer);
+			return;
 
 		/*
 		 * Only keep the sampler armed while useful work can still be
