@@ -98,7 +98,6 @@ struct orion_controller {
 	u32 tz_level;
 	u32 target_level;
 	u32 last_context_count;
-	u32 last_queue_depth;
 	bool initialized;
 };
 
@@ -141,8 +140,7 @@ static int orion_demand_level(struct devfreq *devfreq, u32 demand)
 }
 
 static int orion_refine_target(struct devfreq *devfreq, int tz_level,
-		u64 busy, u64 total, int context_count, u32 queue_depth,
-		u32 ram_wait_pct)
+		u64 busy, u64 total, int context_count)
 {
 	u32 load = orion_percent(busy, total);
 	u32 demand, trend;
@@ -170,27 +168,12 @@ static int orion_refine_target(struct devfreq *devfreq, int tz_level,
 	if (context_count >= 4)
 		demand = min(100U, demand + 5);
 
-	/*
-	 * Feed queue pressure forward instead of waiting for busy-time feedback.
-	 * Growing queues get clock headroom immediately.  Conversely, a shallow,
-	 * memory-stalled queue does not needlessly raise shader clocks; the bus
-	 * governor independently sees the same RAM counters and raises bandwidth.
-	 * Cap the discount so this remains a power optimization, not a latency
-	 * tradeoff, and never apply it while work is accumulating.
-	 */
-	if (queue_depth > orion.last_queue_depth)
-		demand = min(100U, demand +
-			min(queue_depth - orion.last_queue_depth, 4U) * 4);
-	else if (queue_depth <= 1 && ram_wait_pct >= 25)
-		demand = demand * (100 - min(ram_wait_pct / 3, 20U)) / 100;
-
 	adaptive_level = orion_demand_level(devfreq, demand);
 	if (demand >= orion.up_threshold)
 		target = min(target, adaptive_level);
 
 	/* Saturation and queue growth acquire a short boost lease immediately. */
-	if (load >= orion.boost_threshold || trend >= 20 || context_count >= 8 ||
-	    queue_depth >= 4) {
+	if (load >= orion.boost_threshold || trend >= 20 || context_count >= 8) {
 		orion.boost_hold = orion.boost_samples;
 		target = min(target, adaptive_level);
 	} else if (orion.boost_hold) {
@@ -212,7 +195,6 @@ static int orion_refine_target(struct devfreq *devfreq, int tz_level,
 	target = clamp(target, 0, max_level);
 	orion.previous_load = load;
 	orion.last_context_count = max(context_count, 0);
-	orion.last_queue_depth = queue_depth;
 	orion.tz_level = tz_level;
 	orion.target_level = target;
 	orion.last_level = target;
@@ -575,7 +557,6 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	u64 sample_busy, sample_total;
 	unsigned int scm_data[4];
 	int context_count = 0;
-	u32 queue_depth = 0, ram_wait_pct = 0;
 
 	/* keeps stats.private_data == NULL   */
 	result = devfreq_update_stats(devfreq);
@@ -588,14 +569,8 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	priv->bin.total_time += stats->total_time;
 	priv->bin.busy_time += stats->busy_time;
 
-	if (stats->private_data) {
-		struct msm_adreno_devfreq_status *status = stats->private_data;
-
-		context_count = status->context_count;
-		queue_depth = max_t(u32, status->queued_commands,
-				    status->inflight_commands);
-		ram_wait_pct = status->ram_wait_pct;
-	}
+	if (stats->private_data)
+		context_count =  *((int *)stats->private_data);
 
 	/* Update the GPU load statistics */
 	compute_work_load(stats, priv, devfreq);
@@ -621,8 +596,7 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 		priv->bin.total_time = 0;
 		priv->bin.busy_time = 0;
 		level = orion_refine_target(devfreq, level, sample_busy,
-					    sample_total, context_count,
-					    queue_depth, ram_wait_pct);
+					    sample_total, context_count);
 		*freq = devfreq->profile->freq_table[level];
 		return 0;
 	}
@@ -668,7 +642,7 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 	 * a full firmware control cycle, while sustained idle decays smoothly.
 	 */
 	level = orion_refine_target(devfreq, level, sample_busy, sample_total,
-				    context_count, queue_depth, ram_wait_pct);
+				    context_count);
 	*freq = devfreq->profile->freq_table[level];
 	return 0;
 }
