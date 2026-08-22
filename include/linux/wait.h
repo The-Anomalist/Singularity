@@ -511,31 +511,6 @@ do {										\
 	__ret;									\
 })
 
-#define __wait_event_interruptible_exclusive_timeout(wq_head, condition, timeout) \
-	___wait_event(wq_head, ___wait_cond_timeout(condition),			\
-		TASK_INTERRUPTIBLE, 1, timeout,				\
-		__ret = schedule_timeout(__ret))
-
-/**
- * wait_event_interruptible_exclusive_timeout - sleep exclusively with timeout
- * @wq_head: the waitqueue to wait on
- * @condition: a C expression for the event to wait for
- * @timeout: timeout, in jiffies
- *
- * This is the exclusive-waiter variant of
- * wait_event_interruptible_timeout().  An exclusive waiter allows a normal
- * wake_up() to activate one task instead of every task sleeping on the queue.
- */
-#define wait_event_interruptible_exclusive_timeout(wq_head, condition, timeout) \
-({										\
-	long __ret = timeout;							\
-	might_sleep();								\
-	if (!___wait_cond_timeout(condition))					\
-		__ret = __wait_event_interruptible_exclusive_timeout(wq_head,\
-						condition, timeout);		\
-	__ret;									\
-})
-
 #define __wait_event_hrtimeout(wq_head, condition, timeout, state)		\
 ({										\
 	int __ret = 0;								\

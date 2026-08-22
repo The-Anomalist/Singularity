@@ -889,7 +889,7 @@ static int dispatcher_context_sendcmds(struct adreno_device *adreno_dev,
 	 */
 
 	if (_check_context_queue(drawctxt))
-		wake_up_interruptible(&drawctxt->wq);
+		wake_up_all(&drawctxt->wq);
 
 	if (!ret)
 		ret = count;
@@ -1242,8 +1242,8 @@ static inline int _wait_for_room_in_context_queue(
 		trace_adreno_drawctxt_sleep(drawctxt);
 		spin_unlock(&drawctxt->lock);
 
-		ret = wait_event_interruptible_exclusive_timeout(
-			drawctxt->wq, _check_context_queue(drawctxt),
+		ret = wait_event_interruptible_timeout(drawctxt->wq,
+			_check_context_queue(drawctxt),
 			msecs_to_jiffies(_context_queue_wait));
 
 		spin_lock(&drawctxt->lock);
