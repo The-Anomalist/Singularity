@@ -131,6 +131,15 @@ use_zero_pages
 
         Default: 0 (normal KSM behaviour as in earlier releases)
 
+smart_scan
+        enables adaptive scanning of pages that repeatedly remain unchanged.
+        Such pages are scanned progressively less often, up to once every
+        eight complete scans, reducing ksmd CPU use without permanently
+        excluding any page. New, changing, and merged pages continue to be
+        scanned at the normal rate. Set this to 0 to use exhaustive scanning.
+
+        Default: 1
+
 max_page_sharing
         Maximum sharing allowed for each KSM page. This enforces a
         deduplication limit to avoid high latency for virtual memory
@@ -167,6 +176,8 @@ pages_unshared
         how many pages unique but repeatedly checked for merging
 pages_volatile
         how many pages changing too fast to be placed in a tree
+pages_skipped
+        how many page scans the adaptive scanner has omitted
 full_scans
         how many times all mergeable areas have been scanned
 stable_node_chains

@@ -216,7 +216,9 @@ struct rmap_item {
 #define SEQNR_MASK	0x0ff	/* low bits of unstable tree seqnr */
 #define UNSTABLE_FLAG	0x100	/* is a node of the unstable tree */
 #define STABLE_FLAG	0x200	/* is listed from the stable tree */
-#define KSM_FLAG_MASK	(SEQNR_MASK|UNSTABLE_FLAG|STABLE_FLAG)
+#define KSM_SCAN_AGE_SHIFT 10
+#define KSM_SCAN_AGE_MASK (0x3UL << KSM_SCAN_AGE_SHIFT)
+#define KSM_FLAG_MASK	(SEQNR_MASK|UNSTABLE_FLAG|STABLE_FLAG|KSM_SCAN_AGE_MASK)
 				/* to mask all the flags */
 
 /* The stable and unstable tree heads */
@@ -255,6 +257,9 @@ static unsigned long ksm_pages_unshared;
 /* The number of rmap_items in use: to calculate pages_volatile */
 static unsigned long ksm_rmap_items;
 
+/* Pages omitted by the adaptive KSM scanner. */
+static unsigned long ksm_pages_skipped;
+
 /* The number of stable_node chains */
 static unsigned long ksm_stable_node_chains;
 
@@ -278,6 +283,9 @@ static unsigned int zero_checksum __read_mostly;
 
 /* Whether to merge empty (zeroed) pages with actual zero pages */
 static bool ksm_use_zero_pages __read_mostly;
+
+/* Avoid repeatedly hashing pages which have remained unchanged. */
+static bool ksm_smart_scan __read_mostly = true;
 
 #ifdef CONFIG_NUMA
 /* Zeroed when merging across nodes is not allowed */
@@ -2040,6 +2048,7 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 	unsigned int checksum;
 	int err;
 	bool max_page_sharing_bypass = false;
+	unsigned int scan_age;
 
 	stable_node = page_stable_node(page);
 	if (stable_node) {
@@ -2059,6 +2068,21 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 		 */
 		if (!is_page_sharing_candidate(stable_node))
 			max_page_sharing_bypass = true;
+	}
+
+	/*
+	 * An unmerged page which repeatedly has the same checksum is unlikely to
+	 * become mergeable on every pass. Scan it at an exponentially reduced
+	 * rate (up to once every eight full scans), while continuing to inspect
+	 * new, changing and already merged pages normally. Keep the small age in
+	 * address' otherwise unused low bits so rmap_item does not grow.
+	 */
+	scan_age = (rmap_item->address & KSM_SCAN_AGE_MASK) >>
+		   KSM_SCAN_AGE_SHIFT;
+	if (ksm_smart_scan && !stable_node && scan_age &&
+	    (ksm_scan.seqnr & ((1U << scan_age) - 1))) {
+		ksm_pages_skipped++;
+		return;
 	}
 
 	/* We first start with searching the page inside the stable tree */
@@ -2095,7 +2119,13 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 	checksum = calc_checksum(page);
 	if (rmap_item->oldchecksum != checksum) {
 		rmap_item->oldchecksum = checksum;
+		rmap_item->address &= ~KSM_SCAN_AGE_MASK;
 		return;
+	}
+	if (ksm_smart_scan && scan_age < 3) {
+		scan_age++;
+		rmap_item->address &= ~KSM_SCAN_AGE_MASK;
+		rmap_item->address |= (unsigned long)scan_age << KSM_SCAN_AGE_SHIFT;
 	}
 
 	/*
@@ -2990,6 +3020,26 @@ static ssize_t use_zero_pages_store(struct kobject *kobj,
 }
 KSM_ATTR(use_zero_pages);
 
+static ssize_t smart_scan_show(struct kobject *kobj,
+			       struct kobj_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%u\n", ksm_smart_scan);
+}
+
+static ssize_t smart_scan_store(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				const char *buf, size_t count)
+{
+	bool value;
+
+	if (kstrtobool(buf, &value))
+		return -EINVAL;
+
+	ksm_smart_scan = value;
+	return count;
+}
+KSM_ATTR(smart_scan);
+
 static ssize_t max_page_sharing_show(struct kobject *kobj,
 				     struct kobj_attribute *attr, char *buf)
 {
@@ -3069,6 +3119,13 @@ static ssize_t pages_volatile_show(struct kobject *kobj,
 }
 KSM_ATTR_RO(pages_volatile);
 
+static ssize_t pages_skipped_show(struct kobject *kobj,
+				  struct kobj_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%lu\n", ksm_pages_skipped);
+}
+KSM_ATTR_RO(pages_skipped);
+
 static ssize_t stable_node_dups_show(struct kobject *kobj,
 				     struct kobj_attribute *attr, char *buf)
 {
@@ -3124,6 +3181,7 @@ static struct attribute *ksm_attrs[] = {
 	&pages_sharing_attr.attr,
 	&pages_unshared_attr.attr,
 	&pages_volatile_attr.attr,
+	&pages_skipped_attr.attr,
 	&full_scans_attr.attr,
 #ifdef CONFIG_NUMA
 	&merge_across_nodes_attr.attr,
@@ -3133,6 +3191,7 @@ static struct attribute *ksm_attrs[] = {
 	&stable_node_dups_attr.attr,
 	&stable_node_chains_prune_millisecs_attr.attr,
 	&use_zero_pages_attr.attr,
+	&smart_scan_attr.attr,
 	NULL,
 };
 
