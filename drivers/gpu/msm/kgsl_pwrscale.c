@@ -31,18 +31,6 @@ static struct kgsl_popp popp_param[POPP_MAX] = {
 	{0, 0},
 };
 
-/**
- * struct kgsl_midframe_info - midframe power stats sampling info
- * @timer - midframe sampling timer
- * @timer_check_ws - Updates powerstats on midframe expiry
- * @device - pointer to kgsl_device
- */
-static struct kgsl_midframe_info {
-	struct hrtimer timer;
-	struct work_struct timer_check_ws;
-	struct kgsl_device *device;
-} *kgsl_midframe = NULL;
-
 static void do_devfreq_suspend(struct work_struct *work);
 static void do_devfreq_resume(struct work_struct *work);
 static void do_devfreq_notify(struct work_struct *work);
@@ -374,9 +362,10 @@ EXPORT_SYMBOL(kgsl_pwrscale_update);
 
 void kgsl_pwrscale_midframe_timer_restart(struct kgsl_device *device)
 {
+	struct kgsl_pwrscale *pwrscale = &device->pwrscale;
 	uint interval_us, slack_us;
 
-	if (kgsl_midframe) {
+	if (pwrscale->midframe_enabled) {
 		WARN_ON(!mutex_is_locked(&device->mutex));
 
 		/*
@@ -391,7 +380,7 @@ void kgsl_pwrscale_midframe_timer_restart(struct kgsl_device *device)
 		 * preserving an active timer here cannot keep the sampler alive while
 		 * the GPU is idle.
 		 */
-		if (hrtimer_active(&kgsl_midframe->timer))
+		if (hrtimer_active(&pwrscale->midframe_timer))
 			return;
 
 		/*
@@ -412,7 +401,7 @@ void kgsl_pwrscale_midframe_timer_restart(struct kgsl_device *device)
 		 * window while still allowing useful wakeup coalescing.
 		 */
 		slack_us = min(midframe_timer_slack_us, interval_us / 4);
-		hrtimer_start_range_ns(&kgsl_midframe->timer,
+		hrtimer_start_range_ns(&pwrscale->midframe_timer,
 				ns_to_ktime((u64) interval_us * NSEC_PER_USEC),
 				(u64) slack_us * NSEC_PER_USEC,
 				HRTIMER_MODE_REL);
@@ -422,16 +411,20 @@ EXPORT_SYMBOL(kgsl_pwrscale_midframe_timer_restart);
 
 void kgsl_pwrscale_midframe_timer_cancel(struct kgsl_device *device)
 {
-	if (kgsl_midframe) {
+	struct kgsl_pwrscale *pwrscale = &device->pwrscale;
+
+	if (pwrscale->midframe_enabled) {
 		WARN_ON(!mutex_is_locked(&device->mutex));
-		hrtimer_cancel(&kgsl_midframe->timer);
+		hrtimer_cancel(&pwrscale->midframe_timer);
 	}
 }
 EXPORT_SYMBOL(kgsl_pwrscale_midframe_timer_cancel);
 
 static void kgsl_pwrscale_midframe_timer_check(struct work_struct *work)
 {
-	struct kgsl_device *device = kgsl_midframe->device;
+	struct kgsl_pwrscale *pwrscale = container_of(work,
+			struct kgsl_pwrscale, midframe_ws);
+	struct kgsl_device *device = pwrscale->device;
 
 	mutex_lock(&device->mutex);
 	if (device->state == KGSL_STATE_ACTIVE)
@@ -441,10 +434,10 @@ static void kgsl_pwrscale_midframe_timer_check(struct work_struct *work)
 
 static enum hrtimer_restart kgsl_pwrscale_midframe_timer(struct hrtimer *timer)
 {
-	struct kgsl_device *device = kgsl_midframe->device;
+	struct kgsl_pwrscale *pwrscale = container_of(timer,
+			struct kgsl_pwrscale, midframe_timer);
 
-	queue_work(device->pwrscale.devfreq_wq,
-			&kgsl_midframe->timer_check_ws);
+	queue_work(pwrscale->devfreq_wq, &pwrscale->midframe_ws);
 
 	return HRTIMER_NORESTART;
 }
@@ -1310,17 +1303,12 @@ int kgsl_pwrscale_init(struct device *dev, const char *governor)
 			"qcom,enable-midframe-timer"));
 
 	if (use_midframe_timer) {
-		kgsl_midframe = kzalloc(
-				sizeof(struct kgsl_midframe_info), GFP_KERNEL);
-		if (kgsl_midframe) {
-			hrtimer_init(&kgsl_midframe->timer,
-					CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-			kgsl_midframe->timer.function =
-					kgsl_pwrscale_midframe_timer;
-			kgsl_midframe->device = device;
-		} else
-			dev_err(device->dev,
-				     "Failed to enable midframe timer feature\n");
+		hrtimer_init(&pwrscale->midframe_timer,
+				CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		pwrscale->midframe_timer.function =
+				kgsl_pwrscale_midframe_timer;
+		pwrscale->device = device;
+		pwrscale->midframe_enabled = true;
 	}
 
 	/*
@@ -1348,14 +1336,34 @@ int kgsl_pwrscale_init(struct device *dev, const char *governor)
 	pwrscale->devfreq_wq = create_freezable_workqueue("kgsl_devfreq_wq");
 	if (!pwrscale->devfreq_wq) {
 		dev_err(device->dev, "Failed to allocate kgsl devfreq workqueue\n");
+		pwrscale->midframe_enabled = false;
 		device->pwrscale.enabled = false;
 		return -ENOMEM;
 	}
+
+	/*
+	 * Initialize every asynchronous object before devfreq can publish the
+	 * profile or invoke one of its callbacks.  Apart from closing the probe
+	 * race, keeping the sampler in pwrscale ties its lifetime to the device
+	 * instead of a process-wide allocation.
+	 */
+	INIT_WORK(&pwrscale->devfreq_suspend_ws, do_devfreq_suspend);
+	INIT_WORK(&pwrscale->devfreq_resume_ws, do_devfreq_resume);
+	INIT_WORK(&pwrscale->devfreq_notify_ws, do_devfreq_notify);
+	INIT_WORK(&pwrscale->devfreq_submit_ws, do_devfreq_submit);
+	seqcount_init(&pwrscale->pipeline_seq);
+	pwrscale->pipeline.submit_cpu = -1;
+	if (pwrscale->midframe_enabled)
+		INIT_WORK(&pwrscale->midframe_ws,
+				kgsl_pwrscale_midframe_timer_check);
 
 	devfreq = devfreq_add_device(dev, &pwrscale->gpu_profile.profile,
 			governor, pwrscale->gpu_profile.private_data);
 	if (IS_ERR(devfreq)) {
 		device->pwrscale.enabled = false;
+		pwrscale->midframe_enabled = false;
+		destroy_workqueue(pwrscale->devfreq_wq);
+		pwrscale->devfreq_wq = NULL;
 		return PTR_ERR(devfreq);
 	}
 
@@ -1397,16 +1405,6 @@ int kgsl_pwrscale_init(struct device *dev, const char *governor)
 
 	ret = sysfs_create_link(&device->dev->kobj,
 			&devfreq->dev.kobj, "devfreq");
-
-	INIT_WORK(&pwrscale->devfreq_suspend_ws, do_devfreq_suspend);
-	INIT_WORK(&pwrscale->devfreq_resume_ws, do_devfreq_resume);
-	INIT_WORK(&pwrscale->devfreq_notify_ws, do_devfreq_notify);
-	INIT_WORK(&pwrscale->devfreq_submit_ws, do_devfreq_submit);
-	seqcount_init(&pwrscale->pipeline_seq);
-	pwrscale->pipeline.submit_cpu = -1;
-	if (kgsl_midframe)
-		INIT_WORK(&kgsl_midframe->timer_check_ws,
-				kgsl_pwrscale_midframe_timer_check);
 
 	pwrscale->next_governor_call = ktime_add_us(ktime_get(),
 			KGSL_GOVERNOR_CALL_INTERVAL);
@@ -1459,8 +1457,7 @@ void kgsl_pwrscale_close(struct kgsl_device *device)
 	}
 
 	devfreq_remove_device(device->pwrscale.devfreqptr);
-	kfree(kgsl_midframe);
-	kgsl_midframe = NULL;
+	pwrscale->midframe_enabled = false;
 	device->pwrscale.devfreqptr = NULL;
 	srcu_cleanup_notifier_head(&device->pwrscale.nh);
 	dev_pm_opp_unregister_notifier(&device->pdev->dev, &pwr->nb);
