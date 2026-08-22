@@ -599,6 +599,8 @@ struct kona_icc_provider {
 	unsigned long resume_jiffies;
 	u8 resume_phase;
 	struct delayed_work retry_work;
+	struct delayed_work resume_floor_work;
+	unsigned long resume_floor_deadline;
 	struct delayed_work cpu_downvote_work;
 	unsigned long cpu_downvote_deadline;
 	bool cpu_downvote_expired;
@@ -1041,6 +1043,9 @@ struct kona_icc_node_sysfs {
 #define KONA_RESUME_PHASE0_DELAY_MS	0
 #define KONA_RESUME_PHASE1_DELAY_MS	25
 #define KONA_RESUME_PHASE2_DELAY_MS	120
+#define KONA_RESUME_CPU_FLOOR_MS		1000
+#define KONA_RESUME_CPU_MEM_AB_FLOOR_KBPS	512000ULL
+#define KONA_RESUME_CPU_MEM_IB_FLOOR_KBPS	1200000ULL
 
 
 static bool kona_resume_debug;
@@ -4330,6 +4335,19 @@ static int kona_icc_process_packed_aggregate(struct kona_icc_provider *qp,
 	if (!dry_run && !READ_ONCE(kona_cpu_bcm_force_high))
 		kona_icc_hold_cpu_downvote(qp, &inputs,
 					   &qp->packed_last_real_inputs);
+	/*
+	 * Protect only the immediate normal-resume window.  Applying the floor to
+	 * the memory endpoint here lets the existing packing model propagate it to
+	 * MC0 and to the max(LLCC, DDR) SH4/SH0 votes in their native geometry.
+	 */
+	if (!dry_run && qp->resume_floor_deadline &&
+	    !READ_ONCE(qp->system_suspended) &&
+	    time_before(jiffies, qp->resume_floor_deadline)) {
+		inputs.mem_avg = max(inputs.mem_avg,
+				     KONA_RESUME_CPU_MEM_AB_FLOOR_KBPS);
+		inputs.mem_peak = max(inputs.mem_peak,
+				      KONA_RESUME_CPU_MEM_IB_FLOOR_KBPS);
+	}
 	qp->packed_current_inputs = inputs;
 	observed = dry_run ? &qp->packed_last_dry_run_inputs :
 		&qp->packed_last_real_inputs;
@@ -4871,6 +4889,20 @@ static bool kona_icc_replay_req_votes_phased(struct kona_icc_provider *qp)
 
 	switch (qp->resume_phase) {
 	case 0:
+		if (kona_cpu_model_stage() >= 4 &&
+		    READ_ONCE(kona_packed_runtime_enable) &&
+		    READ_ONCE(kona_packed_group_mask) &&
+		    !qp->packed_fallback_active) {
+			bool packed_skip_legacy = false;
+			unsigned int i;
+
+			/* Restore the shared CPU fabric before display/clock bring-up. */
+			kona_icc_process_packed_aggregate(qp, &packed_skip_legacy);
+			if (packed_skip_legacy)
+				for (i = 0; i < qp->num_nodes; i++)
+					if (kona_icc_is_cpu_memory_path(&qp->nodes[i]))
+						kona_icc_clear_dirty(qp, i);
+		}
 		/*
 		 * Display bring-up can start immediately after resume unpauses voting.
 		 * Prioritize DISPLAY paths first so panel/SDE sees fabric/DDR votes early,
@@ -4924,6 +4956,30 @@ static void kona_icc_cpu_downvote_workfn(struct work_struct *work)
 	mutex_unlock(&qp->vote_lock);
 
 	kona_icc_queue_replay(qp, 0, "cpu-downvote-hold-expired");
+}
+
+static void kona_icc_resume_floor_workfn(struct work_struct *work)
+{
+	struct kona_icc_provider *qp =
+		container_of(to_delayed_work(work), struct kona_icc_provider,
+			     resume_floor_work);
+	unsigned int i;
+	bool replay = false;
+
+	mutex_lock(&qp->vote_lock);
+	if (qp->resume_floor_deadline) {
+		qp->resume_floor_deadline = 0;
+		kona_icc_packed_force_generation(qp);
+		for (i = 0; i < qp->num_nodes; i++)
+			if (kona_icc_is_cpu_memory_path(&qp->nodes[i]))
+				kona_icc_mark_dirty(qp, i);
+		replay = !READ_ONCE(qp->system_suspended) &&
+			 !atomic_read(&qp->votes_paused);
+	}
+	mutex_unlock(&qp->vote_lock);
+
+	if (replay)
+		kona_icc_queue_replay(qp, 0, "resume-cpu-floor-expired");
 }
 
 static void kona_icc_retry_workfn(struct work_struct *work)
@@ -6103,6 +6159,14 @@ static int kona_icc_suspend(struct device *dev)
 		return 0;
 
 	WRITE_ONCE(qp->system_suspended, true);
+	/* Drain replay producers before retry cancellation. */
+	cancel_delayed_work_sync(&qp->resume_floor_work);
+	cancel_delayed_work_sync(&qp->cpu_downvote_work);
+	mutex_lock(&qp->vote_lock);
+	qp->resume_floor_deadline = 0;
+	qp->cpu_downvote_deadline = 0;
+	qp->cpu_downvote_expired = false;
+	mutex_unlock(&qp->vote_lock);
 	/* Ensure no stale vote replays fire during suspend/idle windows. */
 	cancel_delayed_work_sync(&qp->retry_work);
 
@@ -6114,11 +6178,15 @@ static int kona_icc_resume(struct device *dev)
 {
 	struct kona_icc_provider *qp = dev_get_drvdata(dev);
 
-	if (qp)
+	if (qp) {
 		WRITE_ONCE(qp->system_suspended, false);
-
-	if (qp)
+		mutex_lock(&qp->vote_lock);
+		qp->resume_floor_deadline = jiffies +
+			msecs_to_jiffies(KONA_RESUME_CPU_FLOOR_MS);
+		kona_icc_packed_force_generation(qp);
+		mutex_unlock(&qp->vote_lock);
 		atomic_set(&qp->votes_paused, 0);
+	}
 
 	if (kona_resume_debug && qp)
 		dev_info(dev, "kona-icc: votes unpaused (resume)\n");
@@ -6138,6 +6206,8 @@ static int kona_icc_resume(struct device *dev)
 	if (qp) {
 		qp->resume_jiffies = jiffies;
 		qp->resume_phase = 0;
+		mod_delayed_work(system_wq, &qp->resume_floor_work,
+				 msecs_to_jiffies(KONA_RESUME_CPU_FLOOR_MS));
 		kona_icc_queue_replay(qp, KONA_RESUME_PHASE0_DELAY_MS, "resume-phase0");
 	}
 
@@ -6283,6 +6353,8 @@ static int kona_icc_probe(struct platform_device *pdev)
 
 
 	INIT_DELAYED_WORK(&qp->retry_work, kona_icc_retry_workfn);
+	INIT_DELAYED_WORK(&qp->resume_floor_work,
+			  kona_icc_resume_floor_workfn);
 	INIT_DELAYED_WORK(&qp->cpu_downvote_work,
 			  kona_icc_cpu_downvote_workfn);
 	/* Use phased replay only after resume(); steady-state retries stay immediate. */
@@ -6475,8 +6547,9 @@ static int kona_icc_remove(struct platform_device *pdev)
 		kona_packed_provider = NULL;
 	mutex_unlock(&kona_packed_param_lock);
 
-	cancel_delayed_work_sync(&qp->retry_work);
+	cancel_delayed_work_sync(&qp->resume_floor_work);
 	cancel_delayed_work_sync(&qp->cpu_downvote_work);
+	cancel_delayed_work_sync(&qp->retry_work);
 
 	if (qp->display_nb_registered) {
 		msm_drm_unregister_client(&qp->display_nb);
