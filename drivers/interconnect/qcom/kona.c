@@ -1414,6 +1414,14 @@ static bool kona_icc_is_raw_role(const struct kona_icc_node_desc *desc)
 
 static bool kona_icc_is_replay_suppressed_path(const struct kona_icc_node_desc *desc)
 {
+	/*
+	 * IPA is an active runtime ICC consumer. Requests received while RPMh
+	 * voting is paused must remain dirty and be restored once programming is
+	 * available again.
+	 */
+	if (desc->role == KONA_ROLE_IPA)
+		return false;
+
 	return kona_icc_is_crypto_path(desc) || kona_icc_is_raw_npu_path(desc) ||
 	       (!kona_display_raw_icc_enable && desc->role == KONA_ROLE_DISPLAY) ||
 	       (!kona_storage_raw_icc_enable && kona_icc_is_storage_path(desc)) ||
@@ -1594,6 +1602,17 @@ static unsigned long kona_npu_keepalive_ib_kb = 1800000;  /* 1.8 GB/s */
 static bool kona_dsp_keepalive_enable = false;
 static unsigned long kona_dsp_keepalive_ab_kb = 640000;   /* 640 MB/s */
 static unsigned long kona_dsp_keepalive_ib_kb = 1800000;  /* 1.8 GB/s */
+
+/*
+ * IPA performance-index transitions can briefly request 0/0 while modem,
+ * GSI and IPA PM state changes. Keep a bounded functional fabric vote across
+ * those gaps so an active packet path does not collapse underneath traffic.
+ */
+static bool kona_ipa_keepalive_enable = true;
+static unsigned long kona_ipa_keepalive_ab_kb = 512000;   /* 512 MB/s */
+static unsigned long kona_ipa_keepalive_ib_kb = 8192000;  /* 8 GB/s */
+static unsigned int kona_ipa_keepalive_window_ms = 2000;
+
 static bool kona_media_keepalive_enable = false;
 static unsigned long kona_media_keepalive_ab_kb = 1500000;  /* 1.5 GB/s */
 static unsigned long kona_media_keepalive_ib_kb = 3200000; /* 3.2 GB/s */
@@ -1751,6 +1770,19 @@ MODULE_PARM_DESC(kona_dsp_keepalive_ab_kb,
 module_param(kona_dsp_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_dsp_keepalive_ib_kb,
         "dsp keepalive IB floor in KB/s (default: 1800000)");
+module_param(kona_ipa_keepalive_enable, bool, 0644);
+MODULE_PARM_DESC(kona_ipa_keepalive_enable,
+	"Keep IPA fabric voting alive across short PM/performance-index gaps");
+module_param(kona_ipa_keepalive_ab_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_ipa_keepalive_ab_kb,
+	"IPA transition keepalive AB floor in KB/s (default: 512000)");
+module_param(kona_ipa_keepalive_ib_kb, ulong, 0644);
+MODULE_PARM_DESC(kona_ipa_keepalive_ib_kb,
+	"IPA transition keepalive IB floor in KB/s (default: 8192000)");
+module_param(kona_ipa_keepalive_window_ms, uint, 0644);
+MODULE_PARM_DESC(kona_ipa_keepalive_window_ms,
+	"Maximum IPA transition keepalive window in ms (default: 2000)");
+
 module_param(kona_media_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_media_keepalive_enable,
 	"Keep non-zero floor for video/cvp/camera data paths between short idle gaps");
@@ -2055,6 +2087,7 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 	const struct kona_icc_node_desc *desc;
 	u64 keepalive_ab = 0, keepalive_ib = 0;
 	unsigned int decay_percent = 100;
+	unsigned int decay_window_ms = kona_keepalive_decay_window_ms;
 
 	if (!qp->last_ab || !qp->last_ib || *ab || *ib)
 		return false;
@@ -2108,6 +2141,14 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 		keepalive_ab = kona_media_keepalive_ab_kb;
 		keepalive_ib = kona_media_keepalive_ib_kb;
 		break;
+	case KONA_ROLE_IPA:
+		if (!kona_ipa_keepalive_enable)
+			break;
+		keepalive = true;
+		keepalive_ab = kona_ipa_keepalive_ab_kb;
+		keepalive_ib = kona_ipa_keepalive_ib_kb;
+		decay_window_ms = kona_ipa_keepalive_window_ms;
+		break;
 	case KONA_ROLE_DISPLAY:
 		if (!kona_disp_keepalive_enable)
 			break;
@@ -2117,7 +2158,6 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 		break;
 	case KONA_ROLE_GMU:
 	case KONA_ROLE_STORAGE:
-	case KONA_ROLE_IPA:
 	case KONA_ROLE_PERIPHERAL:
 	case KONA_ROLE_CONFIG:
 	case KONA_ROLE_RAW:
@@ -2129,7 +2169,9 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 		return false;
 
 	display_inactive = !READ_ONCE(qp->display_active);
-	if (display_inactive && desc->role != KONA_ROLE_DISPLAY) {
+	if (display_inactive &&
+	    desc->role != KONA_ROLE_DISPLAY &&
+	    desc->role != KONA_ROLE_IPA) {
 		unsigned int sleep_percent;
 
 		sleep_percent = min_t(unsigned int, kona_sleep_keepalive_percent, 100);
@@ -2148,17 +2190,17 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 		u32 elapsed;
 		unsigned int floor_percent;
 
-		if (!active_j || !kona_keepalive_decay_window_ms)
+		if (!active_j || !decay_window_ms)
 			return false;
 
 		/* Unsigned jiffies delta is wrap-safe for elapsed-time checks. */
 		elapsed = jiffies_to_msecs(jiffies - active_j);
-		if (elapsed >= kona_keepalive_decay_window_ms)
+		if (elapsed >= decay_window_ms)
 			return false;
 
 		decay_percent = 100 -
 			mul_u64_u32_div((u64)elapsed, 100,
-					kona_keepalive_decay_window_ms);
+					decay_window_ms);
 		floor_percent = min_t(unsigned int, kona_keepalive_decay_min_percent,
 				     100);
 		decay_percent = max(decay_percent, floor_percent);
@@ -4938,6 +4980,7 @@ static bool kona_icc_replay_req_votes_phased(struct kona_icc_provider *qp)
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_DSP, false);
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_MEDIA, false);
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_STORAGE, false);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_IPA, false);
 		qp->resume_phase = 2;
 		schedule_delayed_work(&qp->retry_work,
 				      msecs_to_jiffies(KONA_RESUME_PHASE2_DELAY_MS));
