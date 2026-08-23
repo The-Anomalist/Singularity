@@ -4328,6 +4328,22 @@ static int kona_icc_process_packed_aggregate(struct kona_icc_provider *qp,
 		return 0;
 
 	dry_run = READ_ONCE(kona_packed_dry_run);
+
+	/*
+	 * Never submit packed ACTIVE_ONLY CPU BCM votes while suspend has
+	 * stopped RPMh programming.  The normal legacy path is protected by
+	 * kona_icc_can_program(), but packed CPU aggregation runs before that
+	 * guard in __kona_icc_set().
+	 *
+	 * CPU/devbw callbacks may still update their cached requests while the
+	 * system is entering or leaving suspend; resume replay will submit the
+	 * latest aggregate once RPMh/apps_rsc is safe again.
+	 */
+	if (!dry_run &&
+	    (READ_ONCE(qp->system_suspended) ||
+	     atomic_read(&qp->votes_paused)))
+		return 0;
+
 	qp->packed_aggregate_evaluation_count++;
 	kona_packed_snapshot_inputs(qp, &inputs);
 	qp->packed_dynamic_inputs = inputs;
