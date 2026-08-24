@@ -1176,6 +1176,60 @@ module_param_named(kona_display_cfg_nonzero_floor_ib_kBps, kona_display_cfg_nonz
 MODULE_PARM_DESC(kona_display_cfg_nonzero_floor_ib_kBps,
 	"Fallback DISPLAY config-path floor peak BW (kB/s) for 0/0 votes");
 
+/*
+ * Short active-display bandwidth bridge.
+ *
+ * SDE can briefly issue 0/0 between otherwise active display votes. Dropping
+ * immediately to the minimum non-zero safety floor can force DDR/LLCC through
+ * an unnecessary down/up transition inside a frame sequence.
+ *
+ * Reuse a bounded portion of the last genuine DISPLAY request for only a few
+ * frame intervals. No timer or delayed work is required: the bridge is
+ * evaluated only when another ICC vote arrives. Screen-off and suspend are
+ * excluded by kona_icc_display_runtime_active().
+ */
+static bool kona_display_gap_bridge_enable = true;
+module_param_named(kona_display_gap_bridge_enable,
+		   kona_display_gap_bridge_enable, bool, 0644);
+MODULE_PARM_DESC(kona_display_gap_bridge_enable,
+	"Bridge short active DISPLAY 0/0 gaps using a bounded previous real vote");
+
+static unsigned int kona_display_gap_bridge_ms = 24;
+module_param_named(kona_display_gap_bridge_ms,
+		   kona_display_gap_bridge_ms, uint, 0644);
+MODULE_PARM_DESC(kona_display_gap_bridge_ms,
+	"Maximum active DISPLAY 0/0 bridge duration in ms (default: 24)");
+
+static unsigned int kona_display_gap_bridge_percent = 75;
+module_param_named(kona_display_gap_bridge_percent,
+		   kona_display_gap_bridge_percent, uint, 0644);
+MODULE_PARM_DESC(kona_display_gap_bridge_percent,
+	"Percent of the previous real DISPLAY vote retained during a short gap");
+
+static unsigned long kona_display_gap_bridge_ab_min_kBps = 384000;
+module_param_named(kona_display_gap_bridge_ab_min_kBps,
+		   kona_display_gap_bridge_ab_min_kBps, ulong, 0644);
+MODULE_PARM_DESC(kona_display_gap_bridge_ab_min_kBps,
+	"Minimum DISPLAY gap-bridge average BW in kB/s");
+
+static unsigned long kona_display_gap_bridge_ab_max_kBps = 1500000;
+module_param_named(kona_display_gap_bridge_ab_max_kBps,
+		   kona_display_gap_bridge_ab_max_kBps, ulong, 0644);
+MODULE_PARM_DESC(kona_display_gap_bridge_ab_max_kBps,
+	"Maximum DISPLAY gap-bridge average BW in kB/s");
+
+static unsigned long kona_display_gap_bridge_ib_min_kBps = 2000000;
+module_param_named(kona_display_gap_bridge_ib_min_kBps,
+		   kona_display_gap_bridge_ib_min_kBps, ulong, 0644);
+MODULE_PARM_DESC(kona_display_gap_bridge_ib_min_kBps,
+	"Minimum DISPLAY gap-bridge peak BW in kB/s");
+
+static unsigned long kona_display_gap_bridge_ib_max_kBps = 9600000;
+module_param_named(kona_display_gap_bridge_ib_max_kBps,
+		   kona_display_gap_bridge_ib_max_kBps, ulong, 0644);
+MODULE_PARM_DESC(kona_display_gap_bridge_ib_max_kBps,
+	"Maximum DISPLAY gap-bridge peak BW in kB/s");
+
 static bool kona_display_bootstrap_floor_enable = true;
 module_param_named(kona_display_bootstrap_floor_enable, kona_display_bootstrap_floor_enable, bool, 0644);
 MODULE_PARM_DESC(kona_display_bootstrap_floor_enable,
@@ -5257,11 +5311,84 @@ skip_perf_floor:
 	if (desc->role == KONA_ROLE_DISPLAY && !ab && !ib &&
 	    kona_display_nonzero_floor_enable &&
 	    kona_icc_display_runtime_active(qp)) {
-		kona_icc_get_display_nonzero_floor(desc->id, &ab, &ib);
-		if (kona_resume_debug)
-			dev_info_ratelimited(qp->provider.dev,
-				"kona-icc: fallback non-zero DISPLAY floor for %s: ab=%llu ib=%llu\n",
-				desc->name, ab, ib);
+		bool bridged = false;
+
+		/*
+		 * A very short 0/0 from an otherwise active SDE path should not
+		 * immediately collapse the fabric. Reuse only a bounded fraction
+		 * of the last genuine client vote, and only while that request is
+		 * still extremely recent.
+		 *
+		 * saved_ab/saved_ib are intentionally updated only by genuine
+		 * non-zero DISPLAY requests, so a synthetic bridge/fallback can
+		 * never refresh itself indefinitely.
+		 */
+		if (kona_display_gap_bridge_enable &&
+		    kona_display_gap_bridge_ms &&
+		    (desc->id == KONA_ICC_DISP0_TO_MEM ||
+		     desc->id == KONA_ICC_DISP1_TO_MEM) &&
+		    qp->saved_ab && qp->saved_ib &&
+		    qp->last_active_jiffies &&
+		    qp->saved_ab[index] != U64_MAX &&
+		    qp->saved_ib[index] != U64_MAX &&
+		    (qp->saved_ab[index] || qp->saved_ib[index])) {
+			unsigned long active_j;
+			unsigned int percent;
+			u64 bridge_ab, bridge_ib;
+
+			active_j = READ_ONCE(qp->last_active_jiffies[index]);
+			percent = min_t(unsigned int,
+					kona_display_gap_bridge_percent, 100);
+
+			if (active_j &&
+			    time_before(jiffies,
+					active_j +
+					msecs_to_jiffies(
+						kona_display_gap_bridge_ms))) {
+				bridge_ab = mul_u64_u32_div(
+						READ_ONCE(qp->saved_ab[index]),
+						percent, 100);
+				bridge_ib = mul_u64_u32_div(
+						READ_ONCE(qp->saved_ib[index]),
+						percent, 100);
+
+				/*
+				 * Keep the bridge meaningful enough to prevent an
+				 * immediate low-corner transition, but never retain
+				 * an arbitrarily large previous SDE vote.
+				 */
+				bridge_ab = clamp_t(u64, bridge_ab,
+					(u64)kona_display_gap_bridge_ab_min_kBps,
+					(u64)kona_display_gap_bridge_ab_max_kBps);
+				bridge_ib = clamp_t(u64, bridge_ib,
+					(u64)kona_display_gap_bridge_ib_min_kBps,
+					(u64)kona_display_gap_bridge_ib_max_kBps);
+
+				ab = bridge_ab;
+				ib = bridge_ib;
+				bridged = true;
+
+				if (kona_resume_debug)
+					dev_info_ratelimited(qp->provider.dev,
+						"kona-icc: bridged short DISPLAY gap for %s: ab=%llu ib=%llu\n",
+						desc->name, ab, ib);
+			}
+		}
+
+		/*
+		 * Preserve the existing black-screen protection exactly as the
+		 * final safety net. Once the tiny bridge window expires, or when
+		 * there is no trustworthy previous real vote, use the existing
+		 * non-zero fallback rather than allowing a literal 0/0 collapse.
+		 */
+		if (!bridged) {
+			kona_icc_get_display_nonzero_floor(desc->id, &ab, &ib);
+
+			if (kona_resume_debug)
+				dev_info_ratelimited(qp->provider.dev,
+					"kona-icc: fallback non-zero DISPLAY floor for %s: ab=%llu ib=%llu\n",
+					desc->name, ab, ib);
+		}
 	}
 	KONA_VOTE_TRACE(qp, desc, "after-display-fallback", ab, ib);
 
