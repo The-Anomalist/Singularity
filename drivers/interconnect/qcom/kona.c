@@ -725,7 +725,16 @@ static void kona_icc_packed_force_generation(struct kona_icc_provider *qp);
 static void kona_icc_queue_replay(struct kona_icc_provider *qp,
 				 unsigned int delay_ms, const char *why);
 
-static bool kona_packed_runtime_enable = true;
+/*
+ * Keep the Stage-4 packed CPU model available for diagnostics/runtime A/B,
+ * but do not make SH4/SH0/MC0 direct packed ownership the boot default.
+ *
+ * The Kona ICC provider remains fully registered and CPU/devbw requests
+ * continue through the existing ICC policy, aggregation and legacy CPU
+ * programming path. This only prevents CPU-only packed writes from becoming
+ * authoritative over shared downstream SH0/MC0 resources at boot.
+ */
+static bool kona_packed_runtime_enable;
 static bool kona_packed_dry_run;
 static bool kona_packed_real_write_enable = true;
 static bool kona_packed_real_write_once;
@@ -3593,6 +3602,25 @@ static struct icc_path *kona_icc_xlate(struct icc_provider *provider,
 	desc = kona_find_desc(qp, spec->args[0], &index);
 	if (!desc)
 		return ERR_PTR(-EINVAL);
+
+	/*
+	 * IPA keeps physical bandwidth ownership in ipa3/IPA PM.
+	 *
+	 * Its LLCC/DDR paths share downstream SH0/MC0/ACV resources and have
+	 * an independent modem/GSI SSR and reprobe lifecycle. The virtual IPA
+	 * nodes reuse CPU_LLCC/CPU_MEM aliases, which must not race Stage-4
+	 * packed CPU ownership of SH0/MC0.
+	 *
+	 * Reject IPA acquisition here so ipa3 falls back to its native msm_bus
+	 * client and retains one recovery-aware physical bandwidth owner.
+	 */
+	if (desc->role == KONA_ROLE_IPA) {
+		dev_info_ratelimited(provider->dev,
+			"kona-icc: IPA path %s delegated to ipa3/msm_bus\n",
+			desc->name);
+		return ERR_PTR(-ENODEV);
+	}
+
 	if (!kona_icc_stage_allows_id(desc->id)) {
 		dev_info_ratelimited(provider->dev,
 			"kona-icc: stage %u rejects disabled id=%u (%s); msm_bus fallback expected for hybrid clients\n",
@@ -3808,6 +3836,22 @@ static bool kona_icc_vote_component_unchanged(u64 *last, unsigned int index, u64
  * preventing a low-rate sibling from pulling a shared channel below the vote
  * required by the active high-rate sibling.
  */
+
+static bool kona_icc_is_external_cached_path(
+		const struct kona_icc_node_desc *desc)
+{
+	/*
+	 * Storage and display retain external physical bandwidth owners while
+	 * their Kona raw writers are disabled. Their accepted ICC requests are
+	 * logical/cache state only and must not become contributors to a later
+	 * CPU_MEM/CPU_LLCC shared-resource write.
+	 */
+	return (!kona_storage_raw_icc_enable &&
+		kona_icc_is_storage_path(desc)) ||
+	       (!kona_display_raw_icc_enable &&
+		desc->role == KONA_ROLE_DISPLAY);
+}
+
 static u64 kona_icc_shared_resource_vote(struct kona_icc_provider *qp,
 					 const char *resource, bool average)
 {
@@ -3824,7 +3868,8 @@ static u64 kona_icc_shared_resource_vote(struct kona_icc_provider *qp,
 
 		if (!node_resource || strcmp(resource, node_resource) ||
 		    node_vote == U64_MAX ||
-		    kona_icc_is_policy_suppressed_path(node))
+		    kona_icc_is_policy_suppressed_path(node) ||
+		    kona_icc_is_external_cached_path(node))
 			continue;
 
 		vote = max(vote, node_vote);
@@ -3846,7 +3891,8 @@ static void kona_icc_cache_shared_resource_vote(struct kona_icc_provider *qp,
 		const char *node_resource = average ? qp->nodes[i].ab : qp->nodes[i].ib;
 		u64 *last = average ? qp->last_ab : qp->last_ib;
 
-		if (last && node_resource && !strcmp(resource, node_resource))
+		if (last && node_resource && !strcmp(resource, node_resource) &&
+		    !kona_icc_is_external_cached_path(&qp->nodes[i]))
 			last[i] = vote;
 	}
 }
@@ -6364,42 +6410,61 @@ static int kona_icc_resume(struct device *dev)
 {
 	struct kona_icc_provider *qp = dev_get_drvdata(dev);
 
-	if (qp) {
-		WRITE_ONCE(qp->system_suspended, false);
-		mutex_lock(&qp->vote_lock);
-		qp->resume_floor_deadline = jiffies +
-			msecs_to_jiffies(KONA_RESUME_CPU_FLOOR_MS);
-		kona_icc_packed_force_generation(qp);
-		mutex_unlock(&qp->vote_lock);
-		atomic_set(&qp->votes_paused, 0);
-	}
-
-	if (kona_resume_debug && qp)
-		dev_info(dev, "kona-icc: votes unpaused (resume)\n");
+	if (!qp)
+		return 0;
 
 	/*
-	 * RPMh ACTIVE_ONLY votes are not retained across suspend. Invalidate the
-	 * software cache so the first post-resume icc_set_bw() always re-sends.
+	 * Keep voting paused until the complete resume epoch is initialized.
+	 * Otherwise an ICC callback can observe system_suspended=false and
+	 * votes_paused=0 while last_* still describes the pre-suspend hardware
+	 * state or resume_phase still selects the steady-state replay path.
+	 */
+	WRITE_ONCE(qp->system_suspended, false);
+
+	mutex_lock(&qp->vote_lock);
+
+	qp->resume_floor_deadline = jiffies +
+		msecs_to_jiffies(KONA_RESUME_CPU_FLOOR_MS);
+	kona_icc_packed_force_generation(qp);
+
+	/*
+	 * RPMh ACTIVE_ONLY votes are not retained across suspend. Invalidate
+	 * the software hardware-vote cache before reopening programming so
+	 * the first post-resume request cannot be mistaken for an unchanged
+	 * pre-suspend vote.
 	 */
 	kona_icc_invalidate_cache(qp);
 
 	/*
-	 * Resume hardening (no-idle-drain):
-	 *   - Avoid an early resume replay storm that can congest RPMh/apps_rsc
-	 *     and race the DSI/SDE bring-up window on battery.
-	 *   - Replay last requested votes in phases (DISPLAY -> CPU/NPU -> GPU/GENERIC).
+	 * Establish phased replay before votes_paused is cleared. This keeps
+	 * any newly arriving ICC request or retry in the same resume epoch.
 	 */
-	if (qp) {
-		qp->resume_jiffies = jiffies;
-		qp->resume_phase = 0;
-		mod_delayed_work(system_wq, &qp->resume_floor_work,
-				 msecs_to_jiffies(KONA_RESUME_CPU_FLOOR_MS));
-		kona_icc_queue_replay(qp, KONA_RESUME_PHASE0_DELAY_MS, "resume-phase0");
-	}
+	qp->resume_jiffies = jiffies;
+	qp->resume_phase = 0;
+
+	mutex_unlock(&qp->vote_lock);
+
+	/*
+	 * Everything required for safe ACTIVE_ONLY programming is now visible.
+	 */
+	atomic_set(&qp->votes_paused, 0);
+
+	if (kona_resume_debug)
+		dev_info(dev, "kona-icc: votes unpaused (resume)\n");
+
+	/*
+	 * Resume hardening:
+	 *   - keep the existing bounded CPU resume floor;
+	 *   - preserve the existing DISPLAY -> CPU/NPU -> GPU phased replay;
+	 *   - do not change any vote, floor, BCM, or RPMh batch calculation.
+	 */
+	mod_delayed_work(system_wq, &qp->resume_floor_work,
+			 msecs_to_jiffies(KONA_RESUME_CPU_FLOOR_MS));
+	kona_icc_queue_replay(qp, KONA_RESUME_PHASE0_DELAY_MS,
+			      "resume-phase0");
 
 	return 0;
 }
-
 
 
 #ifdef CONFIG_PM_SLEEP
@@ -6689,30 +6754,27 @@ static int kona_icc_probe(struct platform_device *pdev)
 	kona_packed_provider = qp;
 
 	/*
-	 * Production Stage-4 ownership is kernel-controlled.  Bootloader/ROM
-	 * command-line module parameters may still contain stale staged-bring-up
-	 * values (runtime_enable=0/group_mask=0), so normalize the packed CPU BCM
-	 * controls only after SH4/SH0/MC0 metadata validation has completed.
+	 * Keep Stage-4 metadata and runtime diagnostics available, but retain the
+	 * established Kona ICC CPU programming path as the boot owner.
 	 *
-	 * A permanent metadata failure above demotes kona_rpmh_model to stage 1;
-	 * in that case leave packed ownership disabled and retain the legacy path.
+	 * SH0/MC0 are shared downstream with independently managed clients whose
+	 * physical/recovery ownership has not been transferred atomically. Do not
+	 * automatically arm CPU-only packed SH4/SH0/MC0 writes here.
+	 *
+	 * This does not disable ICC: the provider remains at its configured ICC
+	 * stage and CPU/devbw requests continue through __kona_icc_set() and the
+	 * normal aggregated CPU vote path.
 	 */
-	if (kona_cpu_model_stage() >= 4) {
-		WRITE_ONCE(kona_packed_group_mask, KONA_PACKED_GROUP_ALL);
-		WRITE_ONCE(kona_packed_dry_run, false);
-		WRITE_ONCE(kona_packed_real_write_enable, true);
-		WRITE_ONCE(kona_packed_real_write_once, false);
-		WRITE_ONCE(kona_packed_runtime_enable, false);
-	}
+	WRITE_ONCE(kona_packed_group_mask, KONA_PACKED_GROUP_ALL);
+	WRITE_ONCE(kona_packed_dry_run, false);
+	WRITE_ONCE(kona_packed_real_write_enable, true);
+	WRITE_ONCE(kona_packed_real_write_once, false);
+	WRITE_ONCE(kona_packed_runtime_enable, false);
+
 	mutex_unlock(&kona_packed_param_lock);
 
-	/*
-	 * Use the normal ownership transition so every CPU<->LLCC/DDR path is
-	 * invalidated, marked dirty and replayed through the packed worker.  This
-	 * also avoids performing RPMh I/O directly from probe context.
-	 */
-	if (kona_cpu_model_stage() >= 4)
-		kona_icc_packed_parameter_changed(qp, true);
+	dev_err(&pdev->dev,
+		"kona-rpmh: Stage-4 packed CPU ownership available but not armed; ICC CPU path retained\n");
 
         return 0;
 
