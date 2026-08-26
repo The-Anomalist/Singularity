@@ -12,6 +12,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/memblock.h>
 #include <linux/completion.h>
+#include <linux/delay.h>
 
 #include "main.h"
 #include "bus.h"
@@ -2906,8 +2907,24 @@ static int cnss_pci_suspend_noirq(struct device *dev)
 		goto out;
 
 	driver_ops = pci_priv->driver_ops;
-	if (driver_ops && driver_ops->suspend_noirq)
+	if (driver_ops && driver_ops->suspend_noirq) {
 		ret = driver_ops->suspend_noirq(pci_dev);
+
+		/*
+		 * A wake indication can race the final WLAN noirq suspend
+		 * transition and transiently return -EAGAIN.  Give that
+		 * condition one short, non-sleeping settling window before
+		 * aborting the entire system suspend attempt.
+		 *
+		 * This is the noirq phase, so do not use usleep_range().
+		 * Persistent wake activity is never hidden: a second
+		 * -EAGAIN is returned to the PM core unchanged.
+		 */
+		if (ret == -EAGAIN) {
+			udelay(500);
+			ret = driver_ops->suspend_noirq(pci_dev);
+		}
+	}
 
 out:
 	return ret;

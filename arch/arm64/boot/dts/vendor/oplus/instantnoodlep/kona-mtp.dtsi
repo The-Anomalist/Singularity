@@ -8,11 +8,11 @@
 #include "kona-thermal-overlay.dtsi"
 #include "kona-sensor.dtsi"
 
-/* Keep the display fabric alive across transient SDE 0/0 votes. */
-&kona_icc {
-	qcom,display-icc-protection;
-};
-
+/*
+ * Keep SDE/MDSS as the physical display bandwidth lifecycle owner on
+ * instantnoodlep.  The additional Kona display-protection policy can
+ * race the Pro display lifecycle and cause rapid MMCX level changes.
+ */
 &qupv3_se12_2uart {
 	status = "ok";
 };
