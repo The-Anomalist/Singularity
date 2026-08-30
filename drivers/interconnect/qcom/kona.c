@@ -584,6 +584,9 @@ struct kona_icc_provider {
 	u32 last_invalid_node_id;
 	const char *last_invalid_node_name;
 	struct kona_bcm_state cpu_bcms[KONA_CPU_BCM_COUNT];
+	u32 ipa_bridge_handle;
+	unsigned int ipa_bridge_last_idx;
+	bool ipa_bridge_last_valid;
 	bool system_suspended;
 	atomic_t votes_paused;
 	/* Serialize logical-path updates that share a physical RPMh BCM. */
@@ -1323,6 +1326,184 @@ module_param_named(kona_gmu_raw_icc_enable,
 		   kona_gmu_raw_icc_enable, bool, 0644);
 MODULE_PARM_DESC(kona_gmu_raw_icc_enable,
 		 "Program GMU RPMh votes instead of accepting GMU ICC paths as cached no-ops");
+
+/*
+ * IPA ICC ownership transition.
+ *
+ * ipa3 now acquires and drives the five Kona ICC paths directly.  Until the
+ * shared SN1/CN0/SH0/MC0 BCMs have all of their remaining legacy contributors
+ * transferred atomically, preserve Qualcomm's existing msm_bus aggregation as
+ * the physical backend.
+ *
+ * ipa3 submits the five ICC paths in legacy-vector order and ipa-core is last.
+ * Its unique peak value therefore identifies the complete IPA performance
+ * usecase and acts as the transaction commit point.
+ */
+static struct msm_bus_vectors kona_ipa_bridge_vectors[] = {
+	/* MIN */
+	{ .src = MSM_BUS_MASTER_IPA,
+	  .dst = MSM_BUS_SLAVE_LLCC, .ab = 0, .ib = 0 },
+	{ .src = MSM_BUS_MASTER_LLCC,
+	  .dst = MSM_BUS_SLAVE_EBI_CH0, .ab = 0, .ib = 0 },
+	{ .src = MSM_BUS_MASTER_IPA,
+	  .dst = MSM_BUS_SLAVE_OCIMEM, .ab = 0, .ib = 0 },
+	{ .src = MSM_BUS_MASTER_AMPSS_M0,
+	  .dst = MSM_BUS_SLAVE_IPA_CFG, .ab = 0, .ib = 0 },
+	{ .src = MSM_BUS_MASTER_IPA_CORE,
+	  .dst = MSM_BUS_SLAVE_IPA_CORE, .ab = 0, .ib = 0 },
+
+	/* SVS2 */
+	{ .src = MSM_BUS_MASTER_IPA,
+	  .dst = MSM_BUS_SLAVE_LLCC, .ab = 150000, .ib = 600000 },
+	{ .src = MSM_BUS_MASTER_LLCC,
+	  .dst = MSM_BUS_SLAVE_EBI_CH0, .ab = 150000, .ib = 1804000 },
+	{ .src = MSM_BUS_MASTER_IPA,
+	  .dst = MSM_BUS_SLAVE_OCIMEM, .ab = 75000, .ib = 300000 },
+	{ .src = MSM_BUS_MASTER_AMPSS_M0,
+	  .dst = MSM_BUS_SLAVE_IPA_CFG, .ab = 0, .ib = 76800 },
+	{ .src = MSM_BUS_MASTER_IPA_CORE,
+	  .dst = MSM_BUS_SLAVE_IPA_CORE, .ab = 0, .ib = 150 },
+
+	/* SVS */
+	{ .src = MSM_BUS_MASTER_IPA,
+	  .dst = MSM_BUS_SLAVE_LLCC, .ab = 625000, .ib = 1200000 },
+	{ .src = MSM_BUS_MASTER_LLCC,
+	  .dst = MSM_BUS_SLAVE_EBI_CH0, .ab = 625000, .ib = 3072000 },
+	{ .src = MSM_BUS_MASTER_IPA,
+	  .dst = MSM_BUS_SLAVE_OCIMEM, .ab = 312500, .ib = 700000 },
+	{ .src = MSM_BUS_MASTER_AMPSS_M0,
+	  .dst = MSM_BUS_SLAVE_IPA_CFG, .ab = 0, .ib = 150000 },
+	{ .src = MSM_BUS_MASTER_IPA_CORE,
+	  .dst = MSM_BUS_SLAVE_IPA_CORE, .ab = 0, .ib = 240 },
+
+	/* NOMINAL */
+	{ .src = MSM_BUS_MASTER_IPA,
+	  .dst = MSM_BUS_SLAVE_LLCC, .ab = 1250000, .ib = 2400000 },
+	{ .src = MSM_BUS_MASTER_LLCC,
+	  .dst = MSM_BUS_SLAVE_EBI_CH0, .ab = 1250000, .ib = 6220800 },
+	{ .src = MSM_BUS_MASTER_IPA,
+	  .dst = MSM_BUS_SLAVE_OCIMEM, .ab = 625000, .ib = 1500000 },
+	{ .src = MSM_BUS_MASTER_AMPSS_M0,
+	  .dst = MSM_BUS_SLAVE_IPA_CFG, .ab = 0, .ib = 400000 },
+	{ .src = MSM_BUS_MASTER_IPA_CORE,
+	  .dst = MSM_BUS_SLAVE_IPA_CORE, .ab = 0, .ib = 466 },
+
+	/* TURBO */
+	{ .src = MSM_BUS_MASTER_IPA,
+	  .dst = MSM_BUS_SLAVE_LLCC, .ab = 2000000, .ib = 3500000 },
+	{ .src = MSM_BUS_MASTER_LLCC,
+	  .dst = MSM_BUS_SLAVE_EBI_CH0, .ab = 2000000, .ib = 7219200 },
+	{ .src = MSM_BUS_MASTER_IPA,
+	  .dst = MSM_BUS_SLAVE_OCIMEM, .ab = 1000000, .ib = 1920000 },
+	{ .src = MSM_BUS_MASTER_AMPSS_M0,
+	  .dst = MSM_BUS_SLAVE_IPA_CFG, .ab = 0, .ib = 400000 },
+	{ .src = MSM_BUS_MASTER_IPA_CORE,
+	  .dst = MSM_BUS_SLAVE_IPA_CORE, .ab = 0, .ib = 533 },
+};
+
+static struct msm_bus_paths kona_ipa_bridge_paths[] = {
+	{ .num_paths = 5, .vectors = &kona_ipa_bridge_vectors[0]  },
+	{ .num_paths = 5, .vectors = &kona_ipa_bridge_vectors[5]  },
+	{ .num_paths = 5, .vectors = &kona_ipa_bridge_vectors[10] },
+	{ .num_paths = 5, .vectors = &kona_ipa_bridge_vectors[15] },
+	{ .num_paths = 5, .vectors = &kona_ipa_bridge_vectors[20] },
+};
+
+static struct msm_bus_scale_pdata kona_ipa_bridge_pdata = {
+	.usecase = kona_ipa_bridge_paths,
+	.num_usecases = ARRAY_SIZE(kona_ipa_bridge_paths),
+	.name = "kona-icc-ipa",
+	.active_only = 1,
+};
+
+static int kona_icc_ipa_bridge_index(u64 core_peak, unsigned int *idx)
+{
+	if (!idx)
+		return -EINVAL;
+
+	/*
+	 * icc_set_bw() takes kB/s while the provider request state is
+	 * represented in B/s, so IPA core transaction keys arrive scaled
+	 * by 1000 (150000/240000/466000/533000).
+	 *
+	 * Normalize provider-side units back to the original IPA msm_bus
+	 * usecase key before selecting the complete five-vector transaction.
+	 */
+	if (core_peak >= 1000 && !(core_peak % 1000))
+		core_peak /= 1000;
+
+	switch (core_peak) {
+	case 0:
+		*idx = 0;
+		return 0;
+	case 150:
+		*idx = 1;
+		return 0;
+	case 240:
+		*idx = 2;
+		return 0;
+	case 466:
+		*idx = 3;
+		return 0;
+	case 533:
+		*idx = 4;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int kona_icc_send_ipa_bridge_vote(struct kona_icc_provider *qp,
+					 unsigned int index)
+{
+	unsigned int vote_idx;
+	u64 core_peak;
+	int ret;
+
+	if (!qp || index >= qp->num_nodes || !qp->req_ib)
+		return -EINVAL;
+
+	core_peak = qp->req_ib[index];
+
+	ret = kona_icc_ipa_bridge_index(core_peak, &vote_idx);
+	if (ret) {
+		dev_err_ratelimited(qp->provider.dev,
+			"kona-icc: invalid IPA core vote %llu for bridge\n",
+			(unsigned long long)core_peak);
+		return ret;
+	}
+
+	if (!qp->ipa_bridge_handle) {
+		qp->ipa_bridge_handle =
+			msm_bus_scale_register_client(&kona_ipa_bridge_pdata);
+		if (!qp->ipa_bridge_handle) {
+			dev_err(qp->provider.dev,
+				"kona-icc: failed to register IPA msm_bus backend\n");
+			return -ENODEV;
+		}
+
+		dev_info(qp->provider.dev,
+			"kona-icc: IPA ICC frontend active with recovery-safe msm_bus backend\n");
+	}
+
+	if (qp->ipa_bridge_last_valid &&
+	    qp->ipa_bridge_last_idx == vote_idx)
+		return 0;
+
+	ret = msm_bus_scale_client_update_request(qp->ipa_bridge_handle,
+						  vote_idx);
+	if (ret) {
+		dev_err_ratelimited(qp->provider.dev,
+			"kona-icc: IPA backend vote %u failed: %d\n",
+			vote_idx, ret);
+		return ret;
+	}
+
+	qp->ipa_bridge_last_idx = vote_idx;
+	qp->ipa_bridge_last_valid = true;
+
+	return 0;
+}
 
 /*
  * Real Kona CRYPTO bandwidth uses the legacy msm-bus CE0 BCM path:
@@ -3603,24 +3784,6 @@ static struct icc_path *kona_icc_xlate(struct icc_provider *provider,
 	if (!desc)
 		return ERR_PTR(-EINVAL);
 
-	/*
-	 * IPA keeps physical bandwidth ownership in ipa3/IPA PM.
-	 *
-	 * Its LLCC/DDR paths share downstream SH0/MC0/ACV resources and have
-	 * an independent modem/GSI SSR and reprobe lifecycle. The virtual IPA
-	 * nodes reuse CPU_LLCC/CPU_MEM aliases, which must not race Stage-4
-	 * packed CPU ownership of SH0/MC0.
-	 *
-	 * Reject IPA acquisition here so ipa3 falls back to its native msm_bus
-	 * client and retains one recovery-aware physical bandwidth owner.
-	 */
-	if (desc->role == KONA_ROLE_IPA) {
-		dev_info_ratelimited(provider->dev,
-			"kona-icc: IPA path %s delegated to ipa3/msm_bus\n",
-			desc->name);
-		return ERR_PTR(-ENODEV);
-	}
-
 	if (!kona_icc_stage_allows_id(desc->id)) {
 		dev_info_ratelimited(provider->dev,
 			"kona-icc: stage %u rejects disabled id=%u (%s); msm_bus fallback expected for hybrid clients\n",
@@ -4594,6 +4757,26 @@ static int kona_icc_send_node_votes(struct kona_icc_provider *qp,
 	if (missing_alias)
 		*missing_alias = false;
 
+	/*
+	 * IPA is an ICC client now, but shared Kona BCM ownership is still
+	 * aggregated by msm_bus during the transition. ipa3 submits ipa-core last,
+	 * so commit the complete five-vector usecase only from that endpoint.
+	 */
+	if (desc->role == KONA_ROLE_IPA) {
+		if (desc->id == KONA_ICC_IPA_CORE) {
+			ret = kona_icc_send_ipa_bridge_vote(qp, index);
+			if (ret)
+				return ret;
+		}
+
+		if (qp->last_ab)
+			qp->last_ab[index] = ab;
+		if (qp->last_ib)
+			qp->last_ib[index] = ib;
+
+		return 0;
+	}
+
 	/* Program the aggregate for a BCM, rather than this node's last vote. */
 	if (kona_vote_debug_submit)
 		KONA_VOTE_TRACE(qp, desc, "before-shared-aggregation", ab, ib);
@@ -4749,6 +4932,14 @@ static bool kona_icc_vote_is_unchanged(struct kona_icc_provider *qp,
 
 	if (!qp->last_ab || !qp->last_ib)
 		return false;
+
+	/*
+	 * IPA is committed through its ipa-core transaction endpoint.  Do not use
+	 * the temporary CPU_MEM/CPU_LLCC aliases for duplicate suppression.
+	 */
+	if (qp->nodes[index].role == KONA_ROLE_IPA)
+		return false;
+
 	if (kona_cpu_model_stage() >= 4 &&
 	    kona_icc_is_cpu_memory_path(&qp->nodes[index]))
 		return false;
@@ -4942,6 +5133,41 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 			kona_icc_clear_dirty(qp, i);
 			continue;
 		}
+
+		/*
+		 * IPA zero votes are meaningful. The ICC frontend commits the
+		 * complete five-vector msm_bus usecase from ipa-core, where a
+		 * zero core peak maps to backend usecase 0 and releases the
+		 * physical IPA bandwidth vote.
+		 *
+		 * Do not discard a dirty 0/0 request during replay.
+		 */
+		if (role == KONA_ROLE_IPA) {
+			if (req_unset) {
+				kona_icc_clear_dirty(qp, i);
+				continue;
+			}
+
+			ab = req_ab;
+			ib = req_ib;
+
+			ret = kona_icc_send_node_votes(qp, i, ab, ib,
+						      &retry, NULL);
+			if (ret == -EAGAIN || retry)
+				need_retry = true;
+			else if (!ret)
+				kona_icc_clear_dirty(qp, i);
+			else
+				dev_warn_ratelimited(qp->provider.dev,
+					"kona-icc: IPA replay failed for %s "
+					"(ab=%llu ib=%llu ret=%d)\n",
+					qp->nodes[i].name,
+					(unsigned long long)ab,
+					(unsigned long long)ib, ret);
+
+			continue;
+		}
+
 
 		/*
 		 * Never synthesize votes for nodes that have never received a request.
@@ -6806,6 +7032,13 @@ static int kona_icc_remove(struct platform_device *pdev)
 
 	kona_icc_unregister_sysfs(qp);
 	icc_provider_unregister(&qp->provider);
+
+	if (qp->ipa_bridge_handle) {
+		msm_bus_scale_client_update_request(qp->ipa_bridge_handle, 0);
+		msm_bus_scale_unregister_client(qp->ipa_bridge_handle);
+		qp->ipa_bridge_handle = 0;
+		qp->ipa_bridge_last_valid = false;
+	}
 
 	mutex_lock(&kona_crypto_ce0_lock);
 	if (kona_crypto_ce0_client) {

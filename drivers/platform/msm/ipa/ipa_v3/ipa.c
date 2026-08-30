@@ -4951,6 +4951,148 @@ static int ipa3_vote_icc_path(unsigned int idx)
 	return 0;
 }
 
+static unsigned int ipa3_get_bus_vote(void);
+
+/*
+ * Try to move IPA from its boot-safe legacy msm_bus client to the Kona
+ * ICC frontend after IPA initialization has progressed far enough for the
+ * ICC provider to be available.
+ *
+ * The old msm_bus vote remains active until the equivalent ICC vote has
+ * been accepted, so the transition cannot create a bandwidth hole.
+ */
+static int ipa3_try_late_icc_handoff(void)
+{
+	struct device *dev;
+	struct icc_path **paths;
+	const char *icc_name;
+	unsigned int vote_idx;
+	int num_icc_paths;
+	int i, ret;
+
+	if (!ipa3_ctx || !ipa3_ctx->ctrl)
+		return -ENODEV;
+
+	if (ipa3_ctx->ctrl->use_icc)
+		return 0;
+
+	if (!ipa3_ctx->ipa_bus_hdl ||
+	    !ipa3_ctx->ctrl->msm_bus_data_ptr)
+		return -ENODEV;
+
+	dev = &ipa3_ctx->master_pdev->dev;
+
+	num_icc_paths = of_count_phandle_with_args(dev->of_node,
+						   "interconnects",
+						   "#interconnect-cells");
+	if (num_icc_paths <= 0)
+		return num_icc_paths ? num_icc_paths : -ENODEV;
+
+	if (num_icc_paths !=
+	    ipa3_ctx->ctrl->msm_bus_data_ptr->usecase[0].num_paths)
+		return -EINVAL;
+
+	paths = kcalloc(num_icc_paths, sizeof(*paths), GFP_KERNEL);
+	if (!paths)
+		return -ENOMEM;
+
+	for (i = 0; i < num_icc_paths; i++) {
+		ret = of_property_read_string_index(dev->of_node,
+						    "interconnect-names",
+						    i, &icc_name);
+		if (ret) {
+			IPAERR("late ICC name lookup failed for path %d: %d\n",
+			       i, ret);
+			goto fail_paths;
+		}
+
+		paths[i] = devm_of_icc_get(dev, icc_name);
+		if (IS_ERR(paths[i])) {
+			ret = PTR_ERR(paths[i]);
+			paths[i] = NULL;
+
+			IPAERR("late ICC path %d (%s) acquisition failed: %d\n",
+			       i, icc_name, ret);
+			goto fail_paths;
+		}
+
+		IPAERR("late ICC path %d acquired: %s\n", i, icc_name);
+	}
+
+	/*
+	 * Serialize against clock/performance changes. The existing IPA
+	 * performance paths use this same mutex when changing the bus vote.
+	 */
+	mutex_lock(&ipa3_ctx->ipa3_active_clients.mutex);
+
+	if (ipa3_ctx->ctrl->use_icc) {
+		mutex_unlock(&ipa3_ctx->ipa3_active_clients.mutex);
+		kfree(paths);
+		return 0;
+	}
+
+	/*
+	 * Replace the failed early-probe array. Early boot currently fails on
+	 * path 0, so it contains no usable ICC handles.
+	 */
+	kfree(ipa3_ctx->ctrl->icc_paths);
+	ipa3_ctx->ctrl->icc_paths = paths;
+	ipa3_ctx->ctrl->num_icc_paths = num_icc_paths;
+	ipa3_ctx->ctrl->use_icc = true;
+
+	/*
+	 * Preserve the current physical state. If IPA has active clients,
+	 * reproduce the current performance vote. Otherwise migrate at zero.
+	 */
+	if (atomic_read(&ipa3_ctx->ipa3_active_clients.cnt) > 0)
+		vote_idx = ipa3_get_bus_vote();
+	else
+		vote_idx = 0;
+
+	ret = ipa3_vote_icc_path(vote_idx);
+	if (ret) {
+		IPAERR("late ICC handoff vote %u failed: %d\n",
+		       vote_idx, ret);
+		ipa3_ctx->ctrl->use_icc = false;
+		mutex_unlock(&ipa3_ctx->ipa3_active_clients.mutex);
+		return ret;
+	}
+
+	/*
+	 * ICC owns an equivalent vote now. Only now release the original
+	 * msm_bus client.
+	 */
+	ret = msm_bus_scale_client_update_request(ipa3_ctx->ipa_bus_hdl, 0);
+	if (ret) {
+		IPAERR("late ICC handoff could not release msm_bus: %d\n", ret);
+
+		/*
+		 * Roll back to legacy ownership rather than leaving two active
+		 * bandwidth owners and risking a permanent fabric overvote.
+		 */
+		if (ipa3_vote_icc_path(0))
+			IPAERR("late ICC handoff rollback vote failed\n");
+
+		ipa3_ctx->ctrl->use_icc = false;
+		mutex_unlock(&ipa3_ctx->ipa3_active_clients.mutex);
+		return ret;
+	}
+
+	msm_bus_scale_unregister_client(ipa3_ctx->ipa_bus_hdl);
+	ipa3_ctx->ipa_bus_hdl = 0;
+
+	mutex_unlock(&ipa3_ctx->ipa3_active_clients.mutex);
+
+	IPAERR("IPA ICC late handoff complete: %d paths, vote %u\n",
+	       num_icc_paths, vote_idx);
+
+	return 0;
+
+fail_paths:
+	kfree(paths);
+	return ret;
+}
+
 static unsigned int ipa3_get_bus_vote(void)
 {
 	unsigned int idx = 1;
@@ -5051,8 +5193,18 @@ void ipa3_disable_clks(void)
 
 	ipa_pm_set_clock_index(0);
 
-	if (msm_bus_scale_client_update_request(ipa3_ctx->ipa_bus_hdl, 0))
+	/*
+	 * Keep bus ownership symmetric with the enable/performance paths.
+	 * When IPA acquired ICC paths at probe, it never registered an msm_bus
+	 * client, so the idle vote must also be submitted through ICC.
+	 */
+	if (ipa3_ctx->ctrl->use_icc) {
+		if (ipa3_vote_icc_path(0))
+			WARN(1, "icc scaling failed");
+	} else if (msm_bus_scale_client_update_request(
+			ipa3_ctx->ipa_bus_hdl, 0)) {
 		WARN(1, "bus scaling failed");
+	}
 }
 
 /**
@@ -6243,6 +6395,16 @@ static int ipa3_post_init(const struct ipa3_plat_drv_res *resource_p,
 
 	ipa3_debugfs_init();
 
+	/*
+	 * IPA had to use msm_bus during early boot because Kona ICC may not
+	 * have probed yet. Try the ownership handoff now, after GSI/APPS/uC
+	 * initialization, but never make successful IPA boot depend on it.
+	 */
+	result = ipa3_try_late_icc_handoff();
+	if (result)
+		IPAERR("IPA ICC late handoff unavailable: %d; keeping msm_bus\n",
+		       result);
+
 	mutex_lock(&ipa3_ctx->lock);
 	ipa3_ctx->ipa_initialization_complete = true;
 	mutex_unlock(&ipa3_ctx->lock);
@@ -6913,24 +7075,46 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 			}
 
 			for (i = 0; i < num_icc_paths; i++) {
-				result = of_property_read_string_index(ipa_pdev->dev.of_node, "interconnect-names",
-							      i, &icc_name);
-				if (result)
+				result = of_property_read_string_index(
+					ipa_pdev->dev.of_node,
+					"interconnect-names",
+					i, &icc_name);
+				if (result) {
+					IPAERR("IPA ICC name lookup failed for path %d: %d\n",
+					       i, result);
 					break;
+				}
+
 				ipa3_ctx->ctrl->icc_paths[i] =
 					devm_of_icc_get(&ipa_pdev->dev, icc_name);
 				if (IS_ERR(ipa3_ctx->ctrl->icc_paths[i])) {
 					result = PTR_ERR(ipa3_ctx->ctrl->icc_paths[i]);
+
+					IPAERR("IPA ICC path %d (%s) acquisition failed: %d\n",
+					       i, icc_name, result);
+
 					ipa3_ctx->ctrl->icc_paths[i] = NULL;
+
 					break;
 				}
+
+				IPAERR("IPA ICC path %d acquired: %s\n",
+				       i, icc_name);
 			}
 
 			if (!result) {
 				ipa3_ctx->ctrl->num_icc_paths = num_icc_paths;
 				ipa3_ctx->ctrl->use_icc = true;
-				if (ipa3_vote_icc_path(0))
+
+				result = ipa3_vote_icc_path(0);
+				if (result) {
+					IPAERR("IPA ICC initial vote failed: %d\n",
+					       result);
 					ipa3_ctx->ctrl->use_icc = false;
+				} else {
+					IPAERR("IPA ICC ENABLED: %d paths acquired\n",
+					       ipa3_ctx->ctrl->num_icc_paths);
+				}
 			}
 
 			if (!ipa3_ctx->ctrl->use_icc)
@@ -6938,6 +7122,7 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 		}
 
 		if (!ipa3_ctx->ctrl->use_icc) {
+			IPAERR("IPA ICC DISABLED: registering legacy msm_bus client\n");
 			/* get BUS handle */
 			ipa3_ctx->ipa_bus_hdl =
 				msm_bus_scale_register_client(ipa3_ctx->ctrl->msm_bus_data_ptr);
