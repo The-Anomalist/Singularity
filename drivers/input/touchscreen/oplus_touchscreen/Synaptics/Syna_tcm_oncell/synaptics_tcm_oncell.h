@@ -476,7 +476,7 @@ struct syna_tcm_test {
 	struct syna_tcm_buffer test_out;
 };
 
-#define FPS_REPORT_NUM 8
+#define FPS_REPORT_NUM 6
 #define FIRMWARE_MODE_BL_MAX 2
 #define ERROR_STATE_MAX 3
 #define FWUPDATE_BL_MAX 3

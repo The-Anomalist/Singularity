@@ -908,11 +908,6 @@ struct touchpanel_data {
 	bool ps_status; /*save ps status, ps near = 1, ps far = 0*/
 	bool resume_finished; /* whether tp resume finished */
 	int noise_level; /*save ps status, ps near = 1, ps far = 0*/
-	/* User requested game mode. Keep this separate from noise_level: the
-	 * latter is a tuning value and must not cause a MODE_GAME transaction on
-	 * every resume.
-	 */
-	bool game_mode_enabled;
 	int lcd_fps; /*save lcd refresh*/
 
 #if defined(TPD_USE_EINT)
@@ -1034,7 +1029,6 @@ struct touchpanel_data {
 	u64 irq_interval; /*Record the interruption time to calculate the reporting rate*/
 	u64 irq_handle_time; /*Record the interruption handle time*/
 	int high_frame_value;
-	bool performance_mode;
 };
 
 #ifdef CONFIG_OPLUS_TP_APK

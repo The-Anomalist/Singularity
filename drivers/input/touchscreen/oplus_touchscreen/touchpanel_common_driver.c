@@ -244,13 +244,9 @@ void operate_mode_switch(struct touchpanel_data *ts)
 			ts->ts_ops->mode_switch(ts->chip_data, MODE_EDGE,
 						ts->limit_edge);
 
-		/* Do not send MODE_GAME(false) merely because the device resumed.
-		 * Some TCM revisions reject that dynamic-config sequence while their
-		 * application is still settling after reset.
-		 */
-		if (ts->game_switch_support && ts->game_mode_enabled)
+		if (ts->game_switch_support)
 			ts->ts_ops->mode_switch(ts->chip_data, MODE_GAME,
-						true);
+						ts->noise_level);
 
 		if (ts->glove_mode_support)
 			ts->ts_ops->mode_switch(ts->chip_data, MODE_GLOVE,
@@ -315,15 +311,6 @@ void operate_mode_switch(struct touchpanel_data *ts)
 		    ts->ts_ops->tp_refresh_switch) {
 			ts->ts_ops->tp_refresh_switch(ts->chip_data,
 						      ts->lcd_fps);
-		}
-
-		if (ts->performance_mode) {
-			if (ts->game_switch_support)
-				ts->ts_ops->mode_switch(ts->chip_data, MODE_GAME, true);
-			if (ts->ts_ops->set_high_frame_rate)
-				ts->ts_ops->set_high_frame_rate(ts->chip_data, 1, 120);
-			if (ts->stop_filter_set_support)
-				ts->stop_filter_set = 0;
 		}
 
 		ts->ts_ops->mode_switch(ts->chip_data, MODE_NORMAL, true);
@@ -1882,7 +1869,7 @@ static irqreturn_t tp_irq_thread_fn(int irq, void *dev_id)
 	if (ts->irq_need_dev_resume_ok) {
 		if (ts->i2c_ready == false) {
 			//TPD_INFO("Wait device resume!");
-			wait_event_timeout(
+			wait_event_interruptible_timeout(
 				waiter, ts->i2c_ready,
 				msecs_to_jiffies(ts->msecs_to_jiffies_time));
 			//TPD_INFO("Device maybe resume!");
@@ -2658,7 +2645,6 @@ static ssize_t proc_game_switch_write(struct file *file,
 	}
 
 	ts->noise_level = value;
-	ts->game_mode_enabled = value > 0;
 	if (ts->health_monitor_v2_support) {
 		ts->monitor_data_v2.in_game_mode = value;
 	}
@@ -2706,67 +2692,6 @@ static ssize_t proc_game_switch_read(struct file *file, char __user *user_buf,
 static const struct file_operations proc_game_switch_fops = {
 	.write = proc_game_switch_write,
 	.read = proc_game_switch_read,
-	.open = simple_open,
-	.owner = THIS_MODULE,
-};
-
-
-static ssize_t proc_performance_mode_write(struct file *file,
-					      const char __user *buffer, size_t count,
-					      loff_t *ppos)
-{
-	int value = 0;
-	char buf[8] = { 0 };
-	struct touchpanel_data *ts = PDE_DATA(file_inode(file));
-
-	if (!ts)
-		return count;
-
-	if (count >= sizeof(buf))
-		count = sizeof(buf) - 1;
-
-	if (copy_from_user(buf, buffer, count))
-		return count;
-
-	if (kstrtoint(buf, 0, &value))
-		return count;
-
-	mutex_lock(&ts->mutex);
-	ts->performance_mode = !!value;
-	if (ts->performance_mode) {
-		if (ts->smooth_level_array_support)
-			ts->smooth_level_chosen = SMOOTH_LEVEL_NUM - 1;
-		if (ts->sensitive_level_array_support)
-			ts->sensitive_level_chosen = SENSITIVE_LEVEL_NUM - 1;
-		ts->noise_level = 1;
-		ts->high_frame_value = 1;
-	}
-	if (!ts->is_suspended)
-		operate_mode_switch(ts);
-	mutex_unlock(&ts->mutex);
-
-	return count;
-}
-
-static ssize_t proc_performance_mode_read(struct file *file,
-					     char __user *user_buf, size_t count, loff_t *ppos)
-{
-	int ret = 0;
-	char page[PAGESIZE] = { 0 };
-	struct touchpanel_data *ts = PDE_DATA(file_inode(file));
-
-	if (!ts)
-		snprintf(page, PAGESIZE - 1, "-1\n");
-	else
-		snprintf(page, PAGESIZE - 1, "%d\n", ts->performance_mode ? 1 : 0);
-
-	ret = simple_read_from_buffer(user_buf, count, ppos, page, strlen(page));
-	return ret;
-}
-
-static const struct file_operations proc_performance_mode_fops = {
-	.write = proc_performance_mode_write,
-	.read = proc_performance_mode_read,
 	.open = simple_open,
 	.owner = THIS_MODULE,
 };
@@ -5441,14 +5366,6 @@ static int init_touchpanel_proc(struct touchpanel_data *ts)
 		}
 	}
 
-	prEntry_tmp = proc_create_data("performance_mode", 0666, prEntry_tp,
-				       &proc_performance_mode_fops, ts);
-	if (prEntry_tmp == NULL) {
-		ret = -ENOMEM;
-		TPD_INFO("%s: Couldn't create proc entry, %d\n", __func__,
-			 __LINE__);
-	}
-
 	//proc files-step2-11:/proc/touchpanel/oplus_tp_noise_modetest
 	if (ts->noise_modetest_support) {
 		prEntry_tmp = proc_create_data("oplus_tp_noise_modetest", 0664,
@@ -7719,8 +7636,6 @@ static int init_parse_dts(struct device *dev, struct touchpanel_data *ts)
 		of_property_read_bool(np, "irq_need_dev_resume_ok");
 	ts->report_rate_white_list_support =
 		of_property_read_bool(np, "report_rate_white_list_support");
-	ts->performance_mode =
-		of_property_read_bool(np, "performance_mode_default");
 	ts->lcd_tp_refresh_support =
 		of_property_read_bool(np, "lcd_tp_refresh_support");
 	ts->auto_test_need_cal_support =
