@@ -1882,7 +1882,7 @@ static irqreturn_t tp_irq_thread_fn(int irq, void *dev_id)
 	if (ts->irq_need_dev_resume_ok) {
 		if (ts->i2c_ready == false) {
 			//TPD_INFO("Wait device resume!");
-			wait_event_timeout(
+			wait_event_interruptible_timeout(
 				waiter, ts->i2c_ready,
 				msecs_to_jiffies(ts->msecs_to_jiffies_time));
 			//TPD_INFO("Device maybe resume!");
