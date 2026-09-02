@@ -1746,6 +1746,18 @@ static bool kona_icc_is_policy_suppressed_path(const struct kona_icc_node_desc *
 #define KONA_STORAGE_LLCC_IB_FLOOR_KB	(56000000ULL) /* 56 GB/s */
 
 /*
+ * Storage keeps physical bandwidth ownership in ufs-qcom/sdhci-msm, but
+ * recovery sideload/install also creates heavy CPU-side memory traffic for
+ * verification, decompression and filesystem work.  Use active storage as a
+ * signal to temporarily keep the CPU-owned DDR/LLCC fabric out of low corners.
+ */
+#define KONA_STORAGE_ASSIST_TRIGGER_KB		(512000ULL)
+#define KONA_STORAGE_ASSIST_DDR_AB_FLOOR_KB	(8000000ULL)
+#define KONA_STORAGE_ASSIST_DDR_IB_FLOOR_KB	(52000000ULL)
+#define KONA_STORAGE_ASSIST_LLCC_AB_FLOOR_KB	(6000000ULL)
+#define KONA_STORAGE_ASSIST_LLCC_IB_FLOOR_KB	(56000000ULL)
+
+/*
  * CPU_MEM and CPU_LLCC are shared backing BCMs for a number of auxiliary
  * clients.  Give those clients a deliberately small baseline instead of
  * treating their requests as CPU workload traffic.  This preserves quick
@@ -4000,6 +4012,59 @@ static bool kona_icc_vote_component_unchanged(u64 *last, unsigned int index, u64
  * required by the active high-rate sibling.
  */
 
+
+static bool kona_icc_storage_assist_active(struct kona_icc_provider *qp)
+{
+	unsigned int i;
+
+	if (!qp || !qp->req_ab || !qp->req_ib)
+		return false;
+
+	for (i = 0; i < qp->num_nodes; i++) {
+		const struct kona_icc_node_desc *node = &qp->nodes[i];
+		u64 ab, ib;
+
+		if (!kona_icc_is_storage_path(node))
+			continue;
+
+		ab = qp->req_ab[i];
+		ib = qp->req_ib[i];
+
+		if (ab == U64_MAX || ib == U64_MAX)
+			continue;
+
+		if (max(ab, ib) >= KONA_STORAGE_ASSIST_TRIGGER_KB)
+			return true;
+	}
+
+	return false;
+}
+
+static u64 kona_icc_apply_storage_assist(struct kona_icc_provider *qp,
+					 const char *resource, u64 vote)
+{
+	u64 floor = 0;
+
+	/*
+	 * Do not create a CPU fabric vote from storage alone.  Only raise an
+	 * already-active CPU-owned vote while storage activity is present.
+	 */
+	if (!vote || READ_ONCE(kona_storage_raw_icc_enable) ||
+	    !kona_icc_storage_assist_active(qp))
+		return vote;
+
+	if (!strcmp(resource, "CPU_MEM_AB"))
+		floor = KONA_STORAGE_ASSIST_DDR_AB_FLOOR_KB;
+	else if (!strcmp(resource, "CPU_MEM_IB"))
+		floor = KONA_STORAGE_ASSIST_DDR_IB_FLOOR_KB;
+	else if (!strcmp(resource, "CPU_LLCC_AB"))
+		floor = KONA_STORAGE_ASSIST_LLCC_AB_FLOOR_KB;
+	else if (!strcmp(resource, "CPU_LLCC_IB"))
+		floor = KONA_STORAGE_ASSIST_LLCC_IB_FLOOR_KB;
+
+	return max(vote, floor);
+}
+
 static bool kona_icc_is_external_cached_path(
 		const struct kona_icc_node_desc *desc)
 {
@@ -4037,6 +4102,8 @@ static u64 kona_icc_shared_resource_vote(struct kona_icc_provider *qp,
 
 		vote = max(vote, node_vote);
 	}
+
+	vote = kona_icc_apply_storage_assist(qp, resource, vote);
 
 	return vote;
 }
