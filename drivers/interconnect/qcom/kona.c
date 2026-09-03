@@ -132,6 +132,20 @@ struct kona_shadow_bcm_state {
 };
 
 
+#define KONA_SHADOW_TCS_MAX	KONA_SHADOW_BCM_COUNT
+
+struct kona_shadow_tcs_entry {
+	const char *name;
+	enum kona_shadow_bcm_id id;
+	u32 addr;
+	u32 data;
+	u8 vcd;
+	bool commit;
+	bool valid;
+};
+
+
+
 /* Stage-5 families are separate from the Stage-4 CPU BCM group mask. */
 #define KONA_PACKED_FAMILY_GPU	BIT(0)
 #define KONA_PACKED_FAMILY_GMU	BIT(1)
@@ -770,6 +784,15 @@ struct kona_icc_provider {
 	struct kona_shadow_bcm_state shadow_bcms[KONA_SHADOW_BCM_COUNT];
 	u64 shadow_evaluation_count;
 	u64 shadow_change_count;
+
+	/*
+	 * Stage-4 VCD-sorted TCS shadow batch. No entry in this array is ever
+	 * submitted to RPMh while the migration remains telemetry-only.
+	 */
+	struct kona_shadow_tcs_entry shadow_tcs[KONA_SHADOW_TCS_MAX];
+	unsigned int shadow_tcs_count;
+	u64 shadow_batch_build_count;
+	u64 shadow_batch_invalid_count;
 
 	bool boot_floor_vote;
 	bool first_cpu_request_seen;
@@ -4423,6 +4446,118 @@ kona_icc_shadow_encode_bcm(struct kona_icc_provider *qp,
 	shadow->metadata_valid = true;
 }
 
+
+static enum kona_cpu_bcm_id
+kona_icc_shadow_physical_bcm(enum kona_shadow_bcm_id id)
+{
+	switch (id) {
+	case KONA_SHADOW_BCM_SH4:
+		return KONA_CPU_BCM_SH4;
+	case KONA_SHADOW_BCM_SH0:
+		return KONA_CPU_BCM_SH0;
+	case KONA_SHADOW_BCM_MC0:
+	default:
+		return KONA_CPU_BCM_MC0;
+	}
+}
+
+/*
+ * Build the Stage-4 ACTIVE_ONLY shadow transaction exactly as a BCM voter
+ * would prepare it before handing it to RPMh:
+ *
+ *   - resolve cmd-db address/VCD from the existing physical BCM metadata
+ *   - sort commands by VCD
+ *   - keep BCMs belonging to the same VCD contiguous
+ *   - set COMMIT only on the final command of each VCD group
+ *
+ * The array is diagnostic only. Nothing is submitted to RPMh here.
+ */
+static void kona_icc_shadow_build_tcs(struct kona_icc_provider *qp)
+{
+	struct kona_shadow_tcs_entry temp[KONA_SHADOW_TCS_MAX];
+	unsigned int i, j, count = 0;
+
+	if (!qp)
+		return;
+
+	qp->shadow_tcs_count = 0;
+	qp->shadow_batch_build_count++;
+
+	for (i = 0; i < KONA_SHADOW_BCM_COUNT; i++) {
+		struct kona_shadow_bcm_state *shadow = &qp->shadow_bcms[i];
+		enum kona_cpu_bcm_id physical_id;
+		struct kona_bcm_state *physical;
+		struct kona_shadow_tcs_entry *entry;
+
+		physical_id = kona_icc_shadow_physical_bcm(i);
+		physical = &qp->cpu_bcms[physical_id];
+
+		/*
+		 * A modern BCM transaction cannot be generated until cmd-db
+		 * metadata is complete for every participating resource.
+		 */
+		if (!shadow->metadata_valid ||
+		    !physical->metadata_valid ||
+		    !physical->addr) {
+			qp->shadow_batch_invalid_count++;
+			return;
+		}
+
+		entry = &temp[count++];
+		entry->name = shadow->name;
+		entry->id = i;
+		entry->addr = physical->addr;
+		entry->vcd = physical->vcd;
+		entry->commit = false;
+		entry->valid = shadow->vote_x || shadow->vote_y;
+		entry->data = KONA_BCM_TCS_CMD(false, entry->valid,
+					       (u32)shadow->vote_x,
+					       (u32)shadow->vote_y);
+	}
+
+	/*
+	 * Stable insertion sort is sufficient for three CPU BCMs and keeps
+	 * same-VCD resources in their original SH4/SH0/MC0 discovery order.
+	 */
+	for (i = 1; i < count; i++) {
+		struct kona_shadow_tcs_entry key = temp[i];
+
+		j = i;
+		while (j && temp[j - 1].vcd > key.vcd) {
+			temp[j] = temp[j - 1];
+			j--;
+		}
+		temp[j] = key;
+	}
+
+	/*
+	 * Qualcomm commits a VCD only on its final BCM command.
+	 */
+	for (i = 0; i < count; i++) {
+		struct kona_shadow_bcm_state *shadow;
+		bool commit;
+
+		if (temp[i].id >= KONA_SHADOW_BCM_COUNT) {
+			qp->shadow_batch_invalid_count++;
+			return;
+		}
+
+		commit = i == count - 1 || temp[i].vcd != temp[i + 1].vcd;
+		temp[i].commit = commit;
+
+		shadow = &qp->shadow_bcms[temp[i].id];
+
+		temp[i].data = KONA_BCM_TCS_CMD(commit,
+						temp[i].valid,
+						(u32)shadow->vote_x,
+						(u32)shadow->vote_y);
+	}
+
+	memcpy(qp->shadow_tcs, temp,
+	       sizeof(temp[0]) * count);
+	qp->shadow_tcs_count = count;
+}
+
 static void kona_icc_shadow_bcm_update(struct kona_icc_provider *qp,
 				       enum kona_shadow_bcm_id id,
 				       u64 avg, u64 peak)
@@ -4498,6 +4633,8 @@ static void kona_icc_refresh_bcm_shadow(struct kona_icc_provider *qp)
 				   KONA_CPU_BCM_SH0);
 	kona_icc_shadow_encode_bcm(qp, KONA_SHADOW_BCM_MC0,
 				   KONA_CPU_BCM_MC0);
+
+	kona_icc_shadow_build_tcs(qp);
 }
 
 static void kona_icc_cache_shared_resource_vote(struct kona_icc_provider *qp,
@@ -6466,6 +6603,24 @@ static int kona_param_get_cpu_bcm_stats(char *buffer,
 		qp->shadow_bcms[KONA_SHADOW_BCM_MC0].metadata_valid,
 		qp->shadow_bcms[KONA_SHADOW_BCM_MC0].saturated_x,
 		qp->shadow_bcms[KONA_SHADOW_BCM_MC0].saturated_y);
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"shadow_batch builds=%llu invalid=%llu count=%u\n",
+		(unsigned long long)qp->shadow_batch_build_count,
+		(unsigned long long)qp->shadow_batch_invalid_count,
+		qp->shadow_tcs_count);
+
+	for (i = 0; i < qp->shadow_tcs_count && len < PAGE_SIZE; i++) {
+		const struct kona_shadow_tcs_entry *entry = &qp->shadow_tcs[i];
+
+		len += scnprintf(buffer + len, PAGE_SIZE - len,
+			"shadow_tcs[%u] name=%s addr=%#x vcd=%u "
+			"valid=%u commit=%u data=%#x\n",
+			i, entry->name ?: "?",
+			entry->addr, entry->vcd,
+			entry->valid, entry->commit,
+			entry->data);
+	}
 
 	len += scnprintf(buffer + len, PAGE_SIZE - len,
 		"force_high=%u context=ACTIVE_ONLY vote_limit=%u "
