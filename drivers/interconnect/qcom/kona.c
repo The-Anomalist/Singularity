@@ -106,8 +106,27 @@ enum kona_shadow_bcm_id {
 struct kona_shadow_bcm_state {
 	const char *name;
 	u32 mask;
+
+	/* Physical qnode geometry represented by this BCM. */
+	u16 channels;
+	u16 buswidth;
+
+	/* Logical aggregate before BCM normalization. */
 	u64 avg_kBps;
 	u64 peak_kBps;
+
+	/* Modern Qualcomm-style normalized BCM vote. */
+	u64 raw_x;
+	u64 raw_y;
+	u64 vote_x;
+	u64 vote_y;
+	u32 data;
+
+	bool metadata_valid;
+	bool keepalive;
+	bool saturated_x;
+	bool saturated_y;
+
 	u64 update_count;
 	u64 unchanged_count;
 };
@@ -4311,6 +4330,99 @@ static u64 kona_icc_shared_resource_vote(struct kona_icc_provider *qp,
 }
 
 
+
+static u64 kona_icc_shadow_bcm_div(u64 value, u32 divisor)
+{
+	if (!divisor)
+		return 0;
+
+	if (value && value < divisor)
+		return 1;
+
+	do_div(value, divisor);
+
+	return value;
+}
+
+/*
+ * Convert the logical kB/s aggregate into BCM X/Y using the physical
+ * qnode geometry and cmd-db BCM metadata.
+ *
+ * Stage 3 remains telemetry-only. No RPMh command is submitted here.
+ */
+static void
+kona_icc_shadow_encode_bcm(struct kona_icc_provider *qp,
+			   enum kona_shadow_bcm_id id,
+			   enum kona_cpu_bcm_id physical_id)
+{
+	struct kona_shadow_bcm_state *shadow = &qp->shadow_bcms[id];
+	struct kona_bcm_state *physical = &qp->cpu_bcms[physical_id];
+	u64 x, y;
+
+	shadow->metadata_valid = false;
+	shadow->raw_x = 0;
+	shadow->raw_y = 0;
+	shadow->vote_x = 0;
+	shadow->vote_y = 0;
+	shadow->data = 0;
+	shadow->saturated_x = false;
+	shadow->saturated_y = false;
+
+	if (!physical->metadata_valid || !physical->unit ||
+	    !physical->width || !shadow->buswidth || !shadow->channels)
+		return;
+
+	/*
+	 * Average bandwidth is distributed across channels.
+	 * Peak bandwidth is normalized only by bus width.
+	 */
+	x = shadow->avg_kBps * physical->width;
+	x = kona_icc_shadow_bcm_div(
+		x, shadow->buswidth * shadow->channels);
+
+	y = shadow->peak_kBps * physical->width;
+	y = kona_icc_shadow_bcm_div(y, shadow->buswidth);
+
+	shadow->raw_x = x;
+	shadow->raw_y = y;
+
+	/*
+	 * Qualcomm BCM vote_scale defaults to 1000.
+	 * Normalize against the cmd-db unit afterward.
+	 */
+	x *= 1000;
+	y *= 1000;
+
+	x = kona_icc_shadow_bcm_div(x, physical->unit);
+	y = kona_icc_shadow_bcm_div(y, physical->unit);
+
+	/*
+	 * Modern BCM voters keep ACTIVE/WAKE alive at the minimum representable
+	 * vote for keepalive resources. SH0 and MC0 use this behavior on SM8250.
+	 */
+	if (shadow->keepalive && !x && !y) {
+		x = 1;
+		y = 1;
+	}
+
+	if (x > KONA_BCM_VOTE_MASK) {
+		x = KONA_BCM_VOTE_MASK;
+		shadow->saturated_x = true;
+	}
+
+	if (y > KONA_BCM_VOTE_MASK) {
+		y = KONA_BCM_VOTE_MASK;
+		shadow->saturated_y = true;
+	}
+
+	shadow->vote_x = x;
+	shadow->vote_y = y;
+
+	shadow->data = KONA_BCM_TCS_CMD(true, x || y,
+					(u32)x, (u32)y);
+	shadow->metadata_valid = true;
+}
+
 static void kona_icc_shadow_bcm_update(struct kona_icc_provider *qp,
 				       enum kona_shadow_bcm_id id,
 				       u64 avg, u64 peak)
@@ -4379,6 +4491,13 @@ static void kona_icc_refresh_bcm_shadow(struct kona_icc_provider *qp)
 				   fabric_avg, fabric_peak);
 	kona_icc_shadow_bcm_update(qp, KONA_SHADOW_BCM_MC0,
 				   mem_avg, mem_peak);
+
+	kona_icc_shadow_encode_bcm(qp, KONA_SHADOW_BCM_SH4,
+				   KONA_CPU_BCM_SH4);
+	kona_icc_shadow_encode_bcm(qp, KONA_SHADOW_BCM_SH0,
+				   KONA_CPU_BCM_SH0);
+	kona_icc_shadow_encode_bcm(qp, KONA_SHADOW_BCM_MC0,
+				   KONA_CPU_BCM_MC0);
 }
 
 static void kona_icc_cache_shared_resource_vote(struct kona_icc_provider *qp,
@@ -6289,7 +6408,11 @@ static int kona_param_get_cpu_bcm_stats(char *buffer,
 		"shadow_evaluations=%llu shadow_changes=%llu "
 		"shadow_SH4=%llu/%llu updates=%llu skips=%llu "
 		"shadow_SH0=%llu/%llu updates=%llu skips=%llu "
-		"shadow_MC0=%llu/%llu updates=%llu skips=%llu\n",
+		"shadow_MC0=%llu/%llu updates=%llu skips=%llu\n"
+		"shadow_encoded "
+		"SH4=%llu/%llu data=%#x meta=%u sat=%u/%u "
+		"SH0=%llu/%llu data=%#x meta=%u sat=%u/%u "
+		"MC0=%llu/%llu data=%#x meta=%u sat=%u/%u\n",
 		(unsigned long long)qp->shadow_evaluation_count,
 		(unsigned long long)qp->shadow_change_count,
 		(unsigned long long)
@@ -6315,7 +6438,34 @@ static int kona_param_get_cpu_bcm_stats(char *buffer,
 		(unsigned long long)
 			qp->shadow_bcms[KONA_SHADOW_BCM_MC0].update_count,
 		(unsigned long long)
-			qp->shadow_bcms[KONA_SHADOW_BCM_MC0].unchanged_count);
+			qp->shadow_bcms[KONA_SHADOW_BCM_MC0].unchanged_count,
+
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH4].vote_x,
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH4].vote_y,
+		qp->shadow_bcms[KONA_SHADOW_BCM_SH4].data,
+		qp->shadow_bcms[KONA_SHADOW_BCM_SH4].metadata_valid,
+		qp->shadow_bcms[KONA_SHADOW_BCM_SH4].saturated_x,
+		qp->shadow_bcms[KONA_SHADOW_BCM_SH4].saturated_y,
+
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH0].vote_x,
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH0].vote_y,
+		qp->shadow_bcms[KONA_SHADOW_BCM_SH0].data,
+		qp->shadow_bcms[KONA_SHADOW_BCM_SH0].metadata_valid,
+		qp->shadow_bcms[KONA_SHADOW_BCM_SH0].saturated_x,
+		qp->shadow_bcms[KONA_SHADOW_BCM_SH0].saturated_y,
+
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_MC0].vote_x,
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_MC0].vote_y,
+		qp->shadow_bcms[KONA_SHADOW_BCM_MC0].data,
+		qp->shadow_bcms[KONA_SHADOW_BCM_MC0].metadata_valid,
+		qp->shadow_bcms[KONA_SHADOW_BCM_MC0].saturated_x,
+		qp->shadow_bcms[KONA_SHADOW_BCM_MC0].saturated_y);
 
 	len += scnprintf(buffer + len, PAGE_SIZE - len,
 		"force_high=%u context=ACTIVE_ONLY vote_limit=%u "
@@ -7132,10 +7282,21 @@ static int kona_icc_probe(struct platform_device *pdev)
 
 	qp->shadow_bcms[KONA_SHADOW_BCM_SH4].name = "SH4";
 	qp->shadow_bcms[KONA_SHADOW_BCM_SH4].mask = KONA_HW_BCM_SH4;
+	qp->shadow_bcms[KONA_SHADOW_BCM_SH4].channels = 2;
+	qp->shadow_bcms[KONA_SHADOW_BCM_SH4].buswidth = 32;
+	qp->shadow_bcms[KONA_SHADOW_BCM_SH4].keepalive = false;
+
 	qp->shadow_bcms[KONA_SHADOW_BCM_SH0].name = "SH0";
 	qp->shadow_bcms[KONA_SHADOW_BCM_SH0].mask = KONA_HW_BCM_SH0;
+	qp->shadow_bcms[KONA_SHADOW_BCM_SH0].channels = 4;
+	qp->shadow_bcms[KONA_SHADOW_BCM_SH0].buswidth = 16;
+	qp->shadow_bcms[KONA_SHADOW_BCM_SH0].keepalive = true;
+
 	qp->shadow_bcms[KONA_SHADOW_BCM_MC0].name = "MC0";
 	qp->shadow_bcms[KONA_SHADOW_BCM_MC0].mask = KONA_HW_BCM_MC0;
+	qp->shadow_bcms[KONA_SHADOW_BCM_MC0].channels = 4;
+	qp->shadow_bcms[KONA_SHADOW_BCM_MC0].buswidth = 4;
+	qp->shadow_bcms[KONA_SHADOW_BCM_MC0].keepalive = true;
 
 	/* ACV is solver-owned on Kona; never synthesize a normal X/Y vote for it. */
 
