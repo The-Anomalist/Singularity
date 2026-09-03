@@ -205,6 +205,62 @@ struct kona_shadow_tcs_batch {
 };
 
 
+/*
+ * Stage 8 payload representation.
+ *
+ * A payload is the largest transaction fragment that can be handed to one
+ * rpmh_write_batch()-style operation without exceeding MAX_RPMH_PAYLOAD or
+ * splitting a VCD group.
+ *
+ * Still shadow-only.
+ */
+#define KONA_SHADOW_MAX_PAYLOADS	KONA_SHADOW_BCM_COUNT
+
+struct kona_shadow_payload {
+	enum rpmh_state state;
+	enum kona_shadow_bucket_id bucket;
+	struct kona_shadow_tcs_entry entries[MAX_RPMH_PAYLOAD];
+	unsigned int count;
+	u8 first_vcd;
+	u8 last_vcd;
+};
+
+struct kona_shadow_payload_set {
+	struct kona_shadow_payload payloads[KONA_SHADOW_MAX_PAYLOADS];
+	unsigned int count;
+	unsigned int commands;
+	bool valid;
+};
+
+
+enum kona_shadow_compare_result {
+	KONA_SHADOW_COMPARE_EQUAL,
+	KONA_SHADOW_COMPARE_MODERN_HIGHER,
+	KONA_SHADOW_COMPARE_MODERN_LOWER,
+	KONA_SHADOW_COMPARE_MIXED,
+};
+
+struct kona_shadow_compare_state {
+	u64 modern_llcc_avg;
+	u64 modern_llcc_peak;
+	u64 modern_mem_avg;
+	u64 modern_mem_peak;
+
+	u64 legacy_llcc_avg;
+	u64 legacy_llcc_peak;
+	u64 legacy_mem_avg;
+	u64 legacy_mem_peak;
+
+	enum kona_shadow_compare_result result;
+
+	u64 evaluations;
+	u64 equal_count;
+	u64 higher_count;
+	u64 lower_count;
+	u64 mixed_count;
+};
+
+
 
 /* Stage-5 families are separate from the Stage-4 CPU BCM group mask. */
 #define KONA_PACKED_FAMILY_GPU	BIT(0)
@@ -890,6 +946,25 @@ struct kona_icc_provider {
 				   [KONA_SHADOW_BCM_COUNT];
 	u64 shadow_dirty_generation[KONA_SHADOW_BUCKET_COUNT];
 	bool shadow_dirty_snapshot_valid;
+
+
+	/*
+	 * Stage 8 shadow payloads.  Both complete State-6 transactions and
+	 * Stage-7 dirty-only transactions are represented.
+	 */
+	struct kona_shadow_payload_set
+		shadow_state_payloads[KONA_SHADOW_BUCKET_COUNT];
+	struct kona_shadow_payload_set
+		shadow_dirty_payloads[KONA_SHADOW_BUCKET_COUNT];
+
+	u64 shadow_payload_build_count;
+	u64 shadow_payload_invalid_count;
+
+	/*
+	 * Stage 9 comparison between the new AMC model and the currently
+	 * authoritative Kona CPU compatibility state.
+	 */
+	struct kona_shadow_compare_state shadow_compare;
 
 	bool boot_floor_vote;
 	bool first_cpu_request_seen;
@@ -5247,6 +5322,266 @@ static void kona_icc_shadow_commit_dirty_snapshot(struct kona_icc_provider *qp)
  * The legacy shadow_tcs[] diagnostic remains an AMC/full mirror so existing
  * tooling continues to work unchanged.
  */
+
+/*
+ * Convert one already VCD-sorted Stage-6/7 batch into one or more
+ * MAX_RPMH_PAYLOAD-safe payloads.
+ *
+ * A VCD group is atomic for splitting purposes: commands sharing a VCD may
+ * never straddle two payloads.
+ */
+static void
+kona_icc_shadow_build_payloads(struct kona_icc_provider *qp,
+			       const struct kona_shadow_tcs_batch *batch,
+			       struct kona_shadow_payload_set *set)
+{
+	unsigned int start = 0;
+
+	if (!qp || !batch || !set)
+		return;
+
+	memset(set, 0, sizeof(*set));
+	set->valid = true;
+
+	qp->shadow_payload_build_count++;
+
+	while (start < batch->count) {
+		struct kona_shadow_payload *payload;
+		unsigned int end = start;
+		unsigned int payload_count = 0;
+
+		if (set->count >= KONA_SHADOW_MAX_PAYLOADS) {
+			set->valid = false;
+			qp->shadow_payload_invalid_count++;
+			return;
+		}
+
+		/*
+		 * Add complete VCD groups until the next complete group would
+		 * exceed MAX_RPMH_PAYLOAD.
+		 */
+		while (end < batch->count) {
+			unsigned int group_start = end;
+			unsigned int group_end = end + 1;
+			unsigned int group_count;
+
+			while (group_end < batch->count &&
+			       batch->entries[group_end].vcd ==
+			       batch->entries[group_start].vcd)
+				group_end++;
+
+			group_count = group_end - group_start;
+
+			/*
+			 * One indivisible VCD group larger than the RPMh payload
+			 * limit cannot be represented safely.
+			 */
+			if (group_count > MAX_RPMH_PAYLOAD) {
+				set->valid = false;
+				qp->shadow_payload_invalid_count++;
+				return;
+			}
+
+			if (payload_count &&
+			    payload_count + group_count > MAX_RPMH_PAYLOAD)
+				break;
+
+			payload_count += group_count;
+			end = group_end;
+		}
+
+		if (!payload_count || end <= start) {
+			set->valid = false;
+			qp->shadow_payload_invalid_count++;
+			return;
+		}
+
+		payload = &set->payloads[set->count++];
+
+		payload->state = batch->state;
+		payload->bucket = batch->bucket;
+		payload->count = payload_count;
+		payload->first_vcd = batch->entries[start].vcd;
+		payload->last_vcd = batch->entries[end - 1].vcd;
+
+		memcpy(payload->entries,
+		       &batch->entries[start],
+		       sizeof(payload->entries[0]) * payload_count);
+
+		set->commands += payload_count;
+		start = end;
+	}
+}
+
+/*
+ * Stage 8 constructs payload-safe representations for every full and dirty
+ * state transaction.
+ */
+static void kona_icc_shadow_build_all_payloads(struct kona_icc_provider *qp)
+{
+	enum kona_shadow_bucket_id bucket;
+
+	if (!qp)
+		return;
+
+	for (bucket = 0; bucket < KONA_SHADOW_BUCKET_COUNT; bucket++) {
+		kona_icc_shadow_build_payloads(
+			qp,
+			&qp->shadow_state_batches[bucket],
+			&qp->shadow_state_payloads[bucket]);
+
+		kona_icc_shadow_build_payloads(
+			qp,
+			&qp->shadow_dirty_batches[bucket],
+			&qp->shadow_dirty_payloads[bucket]);
+	}
+}
+
+
+static const char *
+kona_icc_shadow_compare_name(enum kona_shadow_compare_result result)
+{
+	switch (result) {
+	case KONA_SHADOW_COMPARE_EQUAL:
+		return "equal";
+	case KONA_SHADOW_COMPARE_MODERN_HIGHER:
+		return "modern-higher";
+	case KONA_SHADOW_COMPARE_MODERN_LOWER:
+		return "modern-lower";
+	case KONA_SHADOW_COMPARE_MIXED:
+	default:
+		return "mixed";
+	}
+}
+
+static enum kona_shadow_compare_result
+kona_icc_shadow_compare_values(u64 modern_llcc_avg,
+			       u64 modern_llcc_peak,
+			       u64 modern_mem_avg,
+			       u64 modern_mem_peak,
+			       u64 legacy_llcc_avg,
+			       u64 legacy_llcc_peak,
+			       u64 legacy_mem_avg,
+			       u64 legacy_mem_peak)
+{
+	bool higher = false;
+	bool lower = false;
+
+	if (modern_llcc_avg > legacy_llcc_avg ||
+	    modern_llcc_peak > legacy_llcc_peak ||
+	    modern_mem_avg > legacy_mem_avg ||
+	    modern_mem_peak > legacy_mem_peak)
+		higher = true;
+
+	if (modern_llcc_avg < legacy_llcc_avg ||
+	    modern_llcc_peak < legacy_llcc_peak ||
+	    modern_mem_avg < legacy_mem_avg ||
+	    modern_mem_peak < legacy_mem_peak)
+		lower = true;
+
+	if (!higher && !lower)
+		return KONA_SHADOW_COMPARE_EQUAL;
+
+	if (higher && !lower)
+		return KONA_SHADOW_COMPARE_MODERN_HIGHER;
+
+	if (!higher && lower)
+		return KONA_SHADOW_COMPARE_MODERN_LOWER;
+
+	return KONA_SHADOW_COMPARE_MIXED;
+}
+
+/*
+ * Stage 9 comparison gate.
+ *
+ * The modern side deliberately uses the RAW AMC inputs because that is the
+ * candidate eventual upstream-style source.
+ *
+ * The legacy side uses the current effective compatibility aggregates, which
+ * remain authoritative today.
+ *
+ * Nothing here changes either side.
+ */
+static void kona_icc_shadow_compare_authoritative(struct kona_icc_provider *qp)
+{
+	struct kona_shadow_compare_state *cmp;
+	enum kona_shadow_compare_result result;
+
+	if (!qp)
+		return;
+
+	cmp = &qp->shadow_compare;
+
+	cmp->modern_llcc_avg =
+		kona_icc_shadow_raw_bucket_resource_vote(
+			qp, "CPU_LLCC_AB", true,
+			KONA_SHADOW_BUCKET_AMC);
+
+	cmp->modern_llcc_peak =
+		kona_icc_shadow_raw_bucket_resource_vote(
+			qp, "CPU_LLCC_IB", false,
+			KONA_SHADOW_BUCKET_AMC);
+
+	cmp->modern_mem_avg =
+		kona_icc_shadow_raw_bucket_resource_vote(
+			qp, "CPU_MEM_AB", true,
+			KONA_SHADOW_BUCKET_AMC);
+
+	cmp->modern_mem_peak =
+		kona_icc_shadow_raw_bucket_resource_vote(
+			qp, "CPU_MEM_IB", false,
+			KONA_SHADOW_BUCKET_AMC);
+
+	cmp->legacy_llcc_avg =
+		kona_icc_shadow_bucket_resource_vote(
+			qp, "CPU_LLCC_AB", true,
+			KONA_SHADOW_BUCKET_AMC);
+
+	cmp->legacy_llcc_peak =
+		kona_icc_shadow_bucket_resource_vote(
+			qp, "CPU_LLCC_IB", false,
+			KONA_SHADOW_BUCKET_AMC);
+
+	cmp->legacy_mem_avg =
+		kona_icc_shadow_bucket_resource_vote(
+			qp, "CPU_MEM_AB", true,
+			KONA_SHADOW_BUCKET_AMC);
+
+	cmp->legacy_mem_peak =
+		kona_icc_shadow_bucket_resource_vote(
+			qp, "CPU_MEM_IB", false,
+			KONA_SHADOW_BUCKET_AMC);
+
+	result = kona_icc_shadow_compare_values(
+		cmp->modern_llcc_avg,
+		cmp->modern_llcc_peak,
+		cmp->modern_mem_avg,
+		cmp->modern_mem_peak,
+		cmp->legacy_llcc_avg,
+		cmp->legacy_llcc_peak,
+		cmp->legacy_mem_avg,
+		cmp->legacy_mem_peak);
+
+	cmp->result = result;
+	cmp->evaluations++;
+
+	switch (result) {
+	case KONA_SHADOW_COMPARE_EQUAL:
+		cmp->equal_count++;
+		break;
+	case KONA_SHADOW_COMPARE_MODERN_HIGHER:
+		cmp->higher_count++;
+		break;
+	case KONA_SHADOW_COMPARE_MODERN_LOWER:
+		cmp->lower_count++;
+		break;
+	case KONA_SHADOW_COMPARE_MIXED:
+	default:
+		cmp->mixed_count++;
+		break;
+	}
+}
+
 static void kona_icc_shadow_build_all_tcs(struct kona_icc_provider *qp)
 {
 	enum kona_shadow_bucket_id bucket;
@@ -5381,6 +5716,18 @@ static void kona_icc_refresh_bcm_shadow(struct kona_icc_provider *qp)
 	 * Stage 7: build the changed-only equivalents.
 	 */
 	kona_icc_shadow_build_all_tcs(qp);
+
+	/*
+	 * Stage 8: convert the complete and dirty VCD-aware transactions into
+	 * generic MAX_RPMH_PAYLOAD-safe payload sets.
+	 */
+	kona_icc_shadow_build_all_payloads(qp);
+
+	/*
+	 * Stage 9: compare candidate raw modern AMC demand against the current
+	 * authoritative effective Kona CPU demand.
+	 */
+	kona_icc_shadow_compare_authoritative(qp);
 
 	/*
 	 * This is only the diagnostic comparison baseline.  It has no effect
@@ -7581,6 +7928,62 @@ static int kona_param_get_cpu_bcm_stats(char *buffer,
 		qp->shadow_dirty_batches[KONA_SHADOW_BUCKET_WAKE].count,
 		qp->shadow_dirty_batches[KONA_SHADOW_BUCKET_SLEEP].count,
 		qp->shadow_dirty_snapshot_valid);
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"shadow_payloads "
+		"ACTIVE=%u/%u/%u "
+		"WAKE=%u/%u/%u "
+		"SLEEP=%u/%u/%u "
+		"builds=%llu invalid=%llu\n",
+		qp->shadow_state_payloads[KONA_SHADOW_BUCKET_AMC].count,
+		qp->shadow_state_payloads[KONA_SHADOW_BUCKET_AMC].commands,
+		qp->shadow_state_payloads[KONA_SHADOW_BUCKET_AMC].valid,
+		qp->shadow_state_payloads[KONA_SHADOW_BUCKET_WAKE].count,
+		qp->shadow_state_payloads[KONA_SHADOW_BUCKET_WAKE].commands,
+		qp->shadow_state_payloads[KONA_SHADOW_BUCKET_WAKE].valid,
+		qp->shadow_state_payloads[KONA_SHADOW_BUCKET_SLEEP].count,
+		qp->shadow_state_payloads[KONA_SHADOW_BUCKET_SLEEP].commands,
+		qp->shadow_state_payloads[KONA_SHADOW_BUCKET_SLEEP].valid,
+		(unsigned long long)qp->shadow_payload_build_count,
+		(unsigned long long)qp->shadow_payload_invalid_count);
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"shadow_dirty_payloads "
+		"ACTIVE=%u/%u/%u "
+		"WAKE=%u/%u/%u "
+		"SLEEP=%u/%u/%u\n",
+		qp->shadow_dirty_payloads[KONA_SHADOW_BUCKET_AMC].count,
+		qp->shadow_dirty_payloads[KONA_SHADOW_BUCKET_AMC].commands,
+		qp->shadow_dirty_payloads[KONA_SHADOW_BUCKET_AMC].valid,
+		qp->shadow_dirty_payloads[KONA_SHADOW_BUCKET_WAKE].count,
+		qp->shadow_dirty_payloads[KONA_SHADOW_BUCKET_WAKE].commands,
+		qp->shadow_dirty_payloads[KONA_SHADOW_BUCKET_WAKE].valid,
+		qp->shadow_dirty_payloads[KONA_SHADOW_BUCKET_SLEEP].count,
+		qp->shadow_dirty_payloads[KONA_SHADOW_BUCKET_SLEEP].commands,
+		qp->shadow_dirty_payloads[KONA_SHADOW_BUCKET_SLEEP].valid);
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"shadow_compare result=%s eval=%llu "
+		"equal=%llu higher=%llu lower=%llu mixed=%llu\n",
+		kona_icc_shadow_compare_name(qp->shadow_compare.result),
+		(unsigned long long)qp->shadow_compare.evaluations,
+		(unsigned long long)qp->shadow_compare.equal_count,
+		(unsigned long long)qp->shadow_compare.higher_count,
+		(unsigned long long)qp->shadow_compare.lower_count,
+		(unsigned long long)qp->shadow_compare.mixed_count);
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"shadow_compare_bw "
+		"modern_llcc=%llu/%llu legacy_llcc=%llu/%llu "
+		"modern_mem=%llu/%llu legacy_mem=%llu/%llu\n",
+		(unsigned long long)qp->shadow_compare.modern_llcc_avg,
+		(unsigned long long)qp->shadow_compare.modern_llcc_peak,
+		(unsigned long long)qp->shadow_compare.legacy_llcc_avg,
+		(unsigned long long)qp->shadow_compare.legacy_llcc_peak,
+		(unsigned long long)qp->shadow_compare.modern_mem_avg,
+		(unsigned long long)qp->shadow_compare.modern_mem_peak,
+		(unsigned long long)qp->shadow_compare.legacy_mem_avg,
+		(unsigned long long)qp->shadow_compare.legacy_mem_peak);
 
 	len += scnprintf(buffer + len, PAGE_SIZE - len,
 		"shadow_batch builds=%llu invalid=%llu count=%u\n",
