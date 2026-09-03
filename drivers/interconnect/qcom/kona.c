@@ -58,6 +58,33 @@ enum kona_icc_role {
 	KONA_ROLE_CONFIG,
 	KONA_ROLE_RAW,
         KONA_ROLE_DISPLAY,
+
+};
+
+/*
+ * Hardware topology metadata used by the Kona v2 ICC migration.
+ *
+ * These are physical downstream BCM groups, not additional RPMh owners.
+ * The masks describe which shared resources a logical compatibility path
+ * traverses.  Existing ownership rules remain authoritative until the
+ * modern BCM voter is enabled.
+ */
+#define KONA_HW_BCM_SH0	BIT(0)
+#define KONA_HW_BCM_SH2	BIT(1)
+#define KONA_HW_BCM_SH3	BIT(2)
+#define KONA_HW_BCM_SH4	BIT(3)
+#define KONA_HW_BCM_MC0	BIT(4)
+#define KONA_HW_BCM_ACV	BIT(5)
+#define KONA_HW_BCM_CE0	BIT(6)
+#define KONA_HW_BCM_CN0	BIT(7)
+#define KONA_HW_BCM_SN12	BIT(8)
+#define KONA_HW_BCM_MM0	BIT(9)
+#define KONA_HW_BCM_MM1	BIT(10)
+
+struct kona_icc_hw_desc {
+	u16 channels;
+	u16 buswidth;
+	u32 bcm_mask;
 };
 
 /* Stage-5 families are separate from the Stage-4 CPU BCM group mask. */
@@ -535,6 +562,139 @@ struct kona_icc_node_desc {
         enum kona_icc_role role;
 };
 
+
+/*
+ * Translate Singularity's compatibility path IDs into physical Kona
+ * topology properties.
+ *
+ * Values come from the real SM8250 NoC topology.  Do not use SM8850/Alor
+ * bus widths here: the newer software model is portable, its hardware
+ * topology is not.
+ */
+static struct kona_icc_hw_desc kona_icc_get_hw_desc(u32 id)
+{
+	struct kona_icc_hw_desc hw = {
+		.channels = 1,
+		.buswidth = 8,
+		.bcm_mask = 0,
+	};
+
+	switch (id) {
+	/*
+	 * APSS/GEM_NOC CPU traffic ultimately feeds the SH fabric.
+	 * DDR paths additionally traverse MC0.
+	 */
+	case KONA_ICC_CPU_TO_LLCC:
+	case KONA_ICC_CPU0_TO_LLCC:
+	case KONA_ICC_CPU1_TO_LLCC:
+	case KONA_ICC_CPU2_TO_LLCC:
+	case KONA_ICC_CPU3_TO_LLCC:
+	case KONA_ICC_CPU4_TO_LLCC:
+	case KONA_ICC_CPU5_TO_LLCC:
+	case KONA_ICC_CPU6_TO_LLCC:
+	case KONA_ICC_CPU7_TO_LLCC:
+		hw.channels = 2;
+		hw.buswidth = 32;
+		hw.bcm_mask = KONA_HW_BCM_SH0 |
+			      KONA_HW_BCM_SH4;
+		break;
+
+	case KONA_ICC_CPU_TO_MEM:
+	case KONA_ICC_CPU0_TO_MEM:
+	case KONA_ICC_CPU1_TO_MEM:
+	case KONA_ICC_CPU2_TO_MEM:
+	case KONA_ICC_CPU3_TO_MEM:
+	case KONA_ICC_CPU4_TO_MEM:
+	case KONA_ICC_CPU5_TO_MEM:
+	case KONA_ICC_CPU6_TO_MEM:
+	case KONA_ICC_CPU7_TO_MEM:
+		hw.channels = 2;
+		hw.buswidth = 32;
+		hw.bcm_mask = KONA_HW_BCM_SH0 |
+			      KONA_HW_BCM_SH4 |
+			      KONA_HW_BCM_MC0 |
+			      KONA_HW_BCM_ACV;
+		break;
+
+	/*
+	 * UFS_MEM is an A1NOC master on SM8250.  Keep physical ownership
+	 * with ufs-qcom for now; this metadata only describes its route.
+	 */
+	case KONA_ICC_UFS_TO_LLCC:
+		hw.channels = 1;
+		hw.buswidth = 8;
+		hw.bcm_mask = KONA_HW_BCM_SH0;
+		break;
+
+	case KONA_ICC_UFS_TO_MEM:
+		hw.channels = 1;
+		hw.buswidth = 8;
+		hw.bcm_mask = KONA_HW_BCM_SH0 |
+			      KONA_HW_BCM_MC0 |
+			      KONA_HW_BCM_ACV;
+		break;
+
+	case KONA_ICC_SDHC2_TO_MEM:
+		hw.channels = 1;
+		hw.buswidth = 8;
+		hw.bcm_mask = KONA_HW_BCM_SH0 |
+			      KONA_HW_BCM_MC0 |
+			      KONA_HW_BCM_ACV;
+		break;
+
+	case KONA_ICC_CRYPTO_TO_MEM:
+		hw.channels = 1;
+		hw.buswidth = 8;
+		hw.bcm_mask = KONA_HW_BCM_CE0 |
+			      KONA_HW_BCM_SH0 |
+			      KONA_HW_BCM_MC0 |
+			      KONA_HW_BCM_ACV;
+		break;
+
+	case KONA_ICC_GPU_TO_LLCC:
+	case KONA_ICC_GMU_TO_LLCC:
+		hw.channels = 2;
+		hw.buswidth = 32;
+		hw.bcm_mask = KONA_HW_BCM_SH0;
+		break;
+
+	case KONA_ICC_GPU_TO_MEM:
+	case KONA_ICC_GMU_TO_MEM:
+		hw.channels = 2;
+		hw.buswidth = 32;
+		hw.bcm_mask = KONA_HW_BCM_SH0 |
+			      KONA_HW_BCM_MC0 |
+			      KONA_HW_BCM_ACV;
+		break;
+
+	case KONA_ICC_DISP0_TO_MEM:
+	case KONA_ICC_DISP1_TO_MEM:
+		hw.channels = 1;
+		hw.buswidth = 32;
+		hw.bcm_mask = KONA_HW_BCM_MM1 |
+			      KONA_HW_BCM_MM0 |
+			      KONA_HW_BCM_SH0 |
+			      KONA_HW_BCM_MC0 |
+			      KONA_HW_BCM_ACV;
+		break;
+
+	case KONA_ICC_CAM_CFG:
+	case KONA_ICC_DISP_CFG:
+	case KONA_ICC_VIDEO_CFG:
+	case KONA_ICC_IPA_CFG:
+		hw.channels = 1;
+		hw.buswidth = 4;
+		hw.bcm_mask = KONA_HW_BCM_CN0;
+		break;
+
+	default:
+		break;
+	}
+
+	return hw;
+}
+
+
 struct kona_packed_inputs {
 	u64 llcc_avg;
 	u64 llcc_peak;
@@ -550,6 +710,14 @@ struct kona_icc_provider {
 	struct device *rpmh_dev;
 	const struct kona_icc_node_desc *nodes;
 	size_t num_nodes;
+
+	/*
+	 * Kona v2 topology metadata.  This is currently descriptive only;
+	 * the legacy vote path remains authoritative until BCM aggregation
+	 * is migrated.
+	 */
+	struct kona_icc_hw_desc *hw_nodes;
+
 	bool boot_floor_vote;
 	bool first_cpu_request_seen;
 	u64 invalid_vote_count;
@@ -6836,6 +7004,14 @@ static int kona_icc_probe(struct platform_device *pdev)
 		/* Never issue one-shot RPMh floor votes from provider probe by default. */
 		qp->boot_floor_vote = false;
 	}
+
+	qp->hw_nodes = devm_kcalloc(&pdev->dev, qp->num_nodes,
+				     sizeof(*qp->hw_nodes), GFP_KERNEL);
+	if (!qp->hw_nodes)
+		return -ENOMEM;
+
+	for (i = 0; i < qp->num_nodes; i++)
+		qp->hw_nodes[i] = kona_icc_get_hw_desc(qp->nodes[i].id);
 
 	qp->last_ab = devm_kcalloc(&pdev->dev, qp->num_nodes, sizeof(u64),
 				   GFP_KERNEL);
