@@ -87,6 +87,32 @@ struct kona_icc_hw_desc {
 	u32 bcm_mask;
 };
 
+
+/*
+ * Kona v2 shadow BCM aggregation.
+ *
+ * Stage 2 deliberately does not program hardware.  It computes the logical
+ * bandwidth that the modern BCM-centric model would feed into SH4, SH0 and
+ * MC0 so it can be compared against the established packed/legacy path before
+ * ownership is changed.
+ */
+enum kona_shadow_bcm_id {
+	KONA_SHADOW_BCM_SH4,
+	KONA_SHADOW_BCM_SH0,
+	KONA_SHADOW_BCM_MC0,
+	KONA_SHADOW_BCM_COUNT,
+};
+
+struct kona_shadow_bcm_state {
+	const char *name;
+	u32 mask;
+	u64 avg_kBps;
+	u64 peak_kBps;
+	u64 update_count;
+	u64 unchanged_count;
+};
+
+
 /* Stage-5 families are separate from the Stage-4 CPU BCM group mask. */
 #define KONA_PACKED_FAMILY_GPU	BIT(0)
 #define KONA_PACKED_FAMILY_GMU	BIT(1)
@@ -717,6 +743,14 @@ struct kona_icc_provider {
 	 * is migrated.
 	 */
 	struct kona_icc_hw_desc *hw_nodes;
+
+	/*
+	 * Shadow-only modern BCM aggregates.  These values never reach RPMh
+	 * during Stage 2.
+	 */
+	struct kona_shadow_bcm_state shadow_bcms[KONA_SHADOW_BCM_COUNT];
+	u64 shadow_evaluation_count;
+	u64 shadow_change_count;
 
 	bool boot_floor_vote;
 	bool first_cpu_request_seen;
@@ -4276,6 +4310,77 @@ static u64 kona_icc_shared_resource_vote(struct kona_icc_provider *qp,
 	return vote;
 }
 
+
+static void kona_icc_shadow_bcm_update(struct kona_icc_provider *qp,
+				       enum kona_shadow_bcm_id id,
+				       u64 avg, u64 peak)
+{
+	struct kona_shadow_bcm_state *bcm = &qp->shadow_bcms[id];
+
+	if (bcm->avg_kBps == avg && bcm->peak_kBps == peak) {
+		bcm->unchanged_count++;
+		return;
+	}
+
+	bcm->avg_kBps = avg;
+	bcm->peak_kBps = peak;
+	bcm->update_count++;
+	qp->shadow_change_count++;
+}
+
+/*
+ * Build a modern-style shadow view of the CPU fabric.
+ *
+ * The compatibility provider exposes overlapping logical CPU paths, so do
+ * not sum every logical node carrying SH0/SH4/MC0.  The existing shared
+ * resource aggregator already resolves generic/per-CPU overlap and retains
+ * the correct simultaneous policy AB behavior.
+ *
+ * SH4:
+ *   APSS-facing source BCM.  It sees whichever CPU path currently requires
+ *   the stronger LLCC or memory-side bandwidth.
+ *
+ * SH0:
+ *   shared LLCC-facing downstream BCM.  CPU DDR traffic also traverses LLCC,
+ *   therefore use the strongest LLCC/memory requirement.
+ *
+ * MC0:
+ *   memory-controller BCM.  Only the DDR-facing aggregate contributes.
+ *
+ * This is telemetry only.  No packed command is built or submitted here.
+ */
+static void kona_icc_refresh_bcm_shadow(struct kona_icc_provider *qp)
+{
+	u64 llcc_avg, llcc_peak;
+	u64 mem_avg, mem_peak;
+	u64 fabric_avg, fabric_peak;
+
+	if (!qp || !qp->eff_ab || !qp->eff_ib)
+		return;
+
+	llcc_avg = kona_icc_shared_resource_vote(qp, "CPU_LLCC_AB", true);
+	llcc_peak = kona_icc_shared_resource_vote(qp, "CPU_LLCC_IB", false);
+	mem_avg = kona_icc_shared_resource_vote(qp, "CPU_MEM_AB", true);
+	mem_peak = kona_icc_shared_resource_vote(qp, "CPU_MEM_IB", false);
+
+	/*
+	 * SH4 and SH0 represent the shared CPU fabric before the final MC
+	 * endpoint.  Avoid additive double counting between the compatibility
+	 * LLCC and DDR views.
+	 */
+	fabric_avg = max(llcc_avg, mem_avg);
+	fabric_peak = max(llcc_peak, mem_peak);
+
+	qp->shadow_evaluation_count++;
+
+	kona_icc_shadow_bcm_update(qp, KONA_SHADOW_BCM_SH4,
+				   fabric_avg, fabric_peak);
+	kona_icc_shadow_bcm_update(qp, KONA_SHADOW_BCM_SH0,
+				   fabric_avg, fabric_peak);
+	kona_icc_shadow_bcm_update(qp, KONA_SHADOW_BCM_MC0,
+				   mem_avg, mem_peak);
+}
+
 static void kona_icc_cache_shared_resource_vote(struct kona_icc_provider *qp,
 						 const char *resource, bool average,
 						 u64 vote)
@@ -5960,6 +6065,13 @@ skip_perf_floor:
 		qp->last_active_jiffies[index] = jiffies;
 
 	/*
+	 * Stage 2: continuously maintain the modern BCM-centric shadow view.
+	 * This changes telemetry only; the existing ownership/programming path
+	 * remains authoritative.
+	 */
+	kona_icc_refresh_bcm_shadow(qp);
+
+	/*
 	 * Track last-known non-zero DISPLAY votes so resume can re-assert
 	 * fabric bandwidth before dispcc/panel bring-up sequences.
 	 *
@@ -6172,6 +6284,39 @@ static int kona_param_get_cpu_bcm_stats(char *buffer,
 	mutex_lock(&qp->vote_lock);
 	dynamic = qp->packed_dynamic_inputs;
 	effective = qp->packed_current_inputs;
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"shadow_evaluations=%llu shadow_changes=%llu "
+		"shadow_SH4=%llu/%llu updates=%llu skips=%llu "
+		"shadow_SH0=%llu/%llu updates=%llu skips=%llu "
+		"shadow_MC0=%llu/%llu updates=%llu skips=%llu\n",
+		(unsigned long long)qp->shadow_evaluation_count,
+		(unsigned long long)qp->shadow_change_count,
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH4].avg_kBps,
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH4].peak_kBps,
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH4].update_count,
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH4].unchanged_count,
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH0].avg_kBps,
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH0].peak_kBps,
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH0].update_count,
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH0].unchanged_count,
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_MC0].avg_kBps,
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_MC0].peak_kBps,
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_MC0].update_count,
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_MC0].unchanged_count);
+
 	len += scnprintf(buffer + len, PAGE_SIZE - len,
 		"force_high=%u context=ACTIVE_ONLY vote_limit=%u "
 		"effective_source=%s "
@@ -6984,6 +7129,14 @@ static int kona_icc_probe(struct platform_device *pdev)
 	qp->cpu_bcms[KONA_CPU_BCM_SH4].name = "SH4";
 	qp->cpu_bcms[KONA_CPU_BCM_SH0].name = "SH0";
 	qp->cpu_bcms[KONA_CPU_BCM_MC0].name = "MC0";
+
+	qp->shadow_bcms[KONA_SHADOW_BCM_SH4].name = "SH4";
+	qp->shadow_bcms[KONA_SHADOW_BCM_SH4].mask = KONA_HW_BCM_SH4;
+	qp->shadow_bcms[KONA_SHADOW_BCM_SH0].name = "SH0";
+	qp->shadow_bcms[KONA_SHADOW_BCM_SH0].mask = KONA_HW_BCM_SH0;
+	qp->shadow_bcms[KONA_SHADOW_BCM_MC0].name = "MC0";
+	qp->shadow_bcms[KONA_SHADOW_BCM_MC0].mask = KONA_HW_BCM_MC0;
+
 	/* ACV is solver-owned on Kona; never synthesize a normal X/Y vote for it. */
 
 	/*
