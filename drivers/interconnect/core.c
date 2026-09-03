@@ -256,11 +256,14 @@ EXPORT_SYMBOL_GPL(icc_put);
 
 int icc_set_tag(struct icc_path *path, u32 tag)
 {
-if (IS_ERR_OR_NULL(path))
-return -EINVAL;
+	if (IS_ERR_OR_NULL(path))
+		return -EINVAL;
 
-path->tag = tag;
-return 0;
+	mutex_lock(&path->lock);
+	path->tag = tag;
+	mutex_unlock(&path->lock);
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(icc_set_tag);
 
@@ -282,7 +285,8 @@ int icc_set_bw(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	prev_avg = path->avg_bw;
 	prev_peak = path->peak_bw;
 	prev_seq = path->resume_seq;
-	need_reapply = path->resume_seq != seq;
+	need_reapply = path->resume_seq != seq ||
+		       path->applied_tag != path->tag;
 
 	if (!need_reapply && prev_avg == avg_bw && prev_peak == peak_bw) {
 		ret = 0;
@@ -294,6 +298,7 @@ int icc_set_bw(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	 * no vote to restore, so avoid an unnecessary provider callback.
 	 */
 	if (need_reapply && !avg_bw && !peak_bw && !prev_avg && !prev_peak) {
+		path->applied_tag = path->tag;
 		path->resume_seq = seq;
 		ret = 0;
 		goto out_unlock;
@@ -302,6 +307,7 @@ int icc_set_bw(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 	if (!path->provider || !path->provider->set) {
 		path->avg_bw = avg_bw;
 		path->peak_bw = peak_bw;
+		path->applied_tag = path->tag;
 		path->resume_seq = seq;
 		ret = 0;
 		goto out_unlock;
@@ -322,6 +328,7 @@ int icc_set_bw(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 
 	path->avg_bw = avg_bw;
 	path->peak_bw = peak_bw;
+	path->applied_tag = path->tag;
 	path->resume_seq = seq;
 
 	ret = 0;

@@ -29,6 +29,7 @@ struct icc_path {
         struct icc_provider *provider;
         u32 id;
         u32 tag;
+        u32 applied_tag;
         u32 avg_bw;
         u32 peak_bw;
         /*

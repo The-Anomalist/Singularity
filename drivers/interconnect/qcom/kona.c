@@ -103,6 +103,29 @@ enum kona_shadow_bcm_id {
 	KONA_SHADOW_BCM_COUNT,
 };
 
+
+/*
+ * Match the modern Qualcomm RPMh ICC bucket/tag layout.
+ *
+ * A zero ICC tag is treated as ALWAYS, exactly as qcom_icc_aggregate()
+ * does in newer Qualcomm interconnect drivers.
+ */
+enum kona_shadow_bucket_id {
+	KONA_SHADOW_BUCKET_AMC,
+	KONA_SHADOW_BUCKET_WAKE,
+	KONA_SHADOW_BUCKET_SLEEP,
+	KONA_SHADOW_BUCKET_COUNT,
+};
+
+#define KONA_SHADOW_TAG_AMC		BIT(KONA_SHADOW_BUCKET_AMC)
+#define KONA_SHADOW_TAG_WAKE		BIT(KONA_SHADOW_BUCKET_WAKE)
+#define KONA_SHADOW_TAG_SLEEP		BIT(KONA_SHADOW_BUCKET_SLEEP)
+#define KONA_SHADOW_TAG_ACTIVE_ONLY	(KONA_SHADOW_TAG_AMC | \
+					 KONA_SHADOW_TAG_WAKE)
+#define KONA_SHADOW_TAG_ALWAYS		(KONA_SHADOW_TAG_AMC | \
+					 KONA_SHADOW_TAG_WAKE | \
+					 KONA_SHADOW_TAG_SLEEP)
+
 struct kona_shadow_bcm_state {
 	const char *name;
 	u32 mask;
@@ -129,7 +152,31 @@ struct kona_shadow_bcm_state {
 
 	u64 update_count;
 	u64 unchanged_count;
+
+	/*
+	 * Stage-5 bucket model. Existing scalar fields remain the Stage-2/3
+	 * compatibility view while these arrays model modern AMC/WAKE/SLEEP.
+	 */
+	u64 bucket_avg[KONA_SHADOW_BUCKET_COUNT];
+	u64 bucket_peak[KONA_SHADOW_BUCKET_COUNT];
+	u64 bucket_vote_x[KONA_SHADOW_BUCKET_COUNT];
+	u64 bucket_vote_y[KONA_SHADOW_BUCKET_COUNT];
+	u32 bucket_data[KONA_SHADOW_BUCKET_COUNT];
+	bool bucket_valid[KONA_SHADOW_BUCKET_COUNT];
+	bool bucket_saturated_x[KONA_SHADOW_BUCKET_COUNT];
+	bool bucket_saturated_y[KONA_SHADOW_BUCKET_COUNT];
 };
+
+struct kona_shadow_raw_bcm_state {
+	u64 bucket_avg[KONA_SHADOW_BUCKET_COUNT];
+	u64 bucket_peak[KONA_SHADOW_BUCKET_COUNT];
+	u64 bucket_vote_x[KONA_SHADOW_BUCKET_COUNT];
+	u64 bucket_vote_y[KONA_SHADOW_BUCKET_COUNT];
+	bool bucket_valid[KONA_SHADOW_BUCKET_COUNT];
+	bool bucket_saturated_x[KONA_SHADOW_BUCKET_COUNT];
+	bool bucket_saturated_y[KONA_SHADOW_BUCKET_COUNT];
+};
+
 
 
 #define KONA_SHADOW_TCS_MAX	KONA_SHADOW_BCM_COUNT
@@ -142,6 +189,19 @@ struct kona_shadow_tcs_entry {
 	u8 vcd;
 	bool commit;
 	bool valid;
+};
+
+
+/*
+ * Stage 6: one independent VCD-aware transaction image per RPMh state.
+ *
+ * These remain shadow-only.  Nothing here is submitted to RPMh.
+ */
+struct kona_shadow_tcs_batch {
+	enum rpmh_state state;
+	enum kona_shadow_bucket_id bucket;
+	struct kona_shadow_tcs_entry entries[KONA_SHADOW_TCS_MAX];
+	unsigned int count;
 };
 
 
@@ -778,10 +838,24 @@ struct kona_icc_provider {
 	struct kona_icc_hw_desc *hw_nodes;
 
 	/*
+	 * Last tag observed for each logical ICC path.  This is shadow-only
+	 * metadata used by the Stage-5 modern bucket model.
+	 */
+	u32 *shadow_tags;
+
+	/*
 	 * Shadow-only modern BCM aggregates.  These values never reach RPMh
 	 * during Stage 2.
 	 */
 	struct kona_shadow_bcm_state shadow_bcms[KONA_SHADOW_BCM_COUNT];
+
+	/*
+	 * Stage-5.5 raw-client comparison view. This bypasses Kona's legacy
+	 * floor/hysteresis policy and consumes req_ab/req_ib directly.
+	 */
+	struct kona_shadow_raw_bcm_state
+		shadow_raw_bcms[KONA_SHADOW_BCM_COUNT];
+
 	u64 shadow_evaluation_count;
 	u64 shadow_change_count;
 
@@ -793,6 +867,29 @@ struct kona_icc_provider {
 	unsigned int shadow_tcs_count;
 	u64 shadow_batch_build_count;
 	u64 shadow_batch_invalid_count;
+
+	/*
+	 * Stage 6 full-state transaction images.
+	 *
+	 * Indexing matches enum kona_shadow_bucket_id:
+	 *   AMC   -> RPMH_ACTIVE_ONLY_STATE
+	 *   WAKE  -> RPMH_WAKE_ONLY_STATE
+	 *   SLEEP -> RPMH_SLEEP_STATE
+	 */
+	struct kona_shadow_tcs_batch
+		shadow_state_batches[KONA_SHADOW_BUCKET_COUNT];
+
+	/*
+	 * Stage 7 changed-only transaction images.  Dirty tracking remains
+	 * shadow-only until the modern voter is allowed to own hardware.
+	 */
+	struct kona_shadow_tcs_batch
+		shadow_dirty_batches[KONA_SHADOW_BUCKET_COUNT];
+	u32 shadow_dirty_mask[KONA_SHADOW_BUCKET_COUNT];
+	u32 shadow_last_bucket_data[KONA_SHADOW_BUCKET_COUNT]
+				   [KONA_SHADOW_BCM_COUNT];
+	u64 shadow_dirty_generation[KONA_SHADOW_BUCKET_COUNT];
+	bool shadow_dirty_snapshot_valid;
 
 	bool boot_floor_vote;
 	bool first_cpu_request_seen;
@@ -4354,6 +4451,171 @@ static u64 kona_icc_shared_resource_vote(struct kona_icc_provider *qp,
 
 
 
+
+static u32 kona_icc_shadow_effective_tag(struct kona_icc_provider *qp,
+					 unsigned int index)
+{
+	u32 tag;
+
+	if (!qp->shadow_tags || index >= qp->num_nodes)
+		return KONA_SHADOW_TAG_ALWAYS;
+
+	tag = READ_ONCE(qp->shadow_tags[index]);
+
+	/* Modern Qualcomm semantics: an unspecified tag means ALWAYS. */
+	if (!tag)
+		tag = KONA_SHADOW_TAG_ALWAYS;
+
+	return tag;
+}
+
+/*
+ * Bucket-aware form of kona_icc_shared_resource_vote().
+ *
+ * Preserve the existing Kona compatibility semantics:
+ *   - aggregate shared aliases with max(), not sum()
+ *   - exclude policy-suppressed paths
+ *   - exclude externally owned cached paths
+ *   - retain the existing storage-assist policy
+ *
+ * The only new filter is the Qualcomm ICC tag bucket.
+ */
+static u64
+kona_icc_shadow_bucket_resource_vote(struct kona_icc_provider *qp,
+				     const char *resource,
+				     bool average,
+				     enum kona_shadow_bucket_id bucket)
+{
+	u64 vote = 0;
+	unsigned int i;
+
+	if (!resource || !qp->eff_ab || !qp->eff_ib ||
+	    bucket >= KONA_SHADOW_BUCKET_COUNT)
+		return 0;
+
+	for (i = 0; i < qp->num_nodes; i++) {
+		const struct kona_icc_node_desc *node = &qp->nodes[i];
+		const char *node_resource = average ? node->ab : node->ib;
+		u64 node_vote = average ? qp->eff_ab[i] : qp->eff_ib[i];
+		u32 tag = kona_icc_shadow_effective_tag(qp, i);
+
+		if (!(tag & BIT(bucket)))
+			continue;
+
+		if (!node_resource || strcmp(resource, node_resource) ||
+		    node_vote == U64_MAX ||
+		    kona_icc_is_policy_suppressed_path(node) ||
+		    kona_icc_is_external_cached_path(node))
+			continue;
+
+		vote = max(vote, node_vote);
+	}
+
+	vote = kona_icc_apply_storage_assist(qp, resource, vote);
+
+	return vote;
+}
+
+
+/*
+ * Stage-5.5 raw-client aggregate.
+ *
+ * This deliberately consumes req_ab/req_ib instead of eff_ab/eff_ib so
+ * we can compare modern BCM behavior before and after Kona's legacy
+ * policy transformations.
+ *
+ * Keep the compatibility max() semantics and ownership exclusions, but
+ * do not apply storage assist or other effective-vote policy here.
+ */
+static u64
+kona_icc_shadow_raw_bucket_resource_vote(struct kona_icc_provider *qp,
+					 const char *resource,
+					 bool average,
+					 enum kona_shadow_bucket_id bucket)
+{
+	u64 vote = 0;
+	unsigned int i;
+
+	if (!resource || !qp->req_ab || !qp->req_ib ||
+	    bucket >= KONA_SHADOW_BUCKET_COUNT)
+		return 0;
+
+	for (i = 0; i < qp->num_nodes; i++) {
+		const struct kona_icc_node_desc *node = &qp->nodes[i];
+		const char *node_resource = average ? node->ab : node->ib;
+		u64 node_vote = average ? qp->req_ab[i] : qp->req_ib[i];
+		u32 tag = kona_icc_shadow_effective_tag(qp, i);
+
+		if (!(tag & BIT(bucket)))
+			continue;
+
+		if (!node_resource ||
+		    strcmp(resource, node_resource) ||
+		    node_vote == U64_MAX ||
+		    kona_icc_is_policy_suppressed_path(node) ||
+		    kona_icc_is_external_cached_path(node))
+			continue;
+
+		vote = max(vote, node_vote);
+	}
+
+	return vote;
+}
+
+
+/*
+ * Return the exact logical compatibility node currently winning a raw
+ * shared-resource max aggregate.
+ *
+ * Diagnostic only.  This deliberately observes req_ab/req_ib before the
+ * legacy Kona floor/hysteresis policy.
+ */
+static const struct kona_icc_node_desc *
+kona_icc_shadow_raw_bucket_winner(struct kona_icc_provider *qp,
+				  const char *resource,
+				  bool average,
+				  enum kona_shadow_bucket_id bucket,
+				  u64 *winning_vote)
+{
+	const struct kona_icc_node_desc *winner = NULL;
+	u64 vote = 0;
+	unsigned int i;
+
+	if (winning_vote)
+		*winning_vote = 0;
+
+	if (!resource || !qp->req_ab || !qp->req_ib ||
+	    bucket >= KONA_SHADOW_BUCKET_COUNT)
+		return NULL;
+
+	for (i = 0; i < qp->num_nodes; i++) {
+		const struct kona_icc_node_desc *node = &qp->nodes[i];
+		const char *node_resource = average ? node->ab : node->ib;
+		u64 node_vote = average ? qp->req_ab[i] : qp->req_ib[i];
+		u32 tag = kona_icc_shadow_effective_tag(qp, i);
+
+		if (!(tag & BIT(bucket)))
+			continue;
+
+		if (!node_resource ||
+		    strcmp(resource, node_resource) ||
+		    node_vote == U64_MAX ||
+		    kona_icc_is_policy_suppressed_path(node) ||
+		    kona_icc_is_external_cached_path(node))
+			continue;
+
+		if (!winner || node_vote > vote) {
+			winner = node;
+			vote = node_vote;
+		}
+	}
+
+	if (winning_vote)
+		*winning_vote = vote;
+
+	return winner;
+}
+
 static u64 kona_icc_shadow_bcm_div(u64 value, u32 divisor)
 {
 	if (!divisor)
@@ -4447,6 +4709,302 @@ kona_icc_shadow_encode_bcm(struct kona_icc_provider *qp,
 }
 
 
+
+static void
+kona_icc_shadow_encode_bucket(struct kona_icc_provider *qp,
+			      enum kona_shadow_bcm_id id,
+			      enum kona_cpu_bcm_id physical_id,
+			      enum kona_shadow_bucket_id bucket)
+{
+	struct kona_shadow_bcm_state *shadow = &qp->shadow_bcms[id];
+	struct kona_bcm_state *physical = &qp->cpu_bcms[physical_id];
+	u64 x, y;
+
+	if (bucket >= KONA_SHADOW_BUCKET_COUNT)
+		return;
+
+	shadow->bucket_valid[bucket] = false;
+	shadow->bucket_vote_x[bucket] = 0;
+	shadow->bucket_vote_y[bucket] = 0;
+	shadow->bucket_data[bucket] = 0;
+	shadow->bucket_saturated_x[bucket] = false;
+	shadow->bucket_saturated_y[bucket] = false;
+
+	if (!physical->metadata_valid || !physical->unit ||
+	    !physical->width || !shadow->buswidth || !shadow->channels)
+		return;
+
+	x = shadow->bucket_avg[bucket] * physical->width;
+	x = kona_icc_shadow_bcm_div(
+		x, shadow->buswidth * shadow->channels);
+
+	y = shadow->bucket_peak[bucket] * physical->width;
+	y = kona_icc_shadow_bcm_div(y, shadow->buswidth);
+
+	x *= 1000;
+	y *= 1000;
+
+	x = kona_icc_shadow_bcm_div(x, physical->unit);
+	y = kona_icc_shadow_bcm_div(y, physical->unit);
+
+	if (x > KONA_BCM_VOTE_MASK) {
+		x = KONA_BCM_VOTE_MASK;
+		shadow->bucket_saturated_x[bucket] = true;
+	}
+
+	if (y > KONA_BCM_VOTE_MASK) {
+		y = KONA_BCM_VOTE_MASK;
+		shadow->bucket_saturated_y[bucket] = true;
+	}
+
+	shadow->bucket_vote_x[bucket] = x;
+	shadow->bucket_vote_y[bucket] = y;
+
+	/*
+	 * Diagnostic command only. Stage 6 will generate VCD-aware TCS batches
+	 * independently for AMC, WAKE and SLEEP.
+	 */
+	shadow->bucket_data[bucket] =
+		KONA_BCM_TCS_CMD(true, x || y, (u32)x, (u32)y);
+
+	shadow->bucket_valid[bucket] = true;
+}
+
+
+
+static void
+kona_icc_shadow_encode_raw_bucket(struct kona_icc_provider *qp,
+				  enum kona_shadow_bcm_id id,
+				  enum kona_cpu_bcm_id physical_id,
+				  enum kona_shadow_bucket_id bucket)
+{
+	struct kona_shadow_raw_bcm_state *raw = &qp->shadow_raw_bcms[id];
+	struct kona_shadow_bcm_state *geometry = &qp->shadow_bcms[id];
+	struct kona_bcm_state *physical = &qp->cpu_bcms[physical_id];
+	u64 x, y;
+
+	if (bucket >= KONA_SHADOW_BUCKET_COUNT)
+		return;
+
+	raw->bucket_valid[bucket] = false;
+	raw->bucket_vote_x[bucket] = 0;
+	raw->bucket_vote_y[bucket] = 0;
+	raw->bucket_saturated_x[bucket] = false;
+	raw->bucket_saturated_y[bucket] = false;
+
+	if (!physical->metadata_valid || !physical->unit ||
+	    !physical->width || !geometry->buswidth ||
+	    !geometry->channels)
+		return;
+
+	x = raw->bucket_avg[bucket] * physical->width;
+	x = kona_icc_shadow_bcm_div(
+		x, geometry->buswidth * geometry->channels);
+
+	y = raw->bucket_peak[bucket] * physical->width;
+	y = kona_icc_shadow_bcm_div(y, geometry->buswidth);
+
+	x *= 1000;
+	y *= 1000;
+
+	x = kona_icc_shadow_bcm_div(x, physical->unit);
+	y = kona_icc_shadow_bcm_div(y, physical->unit);
+
+	if (x > KONA_BCM_VOTE_MASK) {
+		x = KONA_BCM_VOTE_MASK;
+		raw->bucket_saturated_x[bucket] = true;
+	}
+
+	if (y > KONA_BCM_VOTE_MASK) {
+		y = KONA_BCM_VOTE_MASK;
+		raw->bucket_saturated_y[bucket] = true;
+	}
+
+	raw->bucket_vote_x[bucket] = x;
+	raw->bucket_vote_y[bucket] = y;
+	raw->bucket_valid[bucket] = true;
+}
+
+static void
+kona_icc_shadow_apply_raw_keepalive(struct kona_icc_provider *qp,
+				    enum kona_shadow_bcm_id id)
+{
+	struct kona_shadow_raw_bcm_state *raw =
+		&qp->shadow_raw_bcms[id];
+	struct kona_shadow_bcm_state *geometry =
+		&qp->shadow_bcms[id];
+
+	if (!geometry->keepalive)
+		return;
+
+	if (!raw->bucket_valid[KONA_SHADOW_BUCKET_AMC] ||
+	    !raw->bucket_valid[KONA_SHADOW_BUCKET_WAKE])
+		return;
+
+	/*
+	 * Match modern Qualcomm keepalive semantics: an empty AMC vote keeps
+	 * both AMC and WAKE at 1/1. SLEEP remains untouched.
+	 */
+	if (!raw->bucket_vote_x[KONA_SHADOW_BUCKET_AMC] &&
+	    !raw->bucket_vote_y[KONA_SHADOW_BUCKET_AMC]) {
+		raw->bucket_vote_x[KONA_SHADOW_BUCKET_AMC] = 1;
+		raw->bucket_vote_y[KONA_SHADOW_BUCKET_AMC] = 1;
+		raw->bucket_vote_x[KONA_SHADOW_BUCKET_WAKE] = 1;
+		raw->bucket_vote_y[KONA_SHADOW_BUCKET_WAKE] = 1;
+	}
+}
+
+static void kona_icc_refresh_raw_shadow_buckets(struct kona_icc_provider *qp)
+{
+	enum kona_shadow_bucket_id bucket;
+
+	if (!qp)
+		return;
+
+	for (bucket = 0; bucket < KONA_SHADOW_BUCKET_COUNT; bucket++) {
+		u64 llcc_avg, llcc_peak;
+		u64 mem_avg, mem_peak;
+		u64 fabric_avg, fabric_peak;
+
+		llcc_avg = kona_icc_shadow_raw_bucket_resource_vote(
+			qp, "CPU_LLCC_AB", true, bucket);
+		llcc_peak = kona_icc_shadow_raw_bucket_resource_vote(
+			qp, "CPU_LLCC_IB", false, bucket);
+
+		mem_avg = kona_icc_shadow_raw_bucket_resource_vote(
+			qp, "CPU_MEM_AB", true, bucket);
+		mem_peak = kona_icc_shadow_raw_bucket_resource_vote(
+			qp, "CPU_MEM_IB", false, bucket);
+
+		fabric_avg = max(llcc_avg, mem_avg);
+		fabric_peak = max(llcc_peak, mem_peak);
+
+		qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH4]
+			.bucket_avg[bucket] = fabric_avg;
+		qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH4]
+			.bucket_peak[bucket] = fabric_peak;
+
+		qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH0]
+			.bucket_avg[bucket] = fabric_avg;
+		qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH0]
+			.bucket_peak[bucket] = fabric_peak;
+
+		qp->shadow_raw_bcms[KONA_SHADOW_BCM_MC0]
+			.bucket_avg[bucket] = mem_avg;
+		qp->shadow_raw_bcms[KONA_SHADOW_BCM_MC0]
+			.bucket_peak[bucket] = mem_peak;
+
+		kona_icc_shadow_encode_raw_bucket(
+			qp, KONA_SHADOW_BCM_SH4,
+			KONA_CPU_BCM_SH4, bucket);
+
+		kona_icc_shadow_encode_raw_bucket(
+			qp, KONA_SHADOW_BCM_SH0,
+			KONA_CPU_BCM_SH0, bucket);
+
+		kona_icc_shadow_encode_raw_bucket(
+			qp, KONA_SHADOW_BCM_MC0,
+			KONA_CPU_BCM_MC0, bucket);
+	}
+
+	kona_icc_shadow_apply_raw_keepalive(
+		qp, KONA_SHADOW_BCM_SH4);
+	kona_icc_shadow_apply_raw_keepalive(
+		qp, KONA_SHADOW_BCM_SH0);
+	kona_icc_shadow_apply_raw_keepalive(
+		qp, KONA_SHADOW_BCM_MC0);
+}
+
+static void
+kona_icc_shadow_apply_bucket_keepalive(struct kona_icc_provider *qp,
+				       enum kona_shadow_bcm_id id)
+{
+	struct kona_shadow_bcm_state *shadow = &qp->shadow_bcms[id];
+
+	if (!shadow->keepalive)
+		return;
+
+	if (!shadow->bucket_valid[KONA_SHADOW_BUCKET_AMC] ||
+	    !shadow->bucket_valid[KONA_SHADOW_BUCKET_WAKE])
+		return;
+
+	/*
+	 * Match bcm_aggregate(): keepalive is triggered by an empty AMC vote.
+	 * When that happens both AMC and WAKE become the minimum 1/1 vote.
+	 * SLEEP remains untouched.
+	 */
+	if (!shadow->bucket_vote_x[KONA_SHADOW_BUCKET_AMC] &&
+	    !shadow->bucket_vote_y[KONA_SHADOW_BUCKET_AMC]) {
+		shadow->bucket_vote_x[KONA_SHADOW_BUCKET_AMC] = 1;
+		shadow->bucket_vote_y[KONA_SHADOW_BUCKET_AMC] = 1;
+		shadow->bucket_vote_x[KONA_SHADOW_BUCKET_WAKE] = 1;
+		shadow->bucket_vote_y[KONA_SHADOW_BUCKET_WAKE] = 1;
+
+		shadow->bucket_data[KONA_SHADOW_BUCKET_AMC] =
+			KONA_BCM_TCS_CMD(true, true, 1, 1);
+		shadow->bucket_data[KONA_SHADOW_BUCKET_WAKE] =
+			KONA_BCM_TCS_CMD(true, true, 1, 1);
+	}
+}
+
+static void kona_icc_refresh_shadow_buckets(struct kona_icc_provider *qp)
+{
+	enum kona_shadow_bucket_id bucket;
+
+	if (!qp)
+		return;
+
+	for (bucket = 0; bucket < KONA_SHADOW_BUCKET_COUNT; bucket++) {
+		u64 llcc_avg, llcc_peak;
+		u64 mem_avg, mem_peak;
+		u64 fabric_avg, fabric_peak;
+
+		llcc_avg = kona_icc_shadow_bucket_resource_vote(
+			qp, "CPU_LLCC_AB", true, bucket);
+		llcc_peak = kona_icc_shadow_bucket_resource_vote(
+			qp, "CPU_LLCC_IB", false, bucket);
+		mem_avg = kona_icc_shadow_bucket_resource_vote(
+			qp, "CPU_MEM_AB", true, bucket);
+		mem_peak = kona_icc_shadow_bucket_resource_vote(
+			qp, "CPU_MEM_IB", false, bucket);
+
+		fabric_avg = max(llcc_avg, mem_avg);
+		fabric_peak = max(llcc_peak, mem_peak);
+
+		qp->shadow_bcms[KONA_SHADOW_BCM_SH4].bucket_avg[bucket] =
+			fabric_avg;
+		qp->shadow_bcms[KONA_SHADOW_BCM_SH4].bucket_peak[bucket] =
+			fabric_peak;
+
+		qp->shadow_bcms[KONA_SHADOW_BCM_SH0].bucket_avg[bucket] =
+			fabric_avg;
+		qp->shadow_bcms[KONA_SHADOW_BCM_SH0].bucket_peak[bucket] =
+			fabric_peak;
+
+		qp->shadow_bcms[KONA_SHADOW_BCM_MC0].bucket_avg[bucket] =
+			mem_avg;
+		qp->shadow_bcms[KONA_SHADOW_BCM_MC0].bucket_peak[bucket] =
+			mem_peak;
+
+		kona_icc_shadow_encode_bucket(
+			qp, KONA_SHADOW_BCM_SH4,
+			KONA_CPU_BCM_SH4, bucket);
+		kona_icc_shadow_encode_bucket(
+			qp, KONA_SHADOW_BCM_SH0,
+			KONA_CPU_BCM_SH0, bucket);
+		kona_icc_shadow_encode_bucket(
+			qp, KONA_SHADOW_BCM_MC0,
+			KONA_CPU_BCM_MC0, bucket);
+	}
+
+	kona_icc_shadow_apply_bucket_keepalive(
+		qp, KONA_SHADOW_BCM_SH4);
+	kona_icc_shadow_apply_bucket_keepalive(
+		qp, KONA_SHADOW_BCM_SH0);
+	kona_icc_shadow_apply_bucket_keepalive(
+		qp, KONA_SHADOW_BCM_MC0);
+}
+
 static enum kona_cpu_bcm_id
 kona_icc_shadow_physical_bcm(enum kona_shadow_bcm_id id)
 {
@@ -4472,66 +5030,128 @@ kona_icc_shadow_physical_bcm(enum kona_shadow_bcm_id id)
  *
  * The array is diagnostic only. Nothing is submitted to RPMh here.
  */
-static void kona_icc_shadow_build_tcs(struct kona_icc_provider *qp)
+static enum rpmh_state
+kona_icc_shadow_bucket_rpmh_state(enum kona_shadow_bucket_id bucket)
+{
+	switch (bucket) {
+	case KONA_SHADOW_BUCKET_WAKE:
+		return RPMH_WAKE_ONLY_STATE;
+	case KONA_SHADOW_BUCKET_SLEEP:
+		return RPMH_SLEEP_STATE;
+	case KONA_SHADOW_BUCKET_AMC:
+	default:
+		return RPMH_ACTIVE_ONLY_STATE;
+	}
+}
+
+/*
+ * Build one VCD-aware transaction for one Qualcomm ICC bucket.
+ *
+ * include_mask controls which BCMs participate:
+ *
+ *   full Stage-6 batch:
+ *       all SH4/SH0/MC0 bits
+ *
+ *   dirty Stage-7 batch:
+ *       only BCMs whose encoded vote changed
+ *
+ * Same-VCD resources remain contiguous and COMMIT is placed only on the
+ * final participating BCM for that VCD.
+ */
+static void
+kona_icc_shadow_build_tcs_batch(struct kona_icc_provider *qp,
+				enum kona_shadow_bucket_id bucket,
+				u32 include_mask,
+				struct kona_shadow_tcs_batch *batch)
 {
 	struct kona_shadow_tcs_entry temp[KONA_SHADOW_TCS_MAX];
 	unsigned int i, j, count = 0;
 
-	if (!qp)
+	if (!qp || !batch || bucket >= KONA_SHADOW_BUCKET_COUNT)
 		return;
 
-	qp->shadow_tcs_count = 0;
+	memset(batch, 0, sizeof(*batch));
+
+	batch->bucket = bucket;
+	batch->state = kona_icc_shadow_bucket_rpmh_state(bucket);
+
 	qp->shadow_batch_build_count++;
 
+	/*
+	 * A zero dirty mask is a valid Stage-7 no-op transaction.
+	 */
+	if (!include_mask)
+		return;
+
 	for (i = 0; i < KONA_SHADOW_BCM_COUNT; i++) {
-		struct kona_shadow_bcm_state *shadow = &qp->shadow_bcms[i];
+		struct kona_shadow_bcm_state *shadow;
 		enum kona_cpu_bcm_id physical_id;
 		struct kona_bcm_state *physical;
 		struct kona_shadow_tcs_entry *entry;
+
+		if (!(include_mask & BIT(i)))
+			continue;
+
+		shadow = &qp->shadow_bcms[i];
 
 		physical_id = kona_icc_shadow_physical_bcm(i);
 		physical = &qp->cpu_bcms[physical_id];
 
 		/*
-		 * A modern BCM transaction cannot be generated until cmd-db
-		 * metadata is complete for every participating resource.
+		 * No state transaction is valid until cmd-db metadata is
+		 * complete for every participating BCM.
 		 */
-		if (!shadow->metadata_valid ||
+		if (!shadow->bucket_valid[bucket] ||
 		    !physical->metadata_valid ||
 		    !physical->addr) {
 			qp->shadow_batch_invalid_count++;
+			batch->count = 0;
 			return;
 		}
 
 		entry = &temp[count++];
+
 		entry->name = shadow->name;
 		entry->id = i;
 		entry->addr = physical->addr;
 		entry->vcd = physical->vcd;
 		entry->commit = false;
-		entry->valid = shadow->vote_x || shadow->vote_y;
-		entry->data = KONA_BCM_TCS_CMD(false, entry->valid,
-					       (u32)shadow->vote_x,
-					       (u32)shadow->vote_y);
+
+		entry->valid =
+			shadow->bucket_vote_x[bucket] ||
+			shadow->bucket_vote_y[bucket];
+
+		entry->data = KONA_BCM_TCS_CMD(
+			false,
+			entry->valid,
+			(u32)shadow->bucket_vote_x[bucket],
+			(u32)shadow->bucket_vote_y[bucket]);
 	}
 
 	/*
-	 * Stable insertion sort is sufficient for three CPU BCMs and keeps
-	 * same-VCD resources in their original SH4/SH0/MC0 discovery order.
+	 * Stable VCD sort.
+	 *
+	 * Three BCMs make insertion sort trivial, but this is deliberately
+	 * structured like the eventual generic modern voter.
 	 */
 	for (i = 1; i < count; i++) {
 		struct kona_shadow_tcs_entry key = temp[i];
 
 		j = i;
+
 		while (j && temp[j - 1].vcd > key.vcd) {
 			temp[j] = temp[j - 1];
 			j--;
 		}
+
 		temp[j] = key;
 	}
 
 	/*
-	 * Qualcomm commits a VCD only on its final BCM command.
+	 * COMMIT only the final participating BCM in each VCD.
+	 *
+	 * This also works for a dirty subset: if SH4 alone is dirty in VCD1,
+	 * SH4 becomes the final/commit command for that changed transaction.
 	 */
 	for (i = 0; i < count; i++) {
 		struct kona_shadow_bcm_state *shadow;
@@ -4539,23 +5159,127 @@ static void kona_icc_shadow_build_tcs(struct kona_icc_provider *qp)
 
 		if (temp[i].id >= KONA_SHADOW_BCM_COUNT) {
 			qp->shadow_batch_invalid_count++;
+			batch->count = 0;
 			return;
 		}
 
-		commit = i == count - 1 || temp[i].vcd != temp[i + 1].vcd;
+		commit = i == count - 1 ||
+			 temp[i].vcd != temp[i + 1].vcd;
+
 		temp[i].commit = commit;
 
 		shadow = &qp->shadow_bcms[temp[i].id];
 
-		temp[i].data = KONA_BCM_TCS_CMD(commit,
-						temp[i].valid,
-						(u32)shadow->vote_x,
-						(u32)shadow->vote_y);
+		temp[i].data = KONA_BCM_TCS_CMD(
+			commit,
+			temp[i].valid,
+			(u32)shadow->bucket_vote_x[bucket],
+			(u32)shadow->bucket_vote_y[bucket]);
 	}
 
-	memcpy(qp->shadow_tcs, temp,
-	       sizeof(temp[0]) * count);
-	qp->shadow_tcs_count = count;
+	if (count)
+		memcpy(batch->entries, temp,
+		       sizeof(temp[0]) * count);
+
+	batch->count = count;
+}
+
+/*
+ * Stage 7 dirty detector.
+ *
+ * Compare the complete per-bucket BCM command payload generated by Stage 5
+ * against the previous evaluated snapshot.  The first evaluation dirties
+ * every BCM so the initial state can be represented completely.
+ */
+static void kona_icc_shadow_update_dirty_masks(struct kona_icc_provider *qp)
+{
+	enum kona_shadow_bucket_id bucket;
+	unsigned int i;
+
+	if (!qp)
+		return;
+
+	for (bucket = 0; bucket < KONA_SHADOW_BUCKET_COUNT; bucket++) {
+		u32 mask = 0;
+
+		for (i = 0; i < KONA_SHADOW_BCM_COUNT; i++) {
+			u32 data = qp->shadow_bcms[i].bucket_data[bucket];
+
+			if (!qp->shadow_dirty_snapshot_valid ||
+			    data != qp->shadow_last_bucket_data[bucket][i])
+				mask |= BIT(i);
+		}
+
+		qp->shadow_dirty_mask[bucket] = mask;
+
+		if (mask)
+			qp->shadow_dirty_generation[bucket]++;
+	}
+}
+
+/*
+ * Advance the diagnostic dirty baseline only after both full and dirty
+ * transaction images have been generated.
+ */
+static void kona_icc_shadow_commit_dirty_snapshot(struct kona_icc_provider *qp)
+{
+	enum kona_shadow_bucket_id bucket;
+	unsigned int i;
+
+	if (!qp)
+		return;
+
+	for (bucket = 0; bucket < KONA_SHADOW_BUCKET_COUNT; bucket++) {
+		for (i = 0; i < KONA_SHADOW_BCM_COUNT; i++)
+			qp->shadow_last_bucket_data[bucket][i] =
+				qp->shadow_bcms[i].bucket_data[bucket];
+	}
+
+	qp->shadow_dirty_snapshot_valid = true;
+}
+
+/*
+ * Stage 6 + Stage 7 shadow transaction generation.
+ *
+ * Stage 6 always produces a complete transaction image for all three RPMh
+ * states.  Stage 7 independently produces changed-only transaction images.
+ *
+ * The legacy shadow_tcs[] diagnostic remains an AMC/full mirror so existing
+ * tooling continues to work unchanged.
+ */
+static void kona_icc_shadow_build_all_tcs(struct kona_icc_provider *qp)
+{
+	enum kona_shadow_bucket_id bucket;
+	const u32 full_mask = GENMASK(KONA_SHADOW_BCM_COUNT - 1, 0);
+	struct kona_shadow_tcs_batch *amc;
+
+	if (!qp)
+		return;
+
+	for (bucket = 0; bucket < KONA_SHADOW_BUCKET_COUNT; bucket++) {
+		kona_icc_shadow_build_tcs_batch(
+			qp,
+			bucket,
+			full_mask,
+			&qp->shadow_state_batches[bucket]);
+
+		kona_icc_shadow_build_tcs_batch(
+			qp,
+			bucket,
+			qp->shadow_dirty_mask[bucket],
+			&qp->shadow_dirty_batches[bucket]);
+	}
+
+	/*
+	 * Preserve Stage-4/5 AMC diagnostics.
+	 */
+	amc = &qp->shadow_state_batches[KONA_SHADOW_BUCKET_AMC];
+
+	qp->shadow_tcs_count = amc->count;
+
+	if (amc->count)
+		memcpy(qp->shadow_tcs, amc->entries,
+		       sizeof(amc->entries[0]) * amc->count);
 }
 
 static void kona_icc_shadow_bcm_update(struct kona_icc_provider *qp,
@@ -4634,7 +5358,35 @@ static void kona_icc_refresh_bcm_shadow(struct kona_icc_provider *qp)
 	kona_icc_shadow_encode_bcm(qp, KONA_SHADOW_BCM_MC0,
 				   KONA_CPU_BCM_MC0);
 
-	kona_icc_shadow_build_tcs(qp);
+	/*
+	 * Stage 5: derive independent AMC/WAKE/SLEEP BCM state from tagged
+	 * logical-path votes. Existing Stage-4 TCS generation remains AMC-only.
+	 */
+	kona_icc_refresh_shadow_buckets(qp);
+
+	/*
+	 * Stage 5.5: build the same modern bucket model directly from raw
+	 * client requests for policy-vs-raw validation.
+	 */
+	kona_icc_refresh_raw_shadow_buckets(qp);
+
+	/*
+	 * Stage 7 dirtiness is calculated from the freshly encoded Stage-5
+	 * per-state BCM image.
+	 */
+	kona_icc_shadow_update_dirty_masks(qp);
+
+	/*
+	 * Stage 6: build full ACTIVE/WAKE/SLEEP transactions.
+	 * Stage 7: build the changed-only equivalents.
+	 */
+	kona_icc_shadow_build_all_tcs(qp);
+
+	/*
+	 * This is only the diagnostic comparison baseline.  It has no effect
+	 * on RPMh state or hardware ownership.
+	 */
+	kona_icc_shadow_commit_dirty_snapshot(qp);
 }
 
 static void kona_icc_cache_shared_resource_vote(struct kona_icc_provider *qp,
@@ -6293,6 +7045,8 @@ skip_perf_floor:
 		qp->eff_ab[index] = ab;
 	if (qp->eff_ib)
 		qp->eff_ib[index] = ib;
+	if (qp->shadow_tags)
+		WRITE_ONCE(qp->shadow_tags[index], path->tag);
 	if (WARN_ON_ONCE(!qp->eff_ab || !qp->eff_ib ||
 			 qp->eff_ab[index] != ab || qp->eff_ib[index] != ib))
 		return -EIO;
@@ -6603,6 +7357,230 @@ static int kona_param_get_cpu_bcm_stats(char *buffer,
 		qp->shadow_bcms[KONA_SHADOW_BCM_MC0].metadata_valid,
 		qp->shadow_bcms[KONA_SHADOW_BCM_MC0].saturated_x,
 		qp->shadow_bcms[KONA_SHADOW_BCM_MC0].saturated_y);
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"shadow_buckets "
+		"AMC_SH4=%llu/%llu SH0=%llu/%llu MC0=%llu/%llu "
+		"WAKE_SH4=%llu/%llu SH0=%llu/%llu MC0=%llu/%llu "
+		"SLEEP_SH4=%llu/%llu SH0=%llu/%llu MC0=%llu/%llu\n",
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH4]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH4]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH0]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH0]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_MC0]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_MC0]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_AMC],
+
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH4]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_WAKE],
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH4]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_WAKE],
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH0]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_WAKE],
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH0]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_WAKE],
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_MC0]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_WAKE],
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_MC0]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_WAKE],
+
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH4]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_SLEEP],
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH4]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_SLEEP],
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH0]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_SLEEP],
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_SH0]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_SLEEP],
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_MC0]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_SLEEP],
+		(unsigned long long)
+			qp->shadow_bcms[KONA_SHADOW_BCM_MC0]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_SLEEP]);
+
+	{
+		const struct kona_icc_node_desc *llcc_ab_winner;
+		const struct kona_icc_node_desc *llcc_ib_winner;
+		const struct kona_icc_node_desc *mem_ab_winner;
+		const struct kona_icc_node_desc *mem_ib_winner;
+		u64 llcc_ab_vote, llcc_ib_vote;
+		u64 mem_ab_vote, mem_ib_vote;
+
+		llcc_ab_winner = kona_icc_shadow_raw_bucket_winner(
+			qp, "CPU_LLCC_AB", true,
+			KONA_SHADOW_BUCKET_AMC, &llcc_ab_vote);
+
+		llcc_ib_winner = kona_icc_shadow_raw_bucket_winner(
+			qp, "CPU_LLCC_IB", false,
+			KONA_SHADOW_BUCKET_AMC, &llcc_ib_vote);
+
+		mem_ab_winner = kona_icc_shadow_raw_bucket_winner(
+			qp, "CPU_MEM_AB", true,
+			KONA_SHADOW_BUCKET_AMC, &mem_ab_vote);
+
+		mem_ib_winner = kona_icc_shadow_raw_bucket_winner(
+			qp, "CPU_MEM_IB", false,
+			KONA_SHADOW_BUCKET_AMC, &mem_ib_vote);
+
+		len += scnprintf(buffer + len, PAGE_SIZE - len,
+			"shadow_raw_winners "
+			"LLCC_AB=%s[%u]:%llu "
+			"LLCC_IB=%s[%u]:%llu "
+			"MEM_AB=%s[%u]:%llu "
+			"MEM_IB=%s[%u]:%llu\n",
+
+			llcc_ab_winner ? llcc_ab_winner->name : "none",
+			llcc_ab_winner ? llcc_ab_winner->id : 0,
+			(unsigned long long)llcc_ab_vote,
+
+			llcc_ib_winner ? llcc_ib_winner->name : "none",
+			llcc_ib_winner ? llcc_ib_winner->id : 0,
+			(unsigned long long)llcc_ib_vote,
+
+			mem_ab_winner ? mem_ab_winner->name : "none",
+			mem_ab_winner ? mem_ab_winner->id : 0,
+			(unsigned long long)mem_ab_vote,
+
+			mem_ib_winner ? mem_ib_winner->name : "none",
+			mem_ib_winner ? mem_ib_winner->id : 0,
+			(unsigned long long)mem_ib_vote);
+	}
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"shadow_raw_inputs "
+		"SH4=%llu/%llu SH0=%llu/%llu MC0=%llu/%llu\n",
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH4]
+				.bucket_avg[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH4]
+				.bucket_peak[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH0]
+				.bucket_avg[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH0]
+				.bucket_peak[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_MC0]
+				.bucket_avg[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_MC0]
+				.bucket_peak[KONA_SHADOW_BUCKET_AMC]);
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"shadow_raw_buckets "
+		"AMC_SH4=%llu/%llu SH0=%llu/%llu MC0=%llu/%llu "
+		"WAKE_SH4=%llu/%llu SH0=%llu/%llu MC0=%llu/%llu "
+		"SLEEP_SH4=%llu/%llu SH0=%llu/%llu MC0=%llu/%llu\n",
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH4]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH4]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH0]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH0]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_MC0]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_MC0]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_AMC],
+
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH4]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_WAKE],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH4]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_WAKE],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH0]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_WAKE],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH0]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_WAKE],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_MC0]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_WAKE],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_MC0]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_WAKE],
+
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH4]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_SLEEP],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH4]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_SLEEP],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH0]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_SLEEP],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH0]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_SLEEP],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_MC0]
+				.bucket_vote_x[KONA_SHADOW_BUCKET_SLEEP],
+		(unsigned long long)
+			qp->shadow_raw_bcms[KONA_SHADOW_BCM_MC0]
+				.bucket_vote_y[KONA_SHADOW_BUCKET_SLEEP]);
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"shadow_state_batches "
+		"ACTIVE=%u WAKE=%u SLEEP=%u\n",
+		qp->shadow_state_batches[KONA_SHADOW_BUCKET_AMC].count,
+		qp->shadow_state_batches[KONA_SHADOW_BUCKET_WAKE].count,
+		qp->shadow_state_batches[KONA_SHADOW_BUCKET_SLEEP].count);
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"shadow_dirty "
+		"AMC=0x%x/gen%llu "
+		"WAKE=0x%x/gen%llu "
+		"SLEEP=0x%x/gen%llu\n",
+		qp->shadow_dirty_mask[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->shadow_dirty_generation[KONA_SHADOW_BUCKET_AMC],
+		qp->shadow_dirty_mask[KONA_SHADOW_BUCKET_WAKE],
+		(unsigned long long)
+			qp->shadow_dirty_generation[KONA_SHADOW_BUCKET_WAKE],
+		qp->shadow_dirty_mask[KONA_SHADOW_BUCKET_SLEEP],
+		(unsigned long long)
+			qp->shadow_dirty_generation[KONA_SHADOW_BUCKET_SLEEP]);
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"shadow_dirty_batches "
+		"ACTIVE=%u WAKE=%u SLEEP=%u snapshot=%u\n",
+		qp->shadow_dirty_batches[KONA_SHADOW_BUCKET_AMC].count,
+		qp->shadow_dirty_batches[KONA_SHADOW_BUCKET_WAKE].count,
+		qp->shadow_dirty_batches[KONA_SHADOW_BUCKET_SLEEP].count,
+		qp->shadow_dirty_snapshot_valid);
 
 	len += scnprintf(buffer + len, PAGE_SIZE - len,
 		"shadow_batch builds=%llu invalid=%llu count=%u\n",
@@ -7481,6 +8459,11 @@ static int kona_icc_probe(struct platform_device *pdev)
 
 	for (i = 0; i < qp->num_nodes; i++)
 		qp->hw_nodes[i] = kona_icc_get_hw_desc(qp->nodes[i].id);
+
+	qp->shadow_tags = devm_kcalloc(&pdev->dev, qp->num_nodes,
+				       sizeof(*qp->shadow_tags), GFP_KERNEL);
+	if (!qp->shadow_tags)
+		return -ENOMEM;
 
 	qp->last_ab = devm_kcalloc(&pdev->dev, qp->num_nodes, sizeof(u64),
 				   GFP_KERNEL);
