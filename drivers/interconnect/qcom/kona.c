@@ -44,6 +44,29 @@
  *
  * id  - logical ICC path ID (from dt-bindings/interconnect/qcom,kona.h)
  */
+
+/*
+ * Stage 10/11 modern RPMh ownership gates.
+ *
+ * Both default disabled.  Merely building/booting this kernel does not
+ * change hardware ownership.
+ *
+ * ACTIVE must be enabled before WAKE/SLEEP can be programmed.
+ */
+static bool kona_modern_hw_active_enable;
+module_param_named(modern_hw_active_enable,
+		   kona_modern_hw_active_enable, bool, 0644);
+MODULE_PARM_DESC(modern_hw_active_enable,
+		 "Enable RAW modern Kona ACTIVE RPMh voting");
+
+static bool kona_modern_hw_ws_enable;
+module_param_named(modern_hw_ws_enable,
+		   kona_modern_hw_ws_enable, bool, 0644);
+MODULE_PARM_DESC(modern_hw_ws_enable,
+		 "Enable RAW modern Kona WAKE/SLEEP RPMh voting");
+
+static DEFINE_MUTEX(kona_modern_hw_lock);
+
 enum kona_icc_role {
         KONA_ROLE_CPU,
         KONA_ROLE_CPU_PRIME,
@@ -172,6 +195,7 @@ struct kona_shadow_raw_bcm_state {
 	u64 bucket_peak[KONA_SHADOW_BUCKET_COUNT];
 	u64 bucket_vote_x[KONA_SHADOW_BUCKET_COUNT];
 	u64 bucket_vote_y[KONA_SHADOW_BUCKET_COUNT];
+	u32 bucket_data[KONA_SHADOW_BUCKET_COUNT];
 	bool bucket_valid[KONA_SHADOW_BUCKET_COUNT];
 	bool bucket_saturated_x[KONA_SHADOW_BUCKET_COUNT];
 	bool bucket_saturated_y[KONA_SHADOW_BUCKET_COUNT];
@@ -965,6 +989,37 @@ struct kona_icc_provider {
 	 * authoritative Kona CPU compatibility state.
 	 */
 	struct kona_shadow_compare_state shadow_compare;
+
+
+	/*
+	 * Stage 10/11 RAW candidate transaction state.
+	 *
+	 * These are separate from the policy-fed Stage-6/8 shadow batches.
+	 */
+	struct kona_shadow_tcs_batch
+		raw_state_batches[KONA_SHADOW_BUCKET_COUNT];
+	struct kona_shadow_tcs_batch
+		raw_dirty_batches[KONA_SHADOW_BUCKET_COUNT];
+
+	struct kona_shadow_payload_set
+		raw_state_payloads[KONA_SHADOW_BUCKET_COUNT];
+	struct kona_shadow_payload_set
+		raw_dirty_payloads[KONA_SHADOW_BUCKET_COUNT];
+
+	u32 raw_dirty_mask[KONA_SHADOW_BUCKET_COUNT];
+	u32 raw_last_bucket_data[KONA_SHADOW_BUCKET_COUNT]
+				[KONA_SHADOW_BCM_COUNT];
+	u64 raw_dirty_generation[KONA_SHADOW_BUCKET_COUNT];
+	bool raw_dirty_snapshot_valid;
+
+	bool modern_hw_active_synced;
+	bool modern_hw_ws_synced;
+
+	u64 modern_hw_active_submissions;
+	u64 modern_hw_ws_submissions;
+	u64 modern_hw_skips;
+	u64 modern_hw_failures;
+	int modern_hw_last_error;
 
 	bool boot_floor_vote;
 	bool first_cpu_request_seen;
@@ -4864,6 +4919,7 @@ kona_icc_shadow_encode_raw_bucket(struct kona_icc_provider *qp,
 	raw->bucket_valid[bucket] = false;
 	raw->bucket_vote_x[bucket] = 0;
 	raw->bucket_vote_y[bucket] = 0;
+	raw->bucket_data[bucket] = 0;
 	raw->bucket_saturated_x[bucket] = false;
 	raw->bucket_saturated_y[bucket] = false;
 
@@ -4897,6 +4953,8 @@ kona_icc_shadow_encode_raw_bucket(struct kona_icc_provider *qp,
 
 	raw->bucket_vote_x[bucket] = x;
 	raw->bucket_vote_y[bucket] = y;
+	raw->bucket_data[bucket] =
+		KONA_BCM_TCS_CMD(true, x || y, (u32)x, (u32)y);
 	raw->bucket_valid[bucket] = true;
 }
 
@@ -4926,6 +4984,11 @@ kona_icc_shadow_apply_raw_keepalive(struct kona_icc_provider *qp,
 		raw->bucket_vote_y[KONA_SHADOW_BUCKET_AMC] = 1;
 		raw->bucket_vote_x[KONA_SHADOW_BUCKET_WAKE] = 1;
 		raw->bucket_vote_y[KONA_SHADOW_BUCKET_WAKE] = 1;
+
+		raw->bucket_data[KONA_SHADOW_BUCKET_AMC] =
+			KONA_BCM_TCS_CMD(true, true, 1, 1);
+		raw->bucket_data[KONA_SHADOW_BUCKET_WAKE] =
+			KONA_BCM_TCS_CMD(true, true, 1, 1);
 	}
 }
 
@@ -5330,6 +5393,139 @@ static void kona_icc_shadow_commit_dirty_snapshot(struct kona_icc_provider *qp)
  * A VCD group is atomic for splitting purposes: commands sharing a VCD may
  * never straddle two payloads.
  */
+
+/*
+ * Stage 10 candidate TCS builder.
+ *
+ * Identical VCD/COMMIT rules to the validated policy shadow path, but the
+ * source is shadow_raw_bcms[].
+ */
+static void
+kona_icc_raw_build_tcs_batch(struct kona_icc_provider *qp,
+			     enum kona_shadow_bucket_id bucket,
+			     u32 include_mask,
+			     struct kona_shadow_tcs_batch *batch)
+{
+	struct kona_shadow_tcs_entry temp[KONA_SHADOW_TCS_MAX];
+	unsigned int i, j, count = 0;
+
+	if (!qp || !batch || bucket >= KONA_SHADOW_BUCKET_COUNT)
+		return;
+
+	memset(batch, 0, sizeof(*batch));
+
+	batch->bucket = bucket;
+	batch->state = kona_icc_shadow_bucket_rpmh_state(bucket);
+
+	if (!include_mask)
+		return;
+
+	for (i = 0; i < KONA_SHADOW_BCM_COUNT; i++) {
+		struct kona_shadow_raw_bcm_state *raw;
+		enum kona_cpu_bcm_id physical_id;
+		struct kona_bcm_state *physical;
+		struct kona_shadow_tcs_entry *entry;
+
+		if (!(include_mask & BIT(i)))
+			continue;
+
+		raw = &qp->shadow_raw_bcms[i];
+		physical_id = kona_icc_shadow_physical_bcm(i);
+		physical = &qp->cpu_bcms[physical_id];
+
+		if (!raw->bucket_valid[bucket] ||
+		    !physical->metadata_valid ||
+		    !physical->addr)
+			return;
+
+		entry = &temp[count++];
+
+		entry->name = qp->shadow_bcms[i].name;
+		entry->id = i;
+		entry->addr = physical->addr;
+		entry->vcd = physical->vcd;
+		entry->commit = false;
+		entry->valid =
+			raw->bucket_vote_x[bucket] ||
+			raw->bucket_vote_y[bucket];
+
+		entry->data = KONA_BCM_TCS_CMD(
+			false, entry->valid,
+			(u32)raw->bucket_vote_x[bucket],
+			(u32)raw->bucket_vote_y[bucket]);
+	}
+
+	for (i = 1; i < count; i++) {
+		struct kona_shadow_tcs_entry key = temp[i];
+
+		j = i;
+		while (j && temp[j - 1].vcd > key.vcd) {
+			temp[j] = temp[j - 1];
+			j--;
+		}
+		temp[j] = key;
+	}
+
+	for (i = 0; i < count; i++) {
+		struct kona_shadow_raw_bcm_state *raw;
+		bool commit;
+
+		commit = i == count - 1 ||
+			 temp[i].vcd != temp[i + 1].vcd;
+
+		temp[i].commit = commit;
+		raw = &qp->shadow_raw_bcms[temp[i].id];
+
+		temp[i].data = KONA_BCM_TCS_CMD(
+			commit, temp[i].valid,
+			(u32)raw->bucket_vote_x[bucket],
+			(u32)raw->bucket_vote_y[bucket]);
+	}
+
+	if (count)
+		memcpy(batch->entries, temp,
+		       sizeof(temp[0]) * count);
+
+	batch->count = count;
+}
+
+static void kona_icc_raw_update_dirty_masks(struct kona_icc_provider *qp)
+{
+	enum kona_shadow_bucket_id bucket;
+	unsigned int i;
+
+	for (bucket = 0; bucket < KONA_SHADOW_BUCKET_COUNT; bucket++) {
+		u32 mask = 0;
+
+		for (i = 0; i < KONA_SHADOW_BCM_COUNT; i++) {
+			u32 data = qp->shadow_raw_bcms[i].bucket_data[bucket];
+
+			if (!qp->raw_dirty_snapshot_valid ||
+			    data != qp->raw_last_bucket_data[bucket][i])
+				mask |= BIT(i);
+		}
+
+		qp->raw_dirty_mask[bucket] = mask;
+
+		if (mask)
+			qp->raw_dirty_generation[bucket]++;
+	}
+}
+
+static void kona_icc_raw_commit_dirty_snapshot(struct kona_icc_provider *qp)
+{
+	enum kona_shadow_bucket_id bucket;
+	unsigned int i;
+
+	for (bucket = 0; bucket < KONA_SHADOW_BUCKET_COUNT; bucket++) {
+		for (i = 0; i < KONA_SHADOW_BCM_COUNT; i++)
+			qp->raw_last_bucket_data[bucket][i] =
+				qp->shadow_raw_bcms[i].bucket_data[bucket];
+	}
+
+	qp->raw_dirty_snapshot_valid = true;
+}
+
 static void
 kona_icc_shadow_build_payloads(struct kona_icc_provider *qp,
 			       const struct kona_shadow_tcs_batch *batch,
@@ -5437,6 +5633,34 @@ static void kona_icc_shadow_build_all_payloads(struct kona_icc_provider *qp)
 	}
 }
 
+
+
+static void kona_icc_raw_build_all_payloads(struct kona_icc_provider *qp)
+{
+	enum kona_shadow_bucket_id bucket;
+	const u32 full_mask = GENMASK(KONA_SHADOW_BCM_COUNT - 1, 0);
+
+	if (!qp)
+		return;
+
+	for (bucket = 0; bucket < KONA_SHADOW_BUCKET_COUNT; bucket++) {
+		kona_icc_raw_build_tcs_batch(
+			qp, bucket, full_mask,
+			&qp->raw_state_batches[bucket]);
+
+		kona_icc_raw_build_tcs_batch(
+			qp, bucket, qp->raw_dirty_mask[bucket],
+			&qp->raw_dirty_batches[bucket]);
+
+		kona_icc_shadow_build_payloads(
+			qp, &qp->raw_state_batches[bucket],
+			&qp->raw_state_payloads[bucket]);
+
+		kona_icc_shadow_build_payloads(
+			qp, &qp->raw_dirty_batches[bucket],
+			&qp->raw_dirty_payloads[bucket]);
+	}
+}
 
 static const char *
 kona_icc_shadow_compare_name(enum kona_shadow_compare_result result)
@@ -5582,6 +5806,192 @@ static void kona_icc_shadow_compare_authoritative(struct kona_icc_provider *qp)
 	}
 }
 
+
+static int
+kona_icc_modern_submit_payload_set(struct kona_icc_provider *qp,
+				   enum rpmh_state state,
+				   const struct kona_shadow_payload_set *set)
+{
+	struct tcs_cmd cmds[KONA_SHADOW_BCM_COUNT];
+	u32 counts[KONA_SHADOW_MAX_PAYLOADS + 1] = { 0 };
+	unsigned int p, c, cmd = 0;
+
+	if (!qp || !qp->rpmh_dev || !set || !set->valid || !set->count)
+		return -EINVAL;
+
+	for (p = 0; p < set->count; p++) {
+		const struct kona_shadow_payload *payload = &set->payloads[p];
+
+		if (!payload->count ||
+		    cmd + payload->count > KONA_SHADOW_BCM_COUNT)
+			return -EINVAL;
+
+		counts[p] = payload->count;
+
+		for (c = 0; c < payload->count; c++) {
+			const struct kona_shadow_tcs_entry *entry =
+				&payload->entries[c];
+
+			cmds[cmd].addr = entry->addr;
+			cmds[cmd].data = entry->data;
+			cmds[cmd].wait = 0;
+			cmd++;
+		}
+	}
+
+	/* rpmh_write_batch() requires a zero-terminated count array. */
+	counts[set->count] = 0;
+
+	return rpmh_write_batch(qp->rpmh_dev, state, cmds, counts);
+}
+
+static u32 kona_icc_modern_ws_mask(struct kona_icc_provider *qp)
+{
+	u32 mask = 0;
+	unsigned int i;
+
+	for (i = 0; i < KONA_SHADOW_BCM_COUNT; i++) {
+		struct kona_shadow_raw_bcm_state *raw =
+			&qp->shadow_raw_bcms[i];
+
+		if (raw->bucket_vote_x[KONA_SHADOW_BUCKET_WAKE] !=
+		    raw->bucket_vote_x[KONA_SHADOW_BUCKET_SLEEP] ||
+		    raw->bucket_vote_y[KONA_SHADOW_BUCKET_WAKE] !=
+		    raw->bucket_vote_y[KONA_SHADOW_BUCKET_SLEEP])
+			mask |= BIT(i);
+	}
+
+	return mask;
+}
+
+/*
+ * Stage 10 + 11 controlled ownership.
+ *
+ * ACTIVE:
+ *   invalidate previous cached RPMh transaction state
+ *   submit RAW candidate AMC transaction immediately
+ *
+ * WAKE/SLEEP:
+ *   if enabled, rebuild all resources whose WAKE and SLEEP requirements
+ *   differ and cache those two transactions exactly like Qualcomm's BCM
+ *   voter.
+ *
+ * Any RPMh failure disables both modern hardware gates.
+ */
+static int kona_icc_modern_hw_commit(struct kona_icc_provider *qp)
+{
+	const struct kona_shadow_payload_set *active;
+	struct kona_shadow_tcs_batch wake_batch, sleep_batch;
+	struct kona_shadow_payload_set wake_set, sleep_set;
+	u32 ws_mask;
+	int ret = 0;
+
+	if (!qp || !READ_ONCE(kona_modern_hw_active_enable))
+		return 0;
+
+	mutex_lock(&kona_modern_hw_lock);
+
+	/*
+	 * First activation must synchronize the complete candidate AMC state.
+	 * Once synchronized, only changed RAW BCMs are submitted.
+	 *
+	 * Enabling WAKE/SLEEP later also forces one complete ACTIVE transaction
+	 * because rpmh_invalidate() must be followed by a coherent recache.
+	 */
+	if (!qp->modern_hw_active_synced ||
+	    (READ_ONCE(kona_modern_hw_ws_enable) &&
+	     !qp->modern_hw_ws_synced))
+		active = &qp->raw_state_payloads[KONA_SHADOW_BUCKET_AMC];
+	else
+		active = &qp->raw_dirty_payloads[KONA_SHADOW_BUCKET_AMC];
+
+	if (!active->count) {
+		qp->modern_hw_skips++;
+		goto out;
+	}
+
+	ret = rpmh_invalidate(qp->rpmh_dev);
+	if (ret)
+		goto fail;
+
+	ret = kona_icc_modern_submit_payload_set(
+		qp, RPMH_ACTIVE_ONLY_STATE, active);
+	if (ret)
+		goto fail;
+
+	qp->modern_hw_active_submissions++;
+	qp->modern_hw_active_synced = true;
+
+	/*
+	 * Stage 11.
+	 *
+	 * rpmh_invalidate() above removes previously cached WAKE/SLEEP state,
+	 * therefore rebuild the complete WAKE/SLEEP delta set after every AMC
+	 * commit while WS ownership is enabled.
+	 */
+	if (!READ_ONCE(kona_modern_hw_ws_enable)) {
+		qp->modern_hw_ws_synced = false;
+		goto out;
+	}
+
+	ws_mask = kona_icc_modern_ws_mask(qp);
+
+	if (!ws_mask) {
+		qp->modern_hw_ws_synced = true;
+		goto out;
+	}
+
+	memset(&wake_batch, 0, sizeof(wake_batch));
+	memset(&sleep_batch, 0, sizeof(sleep_batch));
+	memset(&wake_set, 0, sizeof(wake_set));
+	memset(&sleep_set, 0, sizeof(sleep_set));
+
+	kona_icc_raw_build_tcs_batch(
+		qp, KONA_SHADOW_BUCKET_WAKE, ws_mask, &wake_batch);
+	kona_icc_raw_build_tcs_batch(
+		qp, KONA_SHADOW_BUCKET_SLEEP, ws_mask, &sleep_batch);
+
+	kona_icc_shadow_build_payloads(qp, &wake_batch, &wake_set);
+	kona_icc_shadow_build_payloads(qp, &sleep_batch, &sleep_set);
+
+	if (!wake_set.valid || !sleep_set.valid ||
+	    !wake_set.count || !sleep_set.count) {
+		ret = -EINVAL;
+		goto fail;
+	}
+
+	ret = kona_icc_modern_submit_payload_set(
+		qp, RPMH_WAKE_ONLY_STATE, &wake_set);
+	if (ret)
+		goto fail;
+
+	ret = kona_icc_modern_submit_payload_set(
+		qp, RPMH_SLEEP_STATE, &sleep_set);
+	if (ret)
+		goto fail;
+
+	qp->modern_hw_ws_submissions++;
+	qp->modern_hw_ws_synced = true;
+	goto out;
+
+fail:
+	qp->modern_hw_failures++;
+	qp->modern_hw_last_error = ret;
+
+	WRITE_ONCE(kona_modern_hw_active_enable, false);
+	WRITE_ONCE(kona_modern_hw_ws_enable, false);
+
+	qp->modern_hw_active_synced = false;
+	qp->modern_hw_ws_synced = false;
+
+	dev_err(qp->provider.dev,
+		"modern RPMh voter disabled after error %d\n", ret);
+
+out:
+	mutex_unlock(&kona_modern_hw_lock);
+	return ret;
+}
+
 static void kona_icc_shadow_build_all_tcs(struct kona_icc_provider *qp)
 {
 	enum kona_shadow_bucket_id bucket;
@@ -5724,16 +6134,29 @@ static void kona_icc_refresh_bcm_shadow(struct kona_icc_provider *qp)
 	kona_icc_shadow_build_all_payloads(qp);
 
 	/*
+	 * Stage 10/11 candidate pipeline: derive independent RAW dirty state,
+	 * RAW VCD transactions, and RAW payload-safe batches.
+	 */
+	kona_icc_raw_update_dirty_masks(qp);
+	kona_icc_raw_build_all_payloads(qp);
+
+	/*
 	 * Stage 9: compare candidate raw modern AMC demand against the current
 	 * authoritative effective Kona CPU demand.
 	 */
 	kona_icc_shadow_compare_authoritative(qp);
 
 	/*
-	 * This is only the diagnostic comparison baseline.  It has no effect
-	 * on RPMh state or hardware ownership.
+	 * Stage 10/11 hardware path. Runtime gates default OFF.
+	 */
+	kona_icc_modern_hw_commit(qp);
+
+	/*
+	 * Advance both diagnostic baselines only after all transaction images
+	 * and optional hardware work have consumed the current state.
 	 */
 	kona_icc_shadow_commit_dirty_snapshot(qp);
+	kona_icc_raw_commit_dirty_snapshot(qp);
 }
 
 static void kona_icc_cache_shared_resource_vote(struct kona_icc_provider *qp,
@@ -7984,6 +8407,47 @@ static int kona_param_get_cpu_bcm_stats(char *buffer,
 		(unsigned long long)qp->shadow_compare.modern_mem_peak,
 		(unsigned long long)qp->shadow_compare.legacy_mem_avg,
 		(unsigned long long)qp->shadow_compare.legacy_mem_peak);
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"raw_dirty "
+		"AMC=0x%x/gen%llu WAKE=0x%x/gen%llu SLEEP=0x%x/gen%llu\n",
+		qp->raw_dirty_mask[KONA_SHADOW_BUCKET_AMC],
+		(unsigned long long)
+			qp->raw_dirty_generation[KONA_SHADOW_BUCKET_AMC],
+		qp->raw_dirty_mask[KONA_SHADOW_BUCKET_WAKE],
+		(unsigned long long)
+			qp->raw_dirty_generation[KONA_SHADOW_BUCKET_WAKE],
+		qp->raw_dirty_mask[KONA_SHADOW_BUCKET_SLEEP],
+		(unsigned long long)
+			qp->raw_dirty_generation[KONA_SHADOW_BUCKET_SLEEP]);
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"raw_payloads "
+		"ACTIVE=%u/%u/%u WAKE=%u/%u/%u SLEEP=%u/%u/%u\n",
+		qp->raw_state_payloads[KONA_SHADOW_BUCKET_AMC].count,
+		qp->raw_state_payloads[KONA_SHADOW_BUCKET_AMC].commands,
+		qp->raw_state_payloads[KONA_SHADOW_BUCKET_AMC].valid,
+		qp->raw_state_payloads[KONA_SHADOW_BUCKET_WAKE].count,
+		qp->raw_state_payloads[KONA_SHADOW_BUCKET_WAKE].commands,
+		qp->raw_state_payloads[KONA_SHADOW_BUCKET_WAKE].valid,
+		qp->raw_state_payloads[KONA_SHADOW_BUCKET_SLEEP].count,
+		qp->raw_state_payloads[KONA_SHADOW_BUCKET_SLEEP].commands,
+		qp->raw_state_payloads[KONA_SHADOW_BUCKET_SLEEP].valid);
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"modern_hw active_enable=%u ws_enable=%u "
+		"active_synced=%u ws_synced=%u "
+		"active_submissions=%llu ws_submissions=%llu "
+		"skips=%llu failures=%llu last_error=%d\n",
+		READ_ONCE(kona_modern_hw_active_enable),
+		READ_ONCE(kona_modern_hw_ws_enable),
+		qp->modern_hw_active_synced,
+		qp->modern_hw_ws_synced,
+		(unsigned long long)qp->modern_hw_active_submissions,
+		(unsigned long long)qp->modern_hw_ws_submissions,
+		(unsigned long long)qp->modern_hw_skips,
+		(unsigned long long)qp->modern_hw_failures,
+		qp->modern_hw_last_error);
 
 	len += scnprintf(buffer + len, PAGE_SIZE - len,
 		"shadow_batch builds=%llu invalid=%llu count=%u\n",
