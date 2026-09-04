@@ -20,6 +20,7 @@
 #include <linux/uaccess.h>
 #include <linux/interrupt.h>
 #include <linux/interconnect.h>
+#include <linux/interconnect/kona.h>
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
 #include <linux/netdevice.h>
@@ -4971,6 +4972,8 @@ static unsigned int ipa3_get_bus_vote(void)
 	}
 	IPADBG_LOW("curr %d idx %d\n", ipa3_ctx->curr_ipa_clk_rate, idx);
 
+	kona_icc_ipa_shadow_note_selected(idx);
+
 	return idx;
 }
 
@@ -5050,6 +5053,8 @@ void ipa3_disable_clks(void)
 	ipa3_ctx->ctrl->ipa3_disable_clks();
 
 	ipa_pm_set_clock_index(0);
+
+	kona_icc_ipa_shadow_note_selected(0);
 
 	if (msm_bus_scale_client_update_request(ipa3_ctx->ipa_bus_hdl, 0))
 		WARN(1, "bus scaling failed");

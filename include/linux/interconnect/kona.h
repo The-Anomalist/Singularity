@@ -37,11 +37,13 @@ void kona_icc_gpu_publish_contribution(
 		const struct kona_icc_gpu_contribution *contribution);
 void kona_icc_gpu_clear_contribution(enum kona_icc_gpu_source source,
 		int error);
+void kona_icc_ipa_shadow_note_selected(unsigned int idx);
 #else
 static inline void kona_icc_gpu_publish_contribution(
 		const struct kona_icc_gpu_contribution *contribution) { }
 static inline void kona_icc_gpu_clear_contribution(
 		enum kona_icc_gpu_source source, int error) { }
+static inline void kona_icc_ipa_shadow_note_selected(unsigned int idx) { }
 #endif
 
 #endif

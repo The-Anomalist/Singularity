@@ -614,6 +614,123 @@ static const struct kona_npu_owner_desc kona_stage10_npu_clients[] = {
  * every row diagnostic-only until all host and recovery writers can be
  * retired atomically.
  */
+enum kona_ipa_shadow_level {
+	KONA_IPA_SHADOW_MIN,
+	KONA_IPA_SHADOW_SVS2,
+	KONA_IPA_SHADOW_SVS,
+	KONA_IPA_SHADOW_NOMINAL,
+	KONA_IPA_SHADOW_TURBO,
+	KONA_IPA_SHADOW_LEVEL_COUNT,
+};
+
+struct kona_ipa_shadow_row {
+	const char *name;
+	u64 llcc_ab;
+	u64 llcc_ib;
+	u64 mem_ab;
+	u64 mem_ib;
+	u64 imem_ab;
+	u64 imem_ib;
+	u64 cfg_ab;
+	u64 cfg_ib;
+	u64 core_ab;
+	u64 core_ib;
+};
+
+/*
+ * Exact Kona ipa msm_bus performance rows. These are reference/shadow
+ * metadata only; ipa3/msm_bus remains the physical bandwidth owner.
+ */
+static const struct kona_ipa_shadow_row kona_ipa_shadow_rows[] = {
+	[KONA_IPA_SHADOW_MIN] = {
+		.name = "MIN",
+	},
+	[KONA_IPA_SHADOW_SVS2] = {
+		.name = "SVS2",
+		.llcc_ab = 150000,
+		.llcc_ib = 600000,
+		.mem_ab = 150000,
+		.mem_ib = 1804000,
+		.imem_ab = 75000,
+		.imem_ib = 300000,
+		.cfg_ib = 76800,
+		.core_ib = 150,
+	},
+	[KONA_IPA_SHADOW_SVS] = {
+		.name = "SVS",
+		.llcc_ab = 625000,
+		.llcc_ib = 1200000,
+		.mem_ab = 625000,
+		.mem_ib = 3072000,
+		.imem_ab = 312500,
+		.imem_ib = 700000,
+		.cfg_ib = 150000,
+		.core_ib = 240,
+	},
+	[KONA_IPA_SHADOW_NOMINAL] = {
+		.name = "NOMINAL",
+		.llcc_ab = 1250000,
+		.llcc_ib = 2400000,
+		.mem_ab = 1250000,
+		.mem_ib = 6220800,
+		.imem_ab = 625000,
+		.imem_ib = 1500000,
+		.cfg_ib = 400000,
+		.core_ib = 466,
+	},
+	[KONA_IPA_SHADOW_TURBO] = {
+		.name = "TURBO",
+		.llcc_ab = 2000000,
+		.llcc_ib = 3500000,
+		.mem_ab = 2000000,
+		.mem_ib = 7219200,
+		.imem_ab = 1000000,
+		.imem_ib = 1920000,
+		.cfg_ib = 400000,
+		.core_ib = 533,
+	},
+};
+
+struct kona_ipa_shadow_state {
+	spinlock_t lock;
+	const struct kona_ipa_shadow_row *last_row;
+	unsigned int last_idx;
+	u64 selections;
+	u64 transitions;
+	u64 invalid;
+	bool valid;
+};
+
+static struct kona_ipa_shadow_state kona_ipa_shadow = {
+	.lock = __SPIN_LOCK_UNLOCKED(kona_ipa_shadow.lock),
+};
+
+void kona_icc_ipa_shadow_note_selected(unsigned int idx)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&kona_ipa_shadow.lock, flags);
+
+	kona_ipa_shadow.selections++;
+
+	if (idx >= ARRAY_SIZE(kona_ipa_shadow_rows)) {
+		kona_ipa_shadow.invalid++;
+		spin_unlock_irqrestore(&kona_ipa_shadow.lock, flags);
+		return;
+	}
+
+	if (!kona_ipa_shadow.valid || kona_ipa_shadow.last_idx != idx)
+		kona_ipa_shadow.transitions++;
+
+	kona_ipa_shadow.last_row = &kona_ipa_shadow_rows[idx];
+	kona_ipa_shadow.last_idx = idx;
+	kona_ipa_shadow.valid = true;
+
+	spin_unlock_irqrestore(&kona_ipa_shadow.lock, flags);
+}
+EXPORT_SYMBOL_GPL(kona_icc_ipa_shadow_note_selected);
+
+
 static const struct kona_ipa_owner_desc kona_stage11_ipa_clients[] = {
 	{ KONA_ICC_IPA_TO_LLCC, "ipa-llcc", "SN0/SH0 (verified topology; shared downstream)",
 	  "ipa3 msm_bus client", "none proven (uC selects packet processing only)",
