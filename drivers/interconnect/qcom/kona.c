@@ -72,7 +72,10 @@ enum kona_icc_role {
 	KONA_ROLE_GMU,
         KONA_ROLE_NPU,
         KONA_ROLE_DSP,
-        KONA_ROLE_MEDIA,
+        KONA_ROLE_CAMERA,
+	KONA_ROLE_VIDEO,
+	KONA_ROLE_VIDEO_CFG,
+	KONA_ROLE_CVP,
 	KONA_ROLE_STORAGE,
 	KONA_ROLE_IPA,
 	KONA_ROLE_PERIPHERAL,
@@ -2211,8 +2214,6 @@ static unsigned long kona_perf_turbo_kb = 6000000;  /* 6 GB/s */
 static bool kona_perf_sustain_boost_enable;
 static unsigned long kona_perf_sustain_kb = 2000000; /* 2 GB/s */
 static unsigned int kona_perf_sustain_extra_bias = 15;
-/* Media governors already calculate codec bandwidth; add only a small margin. */
-static unsigned int kona_media_perf_bias = 105;
 module_param(kona_perf_bias, uint, 0644);
 MODULE_PARM_DESC(kona_perf_bias,
         "Percent headroom added on CPU/DDR/LLCC/GPU/NPU paths (default: 108)");
@@ -2237,9 +2238,6 @@ MODULE_PARM_DESC(kona_perf_sustain_kb,
 module_param(kona_perf_sustain_extra_bias, uint, 0644);
 MODULE_PARM_DESC(kona_perf_sustain_extra_bias,
 	"Additional headroom percent added above sustained-performance threshold");
-module_param(kona_media_perf_bias, uint, 0644);
-MODULE_PARM_DESC(kona_media_perf_bias,
-		 "Percent headroom applied to media requests without synthetic bandwidth floors (default: 105)");
 
 /*
  * GPU keep-alive floor and IB prioritization for gpu-ddr path.
@@ -2268,9 +2266,6 @@ static unsigned long kona_ipa_keepalive_ab_kb = 512000;   /* 512 MB/s */
 static unsigned long kona_ipa_keepalive_ib_kb = 8192000;  /* 8 GB/s */
 static unsigned int kona_ipa_keepalive_window_ms = 2000;
 
-static bool kona_media_keepalive_enable = false;
-static unsigned long kona_media_keepalive_ab_kb = 1500000;  /* 1.5 GB/s */
-static unsigned long kona_media_keepalive_ib_kb = 3200000; /* 3.2 GB/s */
 static bool kona_keepalive_decay_enable = true;
 static unsigned int kona_keepalive_decay_window_ms = 750;
 static unsigned int kona_keepalive_decay_min_percent = 25;
@@ -2403,15 +2398,6 @@ module_param(kona_ipa_keepalive_window_ms, uint, 0644);
 MODULE_PARM_DESC(kona_ipa_keepalive_window_ms,
 	"Maximum IPA transition keepalive window in ms (default: 2000)");
 
-module_param(kona_media_keepalive_enable, bool, 0644);
-MODULE_PARM_DESC(kona_media_keepalive_enable,
-	"Keep non-zero floor for video/cvp/camera data paths between short idle gaps");
-module_param(kona_media_keepalive_ab_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_media_keepalive_ab_kb,
-	"media keepalive AB floor in KB/s (default: 1500000)");
-module_param(kona_media_keepalive_ib_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_media_keepalive_ib_kb,
-	"media keepalive IB floor in KB/s (default: 3200000)");
 module_param(kona_keepalive_decay_enable, bool, 0644);
 MODULE_PARM_DESC(kona_keepalive_decay_enable,
 	"linearly decay keepalive votes after the last active request (default: on)");
@@ -2642,12 +2628,8 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 		keepalive_ab = kona_dsp_keepalive_ab_kb;
 		keepalive_ib = kona_dsp_keepalive_ib_kb;
 		break;
-	case KONA_ROLE_MEDIA:
-		if (!kona_media_keepalive_enable)
-			break;
-		keepalive = true;
-		keepalive_ab = kona_media_keepalive_ab_kb;
-		keepalive_ib = kona_media_keepalive_ib_kb;
+	case KONA_ROLE_CAMERA:
+		/* CPAS owns camera bandwidth residency and lifecycle replay. */
 		break;
 	case KONA_ROLE_IPA:
 		if (!kona_ipa_keepalive_enable)
@@ -2659,6 +2641,15 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 		break;
 	case KONA_ROLE_DISPLAY:
 		/* SDE/Display-RSC owns display bandwidth residency. */
+		break;
+	case KONA_ROLE_VIDEO:
+		/* Venus owns video bandwidth residency and lifecycle replay. */
+		break;
+	case KONA_ROLE_VIDEO_CFG:
+		/* VIDC/CVP/videocc own config bandwidth residency and replay. */
+		break;
+	case KONA_ROLE_CVP:
+		/* CVP owns its own ICC residency and lifecycle replay. */
 		break;
 	case KONA_ROLE_GMU:
 	case KONA_ROLE_STORAGE:
@@ -2745,10 +2736,6 @@ static unsigned int kona_icc_pick_bias(const struct kona_icc_node_desc *desc,
                 else
                         bias = kona_perf_bias;
                 break;
-	case KONA_ROLE_MEDIA:
-		/* Preserve the media driver's workload-proportional bandwidth vote. */
-		bias = clamp_val(kona_media_perf_bias, 100, 125);
-		break;
         case KONA_ROLE_CPU_PRIME:
                 if (vote >= kona_perf_turbo_kb)
                         bias = kona_perf_bias_turbo;
@@ -2764,7 +2751,7 @@ static unsigned int kona_icc_pick_bias(const struct kona_icc_node_desc *desc,
         }
 
 	if (kona_perf_sustain_boost_enable && vote >= kona_perf_sustain_kb &&
-	    desc->role != KONA_ROLE_DISPLAY && desc->role != KONA_ROLE_MEDIA)
+	    desc->role != KONA_ROLE_DISPLAY)
 		bias = min_t(unsigned int, bias + kona_perf_sustain_extra_bias, 200);
 
 	return bias;
@@ -2888,10 +2875,6 @@ static bool kona_icc_has_aux_cpu_backing(const struct kona_icc_node_desc *desc)
 	case KONA_ROLE_PERIPHERAL:
 	case KONA_ROLE_IPA:
 		return true;
-	case KONA_ROLE_MEDIA:
-		/* Video data votes are direct; camera/config paths use CPU BCMs. */
-		return desc->id != KONA_ICC_VIDEO_TO_MEM &&
-		       desc->id != KONA_ICC_VIDEO_TO_LLCC;
 	default:
 		return false;
 	}
@@ -3109,7 +3092,6 @@ kona_icc_calculate_floor(struct kona_icc_provider *qp,
 		break;
 	case KONA_ICC_NPU_TO_MEM:
 	case KONA_ICC_NPUDSP_TO_MEM:
-	case KONA_ICC_CVP_TO_MEM:
 		if (npu_pin_active) {
 			if (active && *ab < kona_npu_oc_floor_ab_kb)
 				*ab = kona_npu_oc_floor_ab_kb;
@@ -3128,6 +3110,13 @@ kona_icc_calculate_floor(struct kona_icc_provider *qp,
 						kona_npu_ib_min_ratio_percent, 100))
 			*ib = mul_u64_u32_div(*ab,
 				     kona_npu_ib_min_ratio_percent, 100);
+		break;
+	case KONA_ICC_CVP_TO_MEM:
+		/*
+		 * The CVP governor owns this bandwidth request and replays it
+		 * across HFI boot, resume, power collapse and recovery. Preserve
+		 * the consumer vote without Kona NPU floors or boost policy.
+		 */
 		break;
 	case KONA_ICC_PAS_TO_MEM:
 		/* PAS/CDSP bring-up must not start from an effective 0/0 vote. */
@@ -3173,6 +3162,20 @@ kona_icc_calculate_floor(struct kona_icc_provider *qp,
 		if (active && kona_icc_has_aux_cpu_backing(desc))
 			kona_icc_apply_aux_baseline(desc, ab, ib);
 		break;
+	}
+
+	/*
+	 * CPAS, Venus and CVP own their bandwidth calculations and lifecycle
+	 * replay. Preserve externally-owned requests without Kona floors, clamps,
+	 * scaling or bias.
+	 */
+	if (desc->role == KONA_ROLE_CAMERA ||
+	    desc->role == KONA_ROLE_VIDEO ||
+	    desc->role == KONA_ROLE_VIDEO_CFG ||
+	    desc->role == KONA_ROLE_CVP) {
+		*ab = req_ab;
+		*ib = req_ib;
+		return;
 	}
 
 	/*
@@ -3238,7 +3241,8 @@ kona_icc_calculate_floor(struct kona_icc_provider *qp,
 	 * performance when the SoC is under heavy load. Display paths stay closer
 	 * to the requested vote to keep power sane.
 	 */
-	if (desc->role != KONA_ROLE_DISPLAY && (!sleep_mode || sleep_floor_active) &&
+	if (desc->role != KONA_ROLE_DISPLAY &&
+	    (!sleep_mode || sleep_floor_active) &&
 	    active_floor_active) {
 		unsigned int bias = kona_icc_pick_bias(desc, *ab, *ib);
 
@@ -3477,21 +3481,21 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.name = "video-llcc",
 		.ab = "CPU_LLCC_AB",
 		.ib = "CPU_LLCC_IB",
-		.role = KONA_ROLE_MEDIA,
+		.role = KONA_ROLE_VIDEO,
 	},
 	{
 		.id = KONA_ICC_VIDEO_TO_MEM,
 		.name = "video-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
+		.role = KONA_ROLE_VIDEO,
 	},
 	{
 		.id = KONA_ICC_CVP_TO_MEM,
 		.name = "cvp-ddr",
 		.ab = "NPU_MEM_AB",
 		.ib = "NPU_MEM_IB",
-		.role = KONA_ROLE_NPU,
+		.role = KONA_ROLE_CVP,
 	},
 	{
 		.id = KONA_ICC_PAS_TO_MEM,
@@ -3554,7 +3558,7 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.name = "cam-cfg",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
+		.role = KONA_ROLE_CAMERA,
 	},
 	{
 		.id = KONA_ICC_DISP_CFG,
@@ -3569,8 +3573,8 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		.name = "video-cfg",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		/* Video/camera path is latency sensitive and bandwidth hungry. */
-		.role = KONA_ROLE_MEDIA,
+		/* VIDC/CVP/videocc retain config-path ownership and replay. */
+		.role = KONA_ROLE_VIDEO_CFG,
 	},
 	{
 		.id = KONA_ICC_CAM_HF0_TO_MEM,
@@ -3581,21 +3585,21 @@ static const struct kona_icc_node_desc kona_nodes[] = {
 		 */
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
+		.role = KONA_ROLE_CAMERA,
 	},
 	{
 		.id = KONA_ICC_CAM_SF0_TO_MEM,
 		.name = "cam-sf0-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
+		.role = KONA_ROLE_CAMERA,
 	},
 	{
 		.id = KONA_ICC_CAM_SF_ICP_TO_MEM,
 		.name = "cam-sf-icp-ddr",
 		.ab = "CPU_MEM_AB",
 		.ib = "CPU_MEM_IB",
-		.role = KONA_ROLE_MEDIA,
+		.role = KONA_ROLE_CAMERA,
 	},
 	{
 		.id = KONA_ICC_PCIE0_TO_MEM,
@@ -7021,7 +7025,10 @@ static bool kona_icc_replay_req_votes_phased(struct kona_icc_provider *qp)
 
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_NPU, false);
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_DSP, false);
-		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_MEDIA, false);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_CAMERA, false);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_VIDEO, false);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_VIDEO_CFG, false);
+		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_CVP, false);
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_STORAGE, false);
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_IPA, false);
 		qp->resume_phase = 2;
