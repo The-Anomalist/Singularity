@@ -46,14 +46,12 @@
  */
 
 /*
- * Stage 10/11 modern RPMh ownership gates.
+ * Modern RPMh ownership gates.
  *
- * Both default disabled.  Merely building/booting this kernel does not
- * change hardware ownership.
- *
- * ACTIVE must be enabled before WAKE/SLEEP can be programmed.
+ * ACTIVE is the default CPU fabric owner. WAKE/SLEEP remains opt-in
+ * until a non-zero suspend transaction has been validated.
  */
-static bool kona_modern_hw_active_enable;
+static bool kona_modern_hw_active_enable = true;
 module_param_named(modern_hw_active_enable,
 		   kona_modern_hw_active_enable, bool, 0644);
 MODULE_PARM_DESC(modern_hw_active_enable,
@@ -1020,6 +1018,13 @@ struct kona_icc_provider {
 	u64 modern_hw_skips;
 	u64 modern_hw_failures;
 	int modern_hw_last_error;
+
+	/*
+	 * Stage 12: once the RAW modern voter is synchronized, CPU fabric
+	 * compatibility nodes stop issuing duplicate legacy RPMh transactions.
+	 */
+	u64 modern_legacy_bypass_count;
+	u64 modern_replay_bypass_count;
 
 	bool boot_floor_vote;
 	bool first_cpu_request_seen;
@@ -2317,9 +2322,6 @@ MODULE_PARM_DESC(kona_media_perf_bias,
  * a responsive corner instead of repeatedly collapsing to idle.
  * ib_*:        bias and floor IB over AB so command bursts hit DDR quickly.
  */
-static bool kona_gpu_keepalive_enable = false;
-static unsigned long kona_gpu_keepalive_ab_kb = 1000000;   /* 1 GB/s */
-static unsigned long kona_gpu_keepalive_ib_kb = 2400000;  /* 2.4 GB/s */
 static bool kona_cpu_keepalive_enable;
 static unsigned long kona_cpu_keepalive_ab_kb = 512000;   /* 512 MB/s */
 static unsigned long kona_cpu_keepalive_ib_kb = 1200000;   /* 1.2 GB/s */
@@ -2406,10 +2408,6 @@ module_param_named(kona_active_floor_mid_percent, kona_active_floor_mid_percent,
 MODULE_PARM_DESC(kona_active_floor_mid_percent,
 	"Percent of post-path floor kept for medium display-on non-display workload votes (default: 100)");
 
-static unsigned int kona_gpu_ib_boost_percent = 150;
-static unsigned int kona_gpu_ib_min_ratio_percent = 240;
-static unsigned int kona_gpu_llcc_boost_percent = 135;
-static unsigned int kona_gpu_llcc_min_ratio_percent = 210;
 static unsigned int kona_cpu_ib_boost_percent = 125;
 static unsigned int kona_cpu_ddr_min_ratio_percent = 200;
 static unsigned int kona_cpu_llcc_min_ratio_percent = 180;
@@ -2429,19 +2427,6 @@ static unsigned long kona_npu_oc_floor_ab_kb = 20000000;      /* 20 GB/s */
 static unsigned long kona_npu_oc_floor_ib_kb = 38000000;      /* 38 GB/s */
 static unsigned long kona_npu_oc_llcc_floor_ab_kb = 16000000; /* 16 GB/s */
 static unsigned long kona_npu_oc_llcc_floor_ib_kb = 28000000; /* 28 GB/s */
-static bool kona_gpu_bimc_pinning_enable = false;
-static bool kona_gpu_bimc_no_hyst_enable = false;
-static unsigned long kona_gpu_bimc_floor_ab_kb = 16000000; /* 16 GB/s */
-static unsigned long kona_gpu_bimc_floor_ib_kb = 32000000; /* 32 GB/s */
-static unsigned long kona_gpu_bimc_pin_threshold_kb = 4000000; /* 4 GB/s */
-static unsigned int kona_gpu_bimc_pin_exit_percent = 70;
-static unsigned int kona_gpu_bimc_pin_hold_ms = 180;
-static unsigned int kona_gpu_bimc_min_ratio_percent = 220;
-static bool kona_gpu_llcc_turbo_enable = false;
-static unsigned long kona_gpu_llcc_turbo_enter_ib_kb = 6000000; /* 6 GB/s */
-static unsigned long kona_gpu_llcc_turbo_exit_ib_kb = 4000000;  /* 4 GB/s */
-static unsigned long kona_gpu_llcc_turbo_ab_kb = 12000000;       /* 12 GB/s */
-static unsigned long kona_gpu_llcc_turbo_ib_kb = 24000000;       /* 24 GB/s */
 static bool kona_cpu_prime_oc_mem_pinning_enable = false;
 static unsigned long kona_cpu_prime_oc_pin_threshold_kb = 6000000; /* 6 GB/s */
 static unsigned int kona_cpu_prime_oc_pin_exit_percent = 75;
@@ -2461,15 +2446,6 @@ static unsigned int kona_ux_turbo_exit_percent = 45;
 static unsigned int kona_ux_turbo_hold_ms = 750;
 static unsigned long kona_ux_turbo_ab_kb = KONA_UX_DDR_AB_FLOOR_KB;
 static unsigned long kona_ux_turbo_ib_kb = KONA_UX_DDR_IB_FLOOR_KB;
-module_param(kona_gpu_keepalive_enable, bool, 0644);
-MODULE_PARM_DESC(kona_gpu_keepalive_enable,
-        "Keep non-zero floor for gpu-ddr AB/IB between short idle gaps");
-module_param(kona_gpu_keepalive_ab_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_gpu_keepalive_ab_kb,
-        "gpu-ddr keepalive AB floor in KB/s (default: 1000000)");
-module_param(kona_gpu_keepalive_ib_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_gpu_keepalive_ib_kb,
-        "gpu-ddr keepalive IB floor in KB/s (default: 2400000)");
 module_param(kona_cpu_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_cpu_keepalive_enable,
         "Keep non-zero floor for cpu-ddr/cpu-llcc AB/IB between short idle gaps");
@@ -2541,18 +2517,6 @@ module_param(kona_sleep_keepalive_percent, uint, 0644);
 MODULE_PARM_DESC(kona_sleep_keepalive_percent,
 	"Percent of keepalive floor retained while display is inactive (default: 18)");
 
-module_param(kona_gpu_ib_boost_percent, uint, 0644);
-MODULE_PARM_DESC(kona_gpu_ib_boost_percent,
-        "Percent boost applied to gpu-ddr IB after floors (default: 150)");
-module_param(kona_gpu_ib_min_ratio_percent, uint, 0644);
-MODULE_PARM_DESC(kona_gpu_ib_min_ratio_percent,
-        "Minimum gpu-ddr IB as percent of AB (default: 240)");
-module_param(kona_gpu_llcc_boost_percent, uint, 0644);
-MODULE_PARM_DESC(kona_gpu_llcc_boost_percent,
-        "Percent boost applied to gpu-llcc IB after floors (default: 135)");
-module_param(kona_gpu_llcc_min_ratio_percent, uint, 0644);
-MODULE_PARM_DESC(kona_gpu_llcc_min_ratio_percent,
-        "Minimum gpu-llcc IB as percent of AB (default: 210)");
 module_param(kona_cpu_ib_boost_percent, uint, 0644);
 MODULE_PARM_DESC(kona_cpu_ib_boost_percent,
 	"Percent boost applied to CPU DDR/LLCC IB after floors (default: 125)");
@@ -2610,45 +2574,6 @@ MODULE_PARM_DESC(kona_npu_oc_llcc_floor_ab_kb,
 module_param(kona_npu_oc_llcc_floor_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_npu_oc_llcc_floor_ib_kb,
 	"Pinned npu-llcc IB floor in KB/s while NPU OC pinning is active");
-module_param(kona_gpu_bimc_pinning_enable, bool, 0644);
-MODULE_PARM_DESC(kona_gpu_bimc_pinning_enable,
-        "Force aggressive gpu-ddr BIMC AB/IB floor to avoid starvation at high GPU clocks (default: off)");
-module_param(kona_gpu_bimc_no_hyst_enable, bool, 0644);
-MODULE_PARM_DESC(kona_gpu_bimc_no_hyst_enable,
-        "Disable downvote hysteresis for gpu-ddr votes to remove ramp-down/ramp-up lag");
-module_param(kona_gpu_bimc_floor_ab_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_gpu_bimc_floor_ab_kb,
-        "Pinned gpu-ddr BIMC AB floor in KB/s (default: 16000000)");
-module_param(kona_gpu_bimc_floor_ib_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_gpu_bimc_floor_ib_kb,
-        "Pinned gpu-ddr BIMC IB floor in KB/s (default: 32000000)");
-module_param(kona_gpu_bimc_pin_threshold_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_gpu_bimc_pin_threshold_kb,
-        "Only enable gpu-ddr BIMC pinning above this KB/s request threshold");
-module_param(kona_gpu_bimc_pin_exit_percent, uint, 0644);
-MODULE_PARM_DESC(kona_gpu_bimc_pin_exit_percent,
-	"Exit threshold as percent of enter threshold for GPU BIMC pinning (default: 70)");
-module_param(kona_gpu_bimc_pin_hold_ms, uint, 0644);
-MODULE_PARM_DESC(kona_gpu_bimc_pin_hold_ms,
-	"Hold GPU BIMC pinning for N ms after threshold crossing (default: 180)");
-module_param(kona_gpu_bimc_min_ratio_percent, uint, 0644);
-MODULE_PARM_DESC(kona_gpu_bimc_min_ratio_percent,
-        "Minimum gpu-ddr BIMC IB as percent of AB when pinning is active (default: 220)");
-module_param(kona_gpu_llcc_turbo_enable, bool, 0644);
-MODULE_PARM_DESC(kona_gpu_llcc_turbo_enable,
-        "Optionally force a high gpu-llcc vote while gpu-ddr IB remains above threshold (default: off)");
-module_param(kona_gpu_llcc_turbo_enter_ib_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_gpu_llcc_turbo_enter_ib_kb,
-        "gpu-ddr IB KB/s threshold to enter LLCC turbo pinning");
-module_param(kona_gpu_llcc_turbo_exit_ib_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_gpu_llcc_turbo_exit_ib_kb,
-        "gpu-ddr IB KB/s threshold to exit LLCC turbo pinning");
-module_param(kona_gpu_llcc_turbo_ab_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_gpu_llcc_turbo_ab_kb,
-        "Forced gpu-llcc AB vote in KB/s while turbo pinning is active");
-module_param(kona_gpu_llcc_turbo_ib_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_gpu_llcc_turbo_ib_kb,
-        "Forced gpu-llcc IB vote in KB/s while turbo pinning is active");
 module_param(kona_cpu_prime_oc_mem_pinning_enable, bool, 0644);
 MODULE_PARM_DESC(kona_cpu_prime_oc_mem_pinning_enable,
 	"Pin higher CPU-prime DDR/LLCC floors when prime-core bandwidth indicates overclocked operation (default: off)");
@@ -2706,36 +2631,6 @@ MODULE_PARM_DESC(kona_ux_turbo_ab_kb,
 module_param(kona_ux_turbo_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_ux_turbo_ib_kb,
 	"Pinned UX IB floor in KB/s while transition turbo is active (default: 56000000)");
-
-static void kona_icc_update_gpu_llcc_turbo(struct kona_icc_provider *qp, u64 ib)
-{
-        if (!kona_gpu_llcc_turbo_enable)
-                return;
-
-        if (!qp->gpu_llcc_turbo && ib >= kona_gpu_llcc_turbo_enter_ib_kb)
-                qp->gpu_llcc_turbo = true;
-        else if (qp->gpu_llcc_turbo && ib <= kona_gpu_llcc_turbo_exit_ib_kb)
-                qp->gpu_llcc_turbo = false;
-}
-
-static void kona_icc_apply_gpu_llcc_turbo(struct kona_icc_provider *qp,
-                                          const struct kona_icc_node_desc *desc,
-                                          u64 *ab, u64 *ib)
-{
-        if (!kona_gpu_llcc_turbo_enable)
-                return;
-
-        if (desc->id != KONA_ICC_GPU_TO_LLCC)
-                return;
-
-        if (!qp->gpu_llcc_turbo)
-                return;
-
-        if (*ab < kona_gpu_llcc_turbo_ab_kb)
-                *ab = kona_gpu_llcc_turbo_ab_kb;
-        if (*ib < kona_gpu_llcc_turbo_ib_kb)
-                *ib = kona_gpu_llcc_turbo_ib_kb;
-}
 
 static inline bool kona_icc_display_runtime_active(struct kona_icc_provider *qp)
 {
@@ -2841,11 +2736,7 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 		keepalive_ib = kona_cpu_keepalive_ib_kb;
 		break;
 	case KONA_ROLE_GPU:
-		if (!kona_gpu_keepalive_enable)
-			break;
-		keepalive = true;
-		keepalive_ab = kona_gpu_keepalive_ab_kb;
-		keepalive_ib = kona_gpu_keepalive_ib_kb;
+		/* GMU firmware/HFI owns GPU bandwidth residency. */
 		break;
 	case KONA_ROLE_NPU:
 		if (!kona_npu_keepalive_enable)
@@ -3015,10 +2906,6 @@ static void kona_icc_apply_hysteresis(struct kona_icc_provider *qp,
 	if (prev_ab == U64_MAX || prev_ib == U64_MAX)
 		return;
 
-	if (kona_gpu_bimc_no_hyst_enable &&
-	    (desc->id == KONA_ICC_GPU_TO_MEM || desc->id == KONA_ICC_GMU_TO_MEM))
-		return;
-
 	/*
 	 * When the display is off, prioritize fast collapse over smoothness so
 	 * idle drain stays low during screen-off standby.
@@ -3175,7 +3062,6 @@ kona_icc_calculate_floor(struct kona_icc_provider *qp,
 	bool sleep_mode;
 	bool sleep_floor_active;
 	bool active_floor_active;
-	bool gpu_pin_active;
 	bool npu_pin_active;
 	bool cpu_prime_pin_active;
 	u64 req_max;
@@ -3208,14 +3094,6 @@ kona_icc_calculate_floor(struct kona_icc_provider *qp,
 	active = (*ab || *ib) && (!sleep_mode || sleep_floor_active) &&
 		 active_floor_active;
 
-	/*
-	 * Only pin GPU/GMU BIMC floors for heavy GPU load. This avoids paying
-	 * peak floor cost for every non-zero vote.
-	 */
-	gpu_pin_active = kona_icc_pin_latched(kona_gpu_bimc_pinning_enable,
-		req_max, kona_gpu_bimc_pin_threshold_kb,
-		kona_gpu_bimc_pin_exit_percent, kona_gpu_bimc_pin_hold_ms,
-		&qp->gpu_oc_last_jiffies);
 	npu_pin_active = kona_icc_pin_latched(kona_npu_oc_mem_pinning_enable,
 		req_max, kona_npu_oc_pin_threshold_kb,
 		kona_npu_oc_pin_exit_percent, kona_npu_oc_pin_hold_ms,
@@ -3426,85 +3304,14 @@ kona_icc_calculate_floor(struct kona_icc_provider *qp,
 		/* Keep the governor's LLCC request workload-proportional too. */
 		break;
 	case KONA_ICC_GPU_TO_MEM:
-		if (gpu_pin_active) {
-			if (active && *ab < kona_gpu_bimc_floor_ab_kb)
-				*ab = kona_gpu_bimc_floor_ab_kb;
-			if (active && *ib < kona_gpu_bimc_floor_ib_kb)
-				*ib = kona_gpu_bimc_floor_ib_kb;
-		}
-
-		if (active && *ab < KONA_GPU_DDR_AB_FLOOR_KB)
-			*ab = KONA_GPU_DDR_AB_FLOOR_KB;
-		if (active && *ib < KONA_GPU_DDR_IB_FLOOR_KB)
-			*ib = KONA_GPU_DDR_IB_FLOOR_KB;
-
-		/* Prioritize burst bandwidth for GPU->DDR traffic. */
-		if (*ib)
-			*ib = kona_icc_add_headroom(*ib, kona_gpu_ib_boost_percent);
-		if (*ab && *ib < mul_u64_u32_div(*ab,
-						kona_gpu_ib_min_ratio_percent, 100))
-			*ib = mul_u64_u32_div(*ab,
-				     kona_gpu_ib_min_ratio_percent, 100);
-
-		if (gpu_pin_active && *ab && *ib <
-		    mul_u64_u32_div(*ab, kona_gpu_bimc_min_ratio_percent, 100))
-			*ib = mul_u64_u32_div(*ab,
-				     kona_gpu_bimc_min_ratio_percent, 100);
-		break;
-	case KONA_ICC_GMU_TO_MEM:
-		/*
-		 * GMU follows GPU QoS policy; keep the same or higher floor so GMU
-		 * transitions never under-vote compared to regular GPU traffic.
-		 */
-		if (gpu_pin_active) {
-			if (active && *ab < kona_gpu_bimc_floor_ab_kb)
-				*ab = kona_gpu_bimc_floor_ab_kb;
-			if (active && *ib < kona_gpu_bimc_floor_ib_kb)
-				*ib = kona_gpu_bimc_floor_ib_kb;
-		}
-
-		if (active && *ab < KONA_GMU_DDR_AB_FLOOR_KB)
-			*ab = KONA_GMU_DDR_AB_FLOOR_KB;
-		if (active && *ib < KONA_GMU_DDR_IB_FLOOR_KB)
-			*ib = KONA_GMU_DDR_IB_FLOOR_KB;
-
-		if (*ib)
-			*ib = kona_icc_add_headroom(*ib, kona_gpu_ib_boost_percent);
-		if (*ab && *ib < mul_u64_u32_div(*ab,
-						kona_gpu_ib_min_ratio_percent, 100))
-			*ib = mul_u64_u32_div(*ab,
-				     kona_gpu_ib_min_ratio_percent, 100);
-
-		if (gpu_pin_active && *ab && *ib <
-		    mul_u64_u32_div(*ab, kona_gpu_bimc_min_ratio_percent, 100))
-			*ib = mul_u64_u32_div(*ab,
-				     kona_gpu_bimc_min_ratio_percent, 100);
-		break;
 	case KONA_ICC_GPU_TO_LLCC:
-		if (active && *ab < KONA_GPU_LLCC_AB_FLOOR_KB)
-			*ab = KONA_GPU_LLCC_AB_FLOOR_KB;
-		if (active && *ib < KONA_GPU_LLCC_IB_FLOOR_KB)
-			*ib = KONA_GPU_LLCC_IB_FLOOR_KB;
-
-		if (*ib)
-			*ib = kona_icc_add_headroom(*ib, kona_gpu_llcc_boost_percent);
-		if (*ab && *ib < mul_u64_u32_div(*ab,
-						kona_gpu_llcc_min_ratio_percent, 100))
-			*ib = mul_u64_u32_div(*ab,
-				     kona_gpu_llcc_min_ratio_percent, 100);
-		break;
+	case KONA_ICC_GMU_TO_MEM:
 	case KONA_ICC_GMU_TO_LLCC:
-		if (active && *ab < KONA_GMU_LLCC_AB_FLOOR_KB)
-			*ab = KONA_GMU_LLCC_AB_FLOOR_KB;
-		if (active && *ib < KONA_GMU_LLCC_IB_FLOOR_KB)
-			*ib = KONA_GMU_LLCC_IB_FLOOR_KB;
-
-		if (*ib)
-			*ib = kona_icc_add_headroom(*ib, kona_gpu_llcc_boost_percent);
-		if (*ab && *ib < mul_u64_u32_div(*ab,
-						kona_gpu_llcc_min_ratio_percent, 100))
-			*ib = mul_u64_u32_div(*ab,
-				     kona_gpu_llcc_min_ratio_percent, 100);
+		/*
+		 * GMU HFI/TCS is the authoritative GPU bandwidth owner.
+		 * Preserve the consumer request without Kona-added floors,
+		 * boost ratios, pinning or residency policy.
+		 */
 		break;
 	default:
 		if (active && kona_icc_has_aux_cpu_backing(desc))
@@ -3532,7 +3339,8 @@ kona_icc_calculate_floor(struct kona_icc_provider *qp,
 	if (kona_active_floor_scaling_enable && active_floor_active &&
 	    !kona_icc_sleep_mode_active(qp, desc) &&
 	    desc->role != KONA_ROLE_DISPLAY &&
-	    !(desc->role == KONA_ROLE_GPU && gpu_pin_active)) {
+	    desc->role != KONA_ROLE_GPU &&
+	    desc->role != KONA_ROLE_GMU) {
 		unsigned long low_kb = kona_active_floor_low_kb;
 		unsigned long high_kb = max(kona_active_floor_high_kb, low_kb);
 		unsigned int low_pct = clamp_val(kona_active_floor_low_percent, 0, 100);
@@ -5878,6 +5686,16 @@ static u32 kona_icc_modern_ws_mask(struct kona_icc_provider *qp)
  *
  * Any RPMh failure disables both modern hardware gates.
  */
+
+static bool kona_icc_modern_cpu_authoritative(struct kona_icc_provider *qp)
+{
+	if (!qp)
+		return false;
+
+	return READ_ONCE(kona_modern_hw_active_enable) &&
+	       READ_ONCE(qp->modern_hw_active_synced);
+}
+
 static int kona_icc_modern_hw_commit(struct kona_icc_provider *qp)
 {
 	const struct kona_shadow_payload_set *active;
@@ -7165,8 +6983,11 @@ static bool kona_icc_replay_req_votes(struct kona_icc_provider *qp)
 	if (!qp || !qp->eff_ab || !qp->eff_ib || !kona_icc_snapshot_dirty(qp))
 		return false;
 
-	if (kona_cpu_model_stage() >= 4 && READ_ONCE(kona_packed_runtime_enable) &&
-	    READ_ONCE(kona_packed_group_mask) && !qp->packed_fallback_active) {
+	if (!kona_icc_modern_cpu_authoritative(qp) &&
+	    kona_cpu_model_stage() >= 4 &&
+	    READ_ONCE(kona_packed_runtime_enable) &&
+	    READ_ONCE(kona_packed_group_mask) &&
+	    !qp->packed_fallback_active) {
 		bool any_cpu_memory_activity = false;
 
 		for_each_set_bit(i, qp->replay_scan_nodes, qp->num_nodes)
@@ -7184,6 +7005,18 @@ static bool kona_icc_replay_req_votes(struct kona_icc_provider *qp)
 		u64 ib = qp->eff_ib[i];
 		bool retry = false;
 		int ret;
+
+		/*
+		 * Stage 12: the RAW modern voter owns SH4/SH0/MC0 while synchronized.
+		 * Drop stale compatibility replay work instead of allowing a second
+		 * CPU fabric writer to race it.
+		 */
+		if (kona_icc_is_cpu_memory_path(&qp->nodes[i]) &&
+		    kona_icc_modern_cpu_authoritative(qp)) {
+			qp->modern_replay_bypass_count++;
+			kona_icc_clear_dirty(qp, i);
+			continue;
+		}
 
 		if (ab == U64_MAX || ib == U64_MAX) {
 			kona_icc_clear_dirty(qp, i);
@@ -7391,7 +7224,8 @@ static bool kona_icc_replay_req_votes_phased(struct kona_icc_provider *qp)
 
 	switch (qp->resume_phase) {
 	case 0:
-		if (kona_cpu_model_stage() >= 4 &&
+		if (!kona_icc_modern_cpu_authoritative(qp) &&
+		    kona_cpu_model_stage() >= 4 &&
 		    READ_ONCE(kona_packed_runtime_enable) &&
 		    READ_ONCE(kona_packed_group_mask) &&
 		    !qp->packed_fallback_active) {
@@ -7418,8 +7252,30 @@ static bool kona_icc_replay_req_votes_phased(struct kona_icc_provider *qp)
 				      msecs_to_jiffies(KONA_RESUME_PHASE1_DELAY_MS));
 		return need_retry;
 	case 1:
-		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_CPU, false);
-		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_CPU_PRIME, false);
+		/*
+		 * Stage 12: SH4/SH0/MC0 are already restored by the modern RAW
+		 * voter. Do not replay the legacy CPU compatibility aliases while
+		 * modern ACTIVE ownership remains synchronized.
+		 */
+		if (!kona_icc_modern_cpu_authoritative(qp)) {
+			need_retry |= kona_icc_replay_req_votes_role(qp,
+								KONA_ROLE_CPU, false);
+			need_retry |= kona_icc_replay_req_votes_role(qp,
+								KONA_ROLE_CPU_PRIME, false);
+		} else {
+			unsigned int i;
+
+			for (i = 0; i < qp->num_nodes; i++) {
+				if (!kona_icc_is_cpu_memory_path(&qp->nodes[i]))
+					continue;
+
+				if (kona_icc_is_dirty(qp, i)) {
+					qp->modern_replay_bypass_count++;
+					kona_icc_clear_dirty(qp, i);
+				}
+			}
+		}
+
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_NPU, false);
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_DSP, false);
 		need_retry |= kona_icc_replay_req_votes_role(qp, KONA_ROLE_MEDIA, false);
@@ -7449,6 +7305,17 @@ static void kona_icc_cpu_downvote_workfn(struct work_struct *work)
 			     cpu_downvote_work);
 	unsigned int i;
 
+	/*
+	 * Stage 12B: the modern RAW BCM voter has its own dirty tracking and
+	 * immediately applies CPU fabric downvotes. The legacy residency worker
+	 * is useful only as fallback when modern ownership is unavailable.
+	 */
+	if (kona_icc_modern_cpu_authoritative(qp)) {
+		qp->cpu_downvote_deadline = 0;
+		qp->cpu_downvote_expired = true;
+		return;
+	}
+
 	mutex_lock(&qp->vote_lock);
 	qp->cpu_downvote_deadline = 0;
 	qp->cpu_downvote_expired = true;
@@ -7468,6 +7335,16 @@ static void kona_icc_resume_floor_workfn(struct work_struct *work)
 			     resume_floor_work);
 	unsigned int i;
 	bool replay = false;
+
+	/*
+	 * Stage 12B: modern CPU ownership restores SH4/SH0/MC0 directly.
+	 * Do not wake the legacy CPU floor/replay machinery merely because
+	 * an old resume-floor timer happened to expire.
+	 */
+	if (kona_icc_modern_cpu_authoritative(qp)) {
+		qp->resume_floor_deadline = 0;
+		return;
+	}
 
 	mutex_lock(&qp->vote_lock);
 	if (qp->resume_floor_deadline) {
@@ -7633,18 +7510,6 @@ static int __kona_icc_set(struct icc_path *path, u32 avg_bw, u32 peak_bw)
 		kona_icc_apply_keepalive_vote(qp, index, &ab, &ib);
 	KONA_VOTE_TRACE(qp, desc, "after-keepalive", ab, ib);
 
-	KONA_VOTE_TRACE(qp, desc, "before-gpu-turbo", ab, ib);
-	if (desc->id == KONA_ICC_GPU_TO_MEM) {
-		kona_icc_update_gpu_llcc_turbo(qp, ib);
-	} else if (qp->last_ib) {
-		unsigned int gpu_mem_index = 0;
-
-		if (kona_find_desc(qp, KONA_ICC_GPU_TO_MEM, &gpu_mem_index))
-			kona_icc_update_gpu_llcc_turbo(qp, qp->last_ib[gpu_mem_index]);
-	}
-
-	kona_icc_apply_gpu_llcc_turbo(qp, desc, &ab, &ib);
-	KONA_VOTE_TRACE(qp, desc, "after-gpu-turbo", ab, ib);
 	if (kona_vote_debug && kona_icc_is_cpu_memory_path(desc))
 		dev_info(qp->provider.dev,
 			 "kona-vote: id=%u after-floor-policy-resume-turbo=%llu/%llu\n",
@@ -7845,11 +7710,28 @@ skip_perf_floor:
 		qp->last_active_jiffies[index] = jiffies;
 
 	/*
-	 * Stage 2: continuously maintain the modern BCM-centric shadow view.
-	 * This changes telemetry only; the existing ownership/programming path
-	 * remains authoritative.
+	 * Maintain the modern BCM-centric view and, when enabled, commit the RAW
+	 * CPU fabric candidate through the modern RPMh voter.
 	 */
 	kona_icc_refresh_bcm_shadow(qp);
+
+	/*
+	 * Stage 12 ownership handoff.
+	 *
+	 * kona_icc_refresh_bcm_shadow() now drives the guarded RAW modern voter.
+	 * If that transaction completed and ACTIVE ownership remains synchronized,
+	 * do not also program the old CPU_MEM/CPU_LLCC compatibility aliases.
+	 *
+	 * Keep req_* and eff_* caches above intact for diagnostics and immediate
+	 * fallback. If the modern voter disables itself on an RPMh error, this
+	 * condition becomes false and the established legacy path below runs.
+	 */
+	if (kona_icc_is_cpu_memory_path(desc) &&
+	    kona_icc_modern_cpu_authoritative(qp)) {
+		qp->modern_legacy_bypass_count++;
+		kona_icc_clear_dirty(qp, index);
+		return 0;
+	}
 
 	/*
 	 * Track last-known non-zero DISPLAY votes so resume can re-assert
@@ -8438,7 +8320,8 @@ static int kona_param_get_cpu_bcm_stats(char *buffer,
 		"modern_hw active_enable=%u ws_enable=%u "
 		"active_synced=%u ws_synced=%u "
 		"active_submissions=%llu ws_submissions=%llu "
-		"skips=%llu failures=%llu last_error=%d\n",
+		"skips=%llu failures=%llu last_error=%d "
+		"legacy_bypass=%llu replay_bypass=%llu\n",
 		READ_ONCE(kona_modern_hw_active_enable),
 		READ_ONCE(kona_modern_hw_ws_enable),
 		qp->modern_hw_active_synced,
@@ -8447,7 +8330,9 @@ static int kona_param_get_cpu_bcm_stats(char *buffer,
 		(unsigned long long)qp->modern_hw_ws_submissions,
 		(unsigned long long)qp->modern_hw_skips,
 		(unsigned long long)qp->modern_hw_failures,
-		qp->modern_hw_last_error);
+		qp->modern_hw_last_error,
+		(unsigned long long)qp->modern_legacy_bypass_count,
+		(unsigned long long)qp->modern_replay_bypass_count);
 
 	len += scnprintf(buffer + len, PAGE_SIZE - len,
 		"shadow_batch builds=%llu invalid=%llu count=%u\n",
