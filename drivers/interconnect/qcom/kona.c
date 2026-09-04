@@ -6709,10 +6709,8 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 		}
 
 		/*
-		/*
 		 * Display ownership remains with SDE/Display-RSC. Never synthesize
 		 * a Kona replay vote for unset or 0/0 display requests.
-		 */
 		 */
 		if (req_unset || req_zero) {
 			kona_icc_clear_dirty(qp, i);
