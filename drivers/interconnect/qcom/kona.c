@@ -1614,45 +1614,12 @@ static unsigned int kona_cpu_model_stage(void)
 		(kona_rpmh_cpu_model ? 1 : 0);
 }
 
-static bool kona_display_resume_floor_enable = true;
-module_param_named(kona_display_resume_floor_enable, kona_display_resume_floor_enable, bool, 0644);
-MODULE_PARM_DESC(kona_display_resume_floor_enable,
-	"Enable a minimal DISPLAY resume bandwidth floor to avoid black-screen resumes");
-
-static unsigned int kona_display_resume_floor_ab_kBps = 256000; /* 256 MB/s */
-module_param_named(kona_display_resume_floor_ab_kBps, kona_display_resume_floor_ab_kBps, uint, 0644);
-MODULE_PARM_DESC(kona_display_resume_floor_ab_kBps, "DISPLAY resume floor average BW (kB/s)");
-
-static unsigned int kona_display_resume_floor_ib_kBps = 2000000; /* 2 GB/s */
-module_param_named(kona_display_resume_floor_ib_kBps, kona_display_resume_floor_ib_kBps, uint, 0644);
-MODULE_PARM_DESC(kona_display_resume_floor_ib_kBps, "DISPLAY resume floor peak BW (kB/s)");
 
 
-static unsigned int kona_display_resume_hold_ms = 15000;
-module_param_named(kona_display_resume_hold_ms, kona_display_resume_hold_ms, uint, 0644);
-MODULE_PARM_DESC(kona_display_resume_hold_ms,
-	"Hold a small DISPLAY non-zero vote for N ms after resume to avoid early collapse");
 
-static bool kona_display_nonzero_floor_enable = true;
-module_param_named(kona_display_nonzero_floor_enable, kona_display_nonzero_floor_enable, bool, 0644);
-MODULE_PARM_DESC(kona_display_nonzero_floor_enable,
-	"Force non-zero fallback floor for DISPLAY paths when clients request 0/0");
 
-/*
- * A 0/0 vote is an idle/modeset gap, not evidence of peak scanout demand.
- * Keep the fabric alive at the proven resume floor and let the next real SDE
- * vote select the bandwidth corner.  A peak-sized fallback can otherwise pin
- * DDR for the entire time a mostly-static panel remains at 0/0.
- */
-static unsigned int kona_display_nonzero_floor_ab_kBps = 256000; /* 256 MB/s */
-module_param_named(kona_display_nonzero_floor_ab_kBps, kona_display_nonzero_floor_ab_kBps, uint, 0644);
-MODULE_PARM_DESC(kona_display_nonzero_floor_ab_kBps,
-	"Fallback DISPLAY floor average BW (kB/s) when a 0/0 vote is requested");
 
-static unsigned int kona_display_nonzero_floor_ib_kBps = 2000000; /* 2 GB/s */
-module_param_named(kona_display_nonzero_floor_ib_kBps, kona_display_nonzero_floor_ib_kBps, uint, 0644);
-MODULE_PARM_DESC(kona_display_nonzero_floor_ib_kBps,
-	"Fallback DISPLAY floor peak BW (kB/s) when a 0/0 vote is requested");
+
 
 static unsigned int kona_display_cfg_nonzero_floor_ab_kBps = 120000; /* 120 MB/s */
 module_param_named(kona_display_cfg_nonzero_floor_ab_kBps, kona_display_cfg_nonzero_floor_ab_kBps, uint, 0644);
@@ -1676,52 +1643,13 @@ MODULE_PARM_DESC(kona_display_cfg_nonzero_floor_ib_kBps,
  * evaluated only when another ICC vote arrives. Screen-off and suspend are
  * excluded by kona_icc_display_runtime_active().
  */
-static bool kona_display_gap_bridge_enable = true;
-module_param_named(kona_display_gap_bridge_enable,
-		   kona_display_gap_bridge_enable, bool, 0644);
-MODULE_PARM_DESC(kona_display_gap_bridge_enable,
-	"Bridge short active DISPLAY 0/0 gaps using a bounded previous real vote");
 
-static unsigned int kona_display_gap_bridge_ms = 24;
-module_param_named(kona_display_gap_bridge_ms,
-		   kona_display_gap_bridge_ms, uint, 0644);
-MODULE_PARM_DESC(kona_display_gap_bridge_ms,
-	"Maximum active DISPLAY 0/0 bridge duration in ms (default: 24)");
 
-static unsigned int kona_display_gap_bridge_percent = 75;
-module_param_named(kona_display_gap_bridge_percent,
-		   kona_display_gap_bridge_percent, uint, 0644);
-MODULE_PARM_DESC(kona_display_gap_bridge_percent,
-	"Percent of the previous real DISPLAY vote retained during a short gap");
 
-static unsigned long kona_display_gap_bridge_ab_min_kBps = 384000;
-module_param_named(kona_display_gap_bridge_ab_min_kBps,
-		   kona_display_gap_bridge_ab_min_kBps, ulong, 0644);
-MODULE_PARM_DESC(kona_display_gap_bridge_ab_min_kBps,
-	"Minimum DISPLAY gap-bridge average BW in kB/s");
 
-static unsigned long kona_display_gap_bridge_ab_max_kBps = 1500000;
-module_param_named(kona_display_gap_bridge_ab_max_kBps,
-		   kona_display_gap_bridge_ab_max_kBps, ulong, 0644);
-MODULE_PARM_DESC(kona_display_gap_bridge_ab_max_kBps,
-	"Maximum DISPLAY gap-bridge average BW in kB/s");
 
-static unsigned long kona_display_gap_bridge_ib_min_kBps = 2000000;
-module_param_named(kona_display_gap_bridge_ib_min_kBps,
-		   kona_display_gap_bridge_ib_min_kBps, ulong, 0644);
-MODULE_PARM_DESC(kona_display_gap_bridge_ib_min_kBps,
-	"Minimum DISPLAY gap-bridge peak BW in kB/s");
 
-static unsigned long kona_display_gap_bridge_ib_max_kBps = 9600000;
-module_param_named(kona_display_gap_bridge_ib_max_kBps,
-		   kona_display_gap_bridge_ib_max_kBps, ulong, 0644);
-MODULE_PARM_DESC(kona_display_gap_bridge_ib_max_kBps,
-	"Maximum DISPLAY gap-bridge peak BW in kB/s");
 
-static bool kona_display_bootstrap_floor_enable = true;
-module_param_named(kona_display_bootstrap_floor_enable, kona_display_bootstrap_floor_enable, bool, 0644);
-MODULE_PARM_DESC(kona_display_bootstrap_floor_enable,
-	"Allow one-shot DISPLAY floor during phase-0 replay when no saved/requested vote exists");
 
 static bool kona_display_notifier_enable;
 module_param_named(kona_display_notifier_enable, kona_display_notifier_enable, bool, 0644);
@@ -2210,8 +2138,6 @@ static bool kona_icc_is_policy_suppressed_path(const struct kona_icc_node_desc *
 #define KONA_NPU_DDR_IB_FLOOR_KB	(48000000ULL) /* 48 GB/s */
 #define KONA_NPU_LLCC_AB_FLOOR_KB	(3000000ULL)  /* 3 GB/s */
 #define KONA_NPU_LLCC_IB_FLOOR_KB	(56000000ULL) /* 56 GB/s */
-#define KONA_UX_DDR_AB_FLOOR_KB	(4000000ULL)  /* 4 GB/s */
-#define KONA_UX_DDR_IB_FLOOR_KB	(56000000ULL) /* 56 GB/s */
 /*
  * Storage paths need sustained AB for sequential transfers and enough IB to
  * prevent command/data bursts from waiting on a low DDR or LLCC corner.
@@ -2345,9 +2271,6 @@ static unsigned int kona_ipa_keepalive_window_ms = 2000;
 static bool kona_media_keepalive_enable = false;
 static unsigned long kona_media_keepalive_ab_kb = 1500000;  /* 1.5 GB/s */
 static unsigned long kona_media_keepalive_ib_kb = 3200000; /* 3.2 GB/s */
-static bool kona_disp_keepalive_enable = true;
-static unsigned long kona_disp_keepalive_ab_kb = 256000;   /* 256 MB/s */
-static unsigned long kona_disp_keepalive_ib_kb = 512000;   /* 512 MB/s */
 static bool kona_keepalive_decay_enable = true;
 static unsigned int kona_keepalive_decay_window_ms = 750;
 static unsigned int kona_keepalive_decay_min_percent = 25;
@@ -2440,12 +2363,6 @@ static bool kona_cpu0_1804_boost_enable = true;
 static unsigned long kona_cpu0_1804_trigger_kb = 1305600; /* 1.804 GHz corner */
 static unsigned int kona_cpu0_1804_boost_percent = 130;
 static unsigned int kona_cpu0_1804_min_ratio_percent = 190;
-static bool kona_ux_turbo_enable = true;
-static unsigned long kona_ux_turbo_threshold_kb = 128000;      /* 128 MB/s */
-static unsigned int kona_ux_turbo_exit_percent = 45;
-static unsigned int kona_ux_turbo_hold_ms = 750;
-static unsigned long kona_ux_turbo_ab_kb = KONA_UX_DDR_AB_FLOOR_KB;
-static unsigned long kona_ux_turbo_ib_kb = KONA_UX_DDR_IB_FLOOR_KB;
 module_param(kona_cpu_keepalive_enable, bool, 0644);
 MODULE_PARM_DESC(kona_cpu_keepalive_enable,
         "Keep non-zero floor for cpu-ddr/cpu-llcc AB/IB between short idle gaps");
@@ -2495,15 +2412,6 @@ MODULE_PARM_DESC(kona_media_keepalive_ab_kb,
 module_param(kona_media_keepalive_ib_kb, ulong, 0644);
 MODULE_PARM_DESC(kona_media_keepalive_ib_kb,
 	"media keepalive IB floor in KB/s (default: 3200000)");
-module_param(kona_disp_keepalive_enable, bool, 0644);
-MODULE_PARM_DESC(kona_disp_keepalive_enable,
-	"Keep non-zero floor for disp0/disp1 DDR AB/IB between idle/off transitions");
-module_param(kona_disp_keepalive_ab_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_disp_keepalive_ab_kb,
-	"display keepalive AB floor in KB/s (default: 256000)");
-module_param(kona_disp_keepalive_ib_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_disp_keepalive_ib_kb,
-	"display keepalive IB floor in KB/s (default: 512000)");
 module_param(kona_keepalive_decay_enable, bool, 0644);
 MODULE_PARM_DESC(kona_keepalive_decay_enable,
 	"linearly decay keepalive votes after the last active request (default: on)");
@@ -2613,24 +2521,6 @@ MODULE_PARM_DESC(kona_cpu0_1804_boost_percent,
 module_param(kona_cpu0_1804_min_ratio_percent, uint, 0644);
 MODULE_PARM_DESC(kona_cpu0_1804_min_ratio_percent,
 	"Minimum CPU0 IB as percent of AB once the 1.804 GHz trigger is reached");
-module_param(kona_ux_turbo_enable, bool, 0644);
-MODULE_PARM_DESC(kona_ux_turbo_enable,
-	"Enable automatic UX bandwidth floor for app/screen transitions");
-module_param(kona_ux_turbo_threshold_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_ux_turbo_threshold_kb,
-	"UX request threshold in KB/s that enables the transition turbo floor");
-module_param(kona_ux_turbo_exit_percent, uint, 0644);
-MODULE_PARM_DESC(kona_ux_turbo_exit_percent,
-	"Exit threshold as percent of enter threshold for UX turbo pinning");
-module_param(kona_ux_turbo_hold_ms, uint, 0644);
-MODULE_PARM_DESC(kona_ux_turbo_hold_ms,
-	"Hold UX turbo floor for N ms after a qualifying transition request");
-module_param(kona_ux_turbo_ab_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_ux_turbo_ab_kb,
-	"Pinned UX AB floor in KB/s while transition turbo is active (default: 4000000)");
-module_param(kona_ux_turbo_ib_kb, ulong, 0644);
-MODULE_PARM_DESC(kona_ux_turbo_ib_kb,
-	"Pinned UX IB floor in KB/s while transition turbo is active (default: 56000000)");
 
 static inline bool kona_icc_display_runtime_active(struct kona_icc_provider *qp)
 {
@@ -2768,11 +2658,7 @@ static bool kona_icc_apply_keepalive_vote(struct kona_icc_provider *qp,
 		decay_window_ms = kona_ipa_keepalive_window_ms;
 		break;
 	case KONA_ROLE_DISPLAY:
-		if (!kona_disp_keepalive_enable)
-			break;
-		keepalive = true;
-		keepalive_ab = kona_disp_keepalive_ab_kb;
-		keepalive_ib = kona_disp_keepalive_ib_kb;
+		/* SDE/Display-RSC owns display bandwidth residency. */
 		break;
 	case KONA_ROLE_GMU:
 	case KONA_ROLE_STORAGE:
@@ -2988,36 +2874,6 @@ static bool kona_icc_pin_latched(bool enabled, u64 req_max_kb,
 		return true;
 
 	return false;
-}
-
-static bool kona_icc_is_ux_path(const struct kona_icc_node_desc *desc)
-{
-	/*
-	 * Limit UX turbo to display/SDE register traffic. DISP0/1 memory paths
-	 * already carry real bandwidth requests and should not receive synthetic
-	 * multi-GB/s boosts while GPU or storage clients are active.
-	 */
-	return desc->id == KONA_ICC_DISP_CFG;
-}
-
-static void kona_icc_apply_ux_turbo(struct kona_icc_provider *qp,
-				   const struct kona_icc_node_desc *desc,
-				   u64 req_max, u64 *ab, u64 *ib)
-{
-	if (!kona_icc_is_ux_path(desc))
-		return;
-
-	if (!kona_icc_pin_latched(kona_ux_turbo_enable, req_max,
-				 kona_ux_turbo_threshold_kb,
-				 kona_ux_turbo_exit_percent,
-				 kona_ux_turbo_hold_ms,
-				 &qp->ux_turbo_last_jiffies))
-		return;
-
-	if (*ab < kona_ux_turbo_ab_kb)
-		*ab = kona_ux_turbo_ab_kb;
-	if (*ib < kona_ux_turbo_ib_kb)
-		*ib = kona_ux_turbo_ib_kb;
 }
 
 static bool kona_icc_is_aux_llcc_path(const struct kona_icc_node_desc *desc)
@@ -3318,8 +3174,6 @@ kona_icc_calculate_floor(struct kona_icc_provider *qp,
 			kona_icc_apply_aux_baseline(desc, ab, ib);
 		break;
 	}
-
-	kona_icc_apply_ux_turbo(qp, desc, req_max, ab, ib);
 
 	/*
 	 * Display-on active scaling for non-display paths:
@@ -3964,50 +3818,6 @@ static const struct kona_icc_data kona_data = {
 
 static const struct kona_icc_node_desc *
 kona_find_desc(struct kona_icc_provider *qp, u32 id, unsigned int *index);
-
-static bool kona_icc_is_display_critical_id(u32 id)
-{
-	switch (id) {
-	case KONA_ICC_DISP0_TO_MEM:
-	case KONA_ICC_DISP1_TO_MEM:
-	case KONA_ICC_DISP_CFG:
-		return true;
-	default:
-		return false;
-	}
-}
-
-static bool kona_icc_is_display_cfg_id(u32 id)
-{
-	switch (id) {
-	case KONA_ICC_DISP_CFG:
-		return true;
-	default:
-		return false;
-	}
-}
-
-static void kona_icc_get_display_nonzero_floor(u32 id, u64 *ab, u64 *ib)
-{
-	u64 floor_ab, floor_ib;
-
-	if (kona_icc_is_display_cfg_id(id)) {
-		floor_ab = (u64)kona_display_cfg_nonzero_floor_ab_kBps;
-		floor_ib = (u64)kona_display_cfg_nonzero_floor_ib_kBps;
-	} else {
-		floor_ab = (u64)kona_display_nonzero_floor_ab_kBps;
-		floor_ib = (u64)kona_display_nonzero_floor_ib_kBps;
-	}
-
-	/* Keep IB at least 2x AB to avoid cnoc/config-path bring-up stalls. */
-	if (floor_ab && !floor_ib)
-		floor_ib = floor_ab * 2;
-	else if (floor_ab && floor_ib < floor_ab * 2)
-		floor_ib = floor_ab * 2;
-
-	*ab = floor_ab;
-	*ib = floor_ib;
-}
 
 static int kona_icc_validate_display_nodes(struct kona_icc_provider *qp)
 {
@@ -7121,83 +6931,16 @@ static bool kona_icc_replay_req_votes_role(struct kona_icc_provider *qp,
 
 
 		/*
-		 * Never synthesize votes for nodes that have never received a request.
-		 * For DISPLAY resume, prefer the last known non-zero vote if we have one.
+		 * Display ownership remains with SDE/Display-RSC. Never synthesize
+		 * a Kona replay vote for unset or 0/0 display requests.
 		 */
 		if (req_unset || req_zero) {
-			bool used_fallback_floor = false;
-
-			if (role != KONA_ROLE_DISPLAY || !apply_display_floor ||
-			    !qp->saved_ab || !qp->saved_ib ||
-			    qp->saved_ab[i] == U64_MAX || qp->saved_ib[i] == U64_MAX) {
-				if (role == KONA_ROLE_DISPLAY && apply_display_floor &&
-				    kona_display_nonzero_floor_enable) {
-					kona_icc_get_display_nonzero_floor(qp->nodes[i].id,
-								   &ab, &ib);
-					used_fallback_floor = true;
-					if (kona_resume_debug)
-						dev_info_ratelimited(qp->provider.dev,
-							"kona-icc: replaying fallback DISPLAY floor for %s (req=%s) ab=%llu ib=%llu\n",
-							qp->nodes[i].name,
-							req_unset ? "unset" : "0/0",
-							ab, ib);
-				} else {
-					if (role == KONA_ROLE_DISPLAY)
-						atomic_inc(&qp->display_replay_skips);
-					kona_icc_clear_dirty(qp, i);
-					continue;
-				}
-			}
-
-			if (!used_fallback_floor && qp->saved_ab && qp->saved_ib &&
-			    qp->saved_ab[i] != U64_MAX && qp->saved_ib[i] != U64_MAX) {
-				if (kona_resume_debug && req_zero)
-					dev_info_ratelimited(qp->provider.dev,
-						"kona-icc: replaying saved DISPLAY vote for %s during resume (req=0/0)\n",
-						qp->nodes[i].name);
-
-				ab = qp->saved_ab[i];
-				ib = qp->saved_ib[i];
-			} else if (!used_fallback_floor && kona_display_bootstrap_floor_enable &&
-				   qp->resume_phase == 0 &&
-				   kona_icc_is_display_critical_id(qp->nodes[i].id)) {
-				ab = (u64)kona_display_resume_floor_ab_kBps;
-				ib = (u64)kona_display_resume_floor_ib_kBps;
-				if (kona_resume_debug)
-					dev_info_ratelimited(qp->provider.dev,
-						"kona-icc: bootstrap DISPLAY floor for %s (missing saved/requested vote) ab=%llu ib=%llu\n",
-						qp->nodes[i].name, ab, ib);
-			} else if (!used_fallback_floor) {
-				atomic_inc(&qp->display_replay_skips);
-				kona_icc_clear_dirty(qp, i);
-				continue;
-			}
-		} else {
-			if (ab == U64_MAX)
-				ab = 0;
-			if (ib == U64_MAX)
-				ib = 0;
+			kona_icc_clear_dirty(qp, i);
+			continue;
 		}
 
-		if ((ab || ib) && apply_display_floor && kona_display_resume_floor_enable &&
-		    role == KONA_ROLE_DISPLAY) {
-			u64 floor_ab = (u64)kona_display_resume_floor_ab_kBps;
-			u64 floor_ib = (u64)kona_display_resume_floor_ib_kBps;
-			/*
-			 * DISPLAY resume floor needs peak headroom for the initial modeset burst.
-			 * If only AB is specified, derive IB = 2x AB. If both are specified,
-			 * enforce IB >= 2x AB to avoid black-screen resumes on battery.
-			 */
-			if (floor_ab && !floor_ib)
-				floor_ib = floor_ab * 2;
-			else if (floor_ab && floor_ib < floor_ab * 2)
-				floor_ib = floor_ab * 2;
-
-			if (floor_ab && ab < floor_ab)
-				ab = floor_ab;
-			if (floor_ib && ib < floor_ib)
-				ib = floor_ib;
-		}
+		ab = req_ab;
+		ib = req_ib;
 
 		if (!ab && !ib) {
 			kona_icc_clear_dirty(qp, i);
@@ -7530,123 +7273,6 @@ skip_perf_floor:
 			(unsigned long long)(qp->last_ib ? qp->last_ib[index] : 0));
 #endif
 	
-	/*
-	 * Short post-resume anti-collapse window for DISPLAY: some clients
-	 * transiently vote 0/0 during panel re-enable sequencing. On battery
-	 * this can collapse interconnect too early and wedge panel bring-up.
-	 */
-	KONA_VOTE_TRACE(qp, desc, "before-display-resume", ab, ib);
-	if (desc->role == KONA_ROLE_DISPLAY && !ab && !ib &&
-	    kona_icc_display_runtime_active(qp) &&
-	    !atomic_read(&qp->votes_paused) &&
-	    kona_display_resume_hold_ms &&
-	    time_before(jiffies, qp->resume_jiffies +
-			msecs_to_jiffies(kona_display_resume_hold_ms)) &&
-	    qp->saved_ab && qp->saved_ib &&
-	    qp->saved_ab[index] != U64_MAX && qp->saved_ib[index] != U64_MAX) {
-		u64 hold_ab = max_t(u64, qp->saved_ab[index],
-				   (u64)kona_display_resume_floor_ab_kBps);
-		u64 hold_ib = max_t(u64, qp->saved_ib[index],
-				   (u64)kona_display_resume_floor_ib_kBps);
-
-		ab = hold_ab;
-		ib = hold_ib;
-		if (kona_resume_debug)
-			dev_info_ratelimited(qp->provider.dev,
-				"kona-icc: hold DISPLAY vote for %s during resume grace: ab=%llu ib=%llu\n",
-				desc->name, ab, ib);
-	}
-	KONA_VOTE_TRACE(qp, desc, "after-display-resume", ab, ib);
-
-	/*
-	 * Hard non-zero fallback for DISPLAY paths: avoid 0/0 collapse on ddr and
-	 * config-path links where panel/SDE/dispcc sequences can stall.
-	 */
-	KONA_VOTE_TRACE(qp, desc, "before-display-fallback", ab, ib);
-	if (desc->role == KONA_ROLE_DISPLAY && !ab && !ib &&
-	    kona_display_nonzero_floor_enable &&
-	    kona_icc_display_runtime_active(qp)) {
-		bool bridged = false;
-
-		/*
-		 * A very short 0/0 from an otherwise active SDE path should not
-		 * immediately collapse the fabric. Reuse only a bounded fraction
-		 * of the last genuine client vote, and only while that request is
-		 * still extremely recent.
-		 *
-		 * saved_ab/saved_ib are intentionally updated only by genuine
-		 * non-zero DISPLAY requests, so a synthetic bridge/fallback can
-		 * never refresh itself indefinitely.
-		 */
-		if (kona_display_gap_bridge_enable &&
-		    kona_display_gap_bridge_ms &&
-		    (desc->id == KONA_ICC_DISP0_TO_MEM ||
-		     desc->id == KONA_ICC_DISP1_TO_MEM) &&
-		    qp->saved_ab && qp->saved_ib &&
-		    qp->last_active_jiffies &&
-		    qp->saved_ab[index] != U64_MAX &&
-		    qp->saved_ib[index] != U64_MAX &&
-		    (qp->saved_ab[index] || qp->saved_ib[index])) {
-			unsigned long active_j;
-			unsigned int percent;
-			u64 bridge_ab, bridge_ib;
-
-			active_j = READ_ONCE(qp->last_active_jiffies[index]);
-			percent = min_t(unsigned int,
-					kona_display_gap_bridge_percent, 100);
-
-			if (active_j &&
-			    time_before(jiffies,
-					active_j +
-					msecs_to_jiffies(
-						kona_display_gap_bridge_ms))) {
-				bridge_ab = mul_u64_u32_div(
-						READ_ONCE(qp->saved_ab[index]),
-						percent, 100);
-				bridge_ib = mul_u64_u32_div(
-						READ_ONCE(qp->saved_ib[index]),
-						percent, 100);
-
-				/*
-				 * Keep the bridge meaningful enough to prevent an
-				 * immediate low-corner transition, but never retain
-				 * an arbitrarily large previous SDE vote.
-				 */
-				bridge_ab = clamp_t(u64, bridge_ab,
-					(u64)kona_display_gap_bridge_ab_min_kBps,
-					(u64)kona_display_gap_bridge_ab_max_kBps);
-				bridge_ib = clamp_t(u64, bridge_ib,
-					(u64)kona_display_gap_bridge_ib_min_kBps,
-					(u64)kona_display_gap_bridge_ib_max_kBps);
-
-				ab = bridge_ab;
-				ib = bridge_ib;
-				bridged = true;
-
-				if (kona_resume_debug)
-					dev_info_ratelimited(qp->provider.dev,
-						"kona-icc: bridged short DISPLAY gap for %s: ab=%llu ib=%llu\n",
-						desc->name, ab, ib);
-			}
-		}
-
-		/*
-		 * Preserve the existing black-screen protection exactly as the
-		 * final safety net. Once the tiny bridge window expires, or when
-		 * there is no trustworthy previous real vote, use the existing
-		 * non-zero fallback rather than allowing a literal 0/0 collapse.
-		 */
-		if (!bridged) {
-			kona_icc_get_display_nonzero_floor(desc->id, &ab, &ib);
-
-			if (kona_resume_debug)
-				dev_info_ratelimited(qp->provider.dev,
-					"kona-icc: fallback non-zero DISPLAY floor for %s: ab=%llu ib=%llu\n",
-					desc->name, ab, ib);
-		}
-	}
-	KONA_VOTE_TRACE(qp, desc, "after-display-fallback", ab, ib);
-
 	/* Validate the final transformed value before cache, replay, or submission. */
 	KONA_VOTE_TRACE(qp, desc, "before-validator", ab, ib);
 	kona_icc_validate_vote(qp, desc, (u64)avg_bw, (u64)peak_bw, &ab, &ib);
