@@ -694,16 +694,31 @@ static const struct kona_ipa_shadow_row kona_ipa_shadow_rows[] = {
 struct kona_ipa_shadow_state {
 	spinlock_t lock;
 	const struct kona_ipa_shadow_row *last_row;
+	const struct kona_ipa_shadow_row *last_applied_row;
 	unsigned int last_idx;
+	unsigned int last_applied_idx;
 	u64 selections;
 	u64 transitions;
 	u64 invalid;
+	u64 applied;
+	u64 applied_transitions;
+	u64 failures;
+	int last_error;
 	bool valid;
+	bool applied_valid;
 };
 
 static struct kona_ipa_shadow_state kona_ipa_shadow = {
 	.lock = __SPIN_LOCK_UNLOCKED(kona_ipa_shadow.lock),
 };
+
+struct kona_icc_provider;
+
+static int kona_icc_commit_ipa_bcms(
+		struct kona_icc_provider *qp,
+		const struct kona_ipa_shadow_row *row);
+
+static struct kona_icc_provider *kona_ipa_provider;
 
 void kona_icc_ipa_shadow_note_selected(unsigned int idx)
 {
@@ -729,6 +744,55 @@ void kona_icc_ipa_shadow_note_selected(unsigned int idx)
 	spin_unlock_irqrestore(&kona_ipa_shadow.lock, flags);
 }
 EXPORT_SYMBOL_GPL(kona_icc_ipa_shadow_note_selected);
+
+
+void kona_icc_ipa_shadow_note_legacy_result(unsigned int idx, int error)
+{
+	const struct kona_ipa_shadow_row *row = NULL;
+	struct kona_icc_provider *qp;
+	unsigned long flags;
+
+	spin_lock_irqsave(&kona_ipa_shadow.lock, flags);
+
+	if (idx >= ARRAY_SIZE(kona_ipa_shadow_rows)) {
+		kona_ipa_shadow.invalid++;
+		kona_ipa_shadow.last_error = error ? error : -EINVAL;
+		spin_unlock_irqrestore(&kona_ipa_shadow.lock, flags);
+		return;
+	}
+
+	if (error) {
+		kona_ipa_shadow.failures++;
+		kona_ipa_shadow.last_error = error;
+		spin_unlock_irqrestore(&kona_ipa_shadow.lock, flags);
+		return;
+	}
+
+	kona_ipa_shadow.applied++;
+
+	if (!kona_ipa_shadow.applied_valid ||
+	    kona_ipa_shadow.last_applied_idx != idx)
+		kona_ipa_shadow.applied_transitions++;
+
+	row = &kona_ipa_shadow_rows[idx];
+
+	kona_ipa_shadow.last_applied_row = row;
+	kona_ipa_shadow.last_applied_idx = idx;
+	kona_ipa_shadow.applied_valid = true;
+	kona_ipa_shadow.last_error = 0;
+
+	spin_unlock_irqrestore(&kona_ipa_shadow.lock, flags);
+
+	/*
+	 * The provider-side derivation can perform cmd-db lookups and,
+	 * after the eventual ownership handoff, RPMh submission. Never
+	 * execute it while holding the IPA shadow spinlock.
+	 */
+	qp = READ_ONCE(kona_ipa_provider);
+	if (qp)
+		kona_icc_commit_ipa_bcms(qp, row);
+}
+EXPORT_SYMBOL_GPL(kona_icc_ipa_shadow_note_legacy_result);
 
 
 static const struct kona_ipa_owner_desc kona_stage11_ipa_clients[] = {
@@ -1053,6 +1117,99 @@ struct kona_packed_inputs {
 	u64 config_generation;
 };
 
+enum kona_ipa_bcm_id {
+	KONA_IPA_BCM_SN0,
+	KONA_IPA_BCM_SN1,
+	KONA_IPA_BCM_CN0,
+	KONA_IPA_BCM_IP0,
+	KONA_IPA_BCM_COUNT,
+};
+
+struct kona_ipa_bcm_inputs {
+	/* IPA-owned/upstream BCM contributions. */
+	u64 sn0_avg;
+	u64 sn0_peak;
+	u64 sn1_avg;
+	u64 sn1_peak;
+	u64 cn0_avg;
+	u64 cn0_peak;
+
+	/*
+	 * Shared downstream contributions.
+	 *
+	 * These remain shadow-only until SH0/MC0/ACV have one authoritative
+	 * physical owner across all Kona clients.
+	 */
+	u64 sh0_avg;
+	u64 sh0_peak;
+	u64 mc0_avg;
+	u64 mc0_peak;
+	u64 acv_avg;
+	u64 acv_peak;
+
+	/* Dedicated IPA virtual-fabric BCM. */
+	u64 ip0_avg;
+	u64 ip0_peak;
+};
+
+struct kona_ipa_bcm_shadow {
+	struct kona_ipa_bcm_inputs bw;
+
+	u64 sn0_raw_x;
+	u64 sn0_raw_y;
+	u64 sn0_x;
+	u64 sn0_y;
+
+	u64 sn1_raw_x;
+	u64 sn1_raw_y;
+	u64 sn1_x;
+	u64 sn1_y;
+
+	u64 cn0_raw_x;
+	u64 cn0_raw_y;
+	u64 cn0_x;
+	u64 cn0_y;
+
+	/*
+	 * IP0 is a dedicated IPA BCM. Keep its normalized request visible,
+	 * but do not add it to a real TCS batch until ownership handoff.
+	 */
+	u64 ip0_raw_x;
+	u64 ip0_raw_y;
+	u64 ip0_x;
+	u64 ip0_y;
+
+	/*
+	 * Comparison-only shared fabric view.
+	 *
+	 * provider_* is Kona's current non-IPA logical demand.
+	 * merged_* is what the current compatibility max() model would
+	 * require if the successfully applied IPA msm_bus row joined it.
+	 *
+	 * These values never feed shadow_bcms[] or a hardware writer while
+	 * ipa3/msm_bus remains the physical IPA owner.
+	 */
+	u64 provider_sh0_avg;
+	u64 provider_sh0_peak;
+	u64 provider_mc0_avg;
+	u64 provider_mc0_peak;
+
+	u64 merged_sh0_avg;
+	u64 merged_sh0_peak;
+	u64 merged_mc0_avg;
+	u64 merged_mc0_peak;
+
+	u64 shared_comparisons;
+
+	u64 evaluations;
+	u64 builds;
+	u64 submissions;
+	u64 failures;
+
+	int last_error;
+	bool valid;
+};
+
 struct kona_icc_provider {
 	struct icc_provider provider;
 	struct device *rpmh_dev;
@@ -1211,6 +1368,16 @@ struct kona_icc_provider {
 	u32 last_invalid_node_id;
 	const char *last_invalid_node_name;
 	struct kona_bcm_state cpu_bcms[KONA_CPU_BCM_COUNT];
+
+	/*
+	 * Physical BCM state used by the IPA ICC migration.
+	 *
+	 * Keep this separate from cpu_bcms: the CPU packed writer assumes
+	 * every entry is SH4/SH0/MC0 and uses CPU-specific qnode geometry.
+	 */
+	struct kona_bcm_state ipa_bcms[KONA_IPA_BCM_COUNT];
+	struct kona_ipa_bcm_shadow ipa_bcm_shadow;
+
 	bool system_suspended;
 	atomic_t votes_paused;
 	/* Serialize logical-path updates that share a physical RPMh BCM. */
@@ -1261,6 +1428,12 @@ struct kona_icc_data {
         size_t num_nodes;
         bool boot_floor_vote;
 };
+
+/*
+ * Kept false until the final ipa3/msm_bus -> ICC ownership handoff.
+ * Do not expose this as a runtime tunable while two physical owners exist.
+ */
+static bool kona_ipa_bcm_real_write_enable;
 
 static DEFINE_MUTEX(kona_packed_param_lock);
 static struct kona_icc_provider *kona_packed_provider;
@@ -3857,20 +4030,22 @@ static struct icc_path *kona_icc_xlate(struct icc_provider *provider,
 		return ERR_PTR(-EINVAL);
 
 	/*
-	 * IPA keeps physical bandwidth ownership in ipa3/IPA PM.
+	 * Stage IPA handoff:
 	 *
-	 * Its LLCC/DDR paths share downstream SH0/MC0/ACV resources and have
-	 * an independent modem/GSI SSR and reprobe lifecycle. The virtual IPA
-	 * nodes reuse CPU_LLCC/CPU_MEM aliases, which must not race Stage-4
-	 * packed CPU ownership of SH0/MC0.
+	 * Allow the four verified IPA bandwidth endpoints to be acquired so
+	 * ipa3 can validate the modern path topology while msm_bus remains the
+	 * sole physical bandwidth owner.
 	 *
-	 * Reject IPA acquisition here so ipa3 falls back to its native msm_bus
-	 * client and retains one recovery-aware physical bandwidth owner.
+	 * IPA_CORE is deliberately excluded. Its legacy 150/240/466/533 values
+	 * are performance/corner semantics, not a proven bandwidth BCM.
+	 *
+	 * Merely acquiring these paths performs no bandwidth vote. Hardware
+	 * ownership is unchanged until ipa3 explicitly enables ICC voting.
 	 */
-	if (desc->role == KONA_ROLE_IPA) {
+	if (desc->role == KONA_ROLE_IPA &&
+	    desc->id == KONA_ICC_IPA_CORE) {
 		dev_info_ratelimited(provider->dev,
-			"kona-icc: IPA path %s delegated to ipa3/msm_bus\n",
-			desc->name);
+			"kona-icc: IPA core remains delegated to ipa3/msm_bus\n");
 		return ERR_PTR(-ENODEV);
 	}
 
@@ -6066,6 +6241,394 @@ static void kona_packed_snapshot_inputs(struct kona_icc_provider *qp,
 	inputs->dry_run = READ_ONCE(kona_packed_dry_run);
 	inputs->config_generation = qp->packed_config_generation;
 }
+
+
+/*
+ * Stage IPA-4C/4D:
+ *
+ * Derive the physical IPA BCM state from Qualcomm's legacy performance
+ * table and construct the direct RPMh transaction. Hardware submission
+ * remains gated until ipa3/msm_bus ownership is transferred atomically.
+ */
+
+static int
+kona_icc_snapshot_ipa_bcms(const struct kona_ipa_shadow_row *row,
+			   struct kona_ipa_bcm_inputs *inputs)
+{
+	if (!row || !inputs)
+		return -EINVAL;
+
+	/*
+	 * Derive from the row that legacy msm_bus successfully applied.
+	 *
+	 * SN0 is shared by IPA's LLCC, DDR and IMEM routes.
+	 * Preserve the current Kona shared-resource compatibility model:
+	 * average and peak use the maximum overlapping request.
+	 */
+	inputs->sn0_avg = max3(row->llcc_ab,
+			      row->mem_ab,
+			      row->imem_ab);
+	inputs->sn0_peak = max3(row->llcc_ib,
+			       row->mem_ib,
+			       row->imem_ib);
+
+	/* IPA -> OCIMEM maps through SN1. */
+	inputs->sn1_avg = row->imem_ab;
+	inputs->sn1_peak = row->imem_ib;
+
+	/* AMPSS -> IPA_CFG maps through CN0. */
+	inputs->cn0_avg = row->cfg_ab;
+	inputs->cn0_peak = row->cfg_ib;
+
+	/*
+	 * IPA -> LLCC terminates on the SH0-backed LLCC slave.
+	 *
+	 * SH0 is shared with other clients, so this is contribution state
+	 * only. It must not be programmed by an IPA-private writer.
+	 */
+	inputs->sh0_avg = row->llcc_ab;
+	inputs->sh0_peak = row->llcc_ib;
+
+	/*
+	 * LLCC -> EBI terminates on MC0 + ACV.
+	 *
+	 * MC0 is shared and ACV is solver-owned. Record both requests for
+	 * ownership comparison without synthesizing a new physical vote.
+	 */
+	inputs->mc0_avg = row->mem_ab;
+	inputs->mc0_peak = row->mem_ib;
+	inputs->acv_avg = row->mem_ab;
+	inputs->acv_peak = row->mem_ib;
+
+	/*
+	 * IPA_CORE is a dedicated virtual-fabric path terminating on IP0.
+	 * Unlike the shared downstream resources, IP0 has a unique IPA
+	 * ownership identity and can be normalized independently.
+	 */
+	inputs->ip0_avg = row->core_ab;
+	inputs->ip0_peak = row->core_ib;
+
+	return 0;
+}
+
+static void
+kona_icc_update_ipa_bcm_vote(struct kona_bcm_state *bcm,
+			     const struct kona_qnode_vote *qnode,
+			     u64 avg, u64 peak,
+			     u64 *raw_x, u64 *raw_y,
+			     u64 *x, u64 *y)
+{
+	*x = kona_icc_cpu_normalize(avg, bcm, qnode, true, raw_x);
+	*y = kona_icc_cpu_normalize(peak, bcm, qnode, false, raw_y);
+
+	if (*x != bcm->requested_x || *y != bcm->requested_y ||
+	    *raw_x != bcm->raw_x || *raw_y != bcm->raw_y)
+		bcm->requested_generation++;
+
+	bcm->raw_x = *raw_x;
+	bcm->raw_y = *raw_y;
+
+	bcm->requested_x = *x;
+	bcm->requested_y = *y;
+
+	bcm->saturated_x = *raw_x > KONA_BCM_VOTE_MASK;
+	bcm->saturated_y = *raw_y > KONA_BCM_VOTE_MASK;
+
+	bcm->requested_data =
+		KONA_BCM_TCS_CMD(true, *x || *y, (u32)*x, (u32)*y);
+
+	bcm->dirty = bcm->requested_x != bcm->committed_x ||
+		     bcm->requested_y != bcm->committed_y;
+}
+
+static int
+kona_icc_build_ipa_bcm_group(struct kona_bcm_state *bcms,
+			     const unsigned int *indices,
+			     unsigned int num_bcms,
+			     struct tcs_cmd *cmds,
+			     unsigned int *num_cmds,
+			     u32 *batch_n,
+			     unsigned int *num_messages)
+{
+	unsigned int base = *num_cmds;
+	unsigned int i, n = 0;
+
+	for (i = 0; i < num_bcms; i++) {
+		struct kona_bcm_state *bcm = &bcms[indices[i]];
+		unsigned int j;
+		bool commit;
+		bool valid;
+
+		if (!bcm->dirty)
+			continue;
+
+		commit = true;
+
+		for (j = i + 1; j < num_bcms; j++)
+			if (bcms[indices[j]].dirty) {
+				commit = false;
+				break;
+			}
+
+		valid = bcm->requested_x || bcm->requested_y;
+
+		cmds[base + n].addr = bcm->addr;
+		cmds[base + n].data =
+			KONA_BCM_TCS_CMD(commit, valid,
+					 (u32)bcm->requested_x,
+					 (u32)bcm->requested_y);
+
+		n++;
+	}
+
+	if (!n)
+		return 0;
+
+	batch_n[*num_messages] = n;
+	(*num_messages)++;
+	*num_cmds += n;
+
+	return 0;
+}
+
+static int kona_icc_commit_ipa_bcms(
+		struct kona_icc_provider *qp,
+		const struct kona_ipa_shadow_row *row)
+{
+	/*
+	 * Physical qnode geometry from Qualcomm's SM8250 topology:
+	 *
+	 * SN0 -> qns_gemnoc_sf : 1 x 16
+	 * SN1 -> qxs_imem      : 1 x 8
+	 * CN0 -> qhs_ipa       : 1 x 4 contribution
+	 */
+	struct kona_qnode_vote sn0_qnode = {
+		.buswidth = 16,
+		.channels = 1,
+	};
+	struct kona_qnode_vote sn1_qnode = {
+		.buswidth = 8,
+		.channels = 1,
+	};
+	struct kona_qnode_vote cn0_qnode = {
+		.buswidth = 4,
+		.channels = 1,
+	};
+	struct kona_qnode_vote ip0_qnode = {
+		.buswidth = 8,
+		.channels = 1,
+	};
+
+	struct kona_ipa_bcm_inputs inputs;
+	struct kona_ipa_bcm_shadow *shadow = &qp->ipa_bcm_shadow;
+	struct kona_bcm_state *bcms = qp->ipa_bcms;
+
+	static const unsigned int vcd3[] = {
+		KONA_IPA_BCM_SN0,
+		KONA_IPA_BCM_SN1,
+	};
+
+	static const unsigned int vcd5[] = {
+		KONA_IPA_BCM_CN0,
+	};
+
+	static const unsigned int vcd7[] = {
+		KONA_IPA_BCM_IP0,
+	};
+
+	struct tcs_cmd cmds[KONA_IPA_BCM_COUNT] = {};
+	u32 batch_n[KONA_IPA_BCM_COUNT + 1] = {};
+
+	unsigned int num_cmds = 0;
+	unsigned int num_messages = 0;
+	unsigned int i;
+	int ret;
+
+	memset(&inputs, 0, sizeof(inputs));
+
+	ret = kona_icc_snapshot_ipa_bcms(row, &inputs);
+	if (ret)
+		goto fail;
+
+	/*
+	 * IPA shared-resource comparison.
+	 *
+	 * DO NOT modify qp->shadow_bcms[] here. That pipeline can reach the
+	 * Stage-10/11 modern hardware voter. Until ipa3 stops programming
+	 * msm_bus, this must remain telemetry only.
+	 */
+	{
+		u64 llcc_avg, llcc_peak;
+		u64 mem_avg, mem_peak;
+
+		llcc_avg = kona_icc_shared_resource_vote(
+			qp, "CPU_LLCC_AB", true);
+		llcc_peak = kona_icc_shared_resource_vote(
+			qp, "CPU_LLCC_IB", false);
+
+		mem_avg = kona_icc_shared_resource_vote(
+			qp, "CPU_MEM_AB", true);
+		mem_peak = kona_icc_shared_resource_vote(
+			qp, "CPU_MEM_IB", false);
+
+		/*
+		 * Existing Kona compatibility semantics:
+		 *
+		 * SH0 sees the strongest LLCC or DDR requirement.
+		 * MC0 sees DDR only.
+		 */
+		shadow->provider_sh0_avg = max(llcc_avg, mem_avg);
+		shadow->provider_sh0_peak = max(llcc_peak, mem_peak);
+		shadow->provider_mc0_avg = mem_avg;
+		shadow->provider_mc0_peak = mem_peak;
+
+		shadow->merged_sh0_avg =
+			max(shadow->provider_sh0_avg, inputs.sh0_avg);
+		shadow->merged_sh0_peak =
+			max(shadow->provider_sh0_peak, inputs.sh0_peak);
+
+		shadow->merged_mc0_avg =
+			max(shadow->provider_mc0_avg, inputs.mc0_avg);
+		shadow->merged_mc0_peak =
+			max(shadow->provider_mc0_peak, inputs.mc0_peak);
+
+		shadow->shared_comparisons++;
+	}
+
+	for (i = 0; i < KONA_IPA_BCM_COUNT; i++) {
+		ret = kona_icc_cpu_bcm_metadata(qp, &bcms[i]);
+		if (ret)
+			goto fail;
+	}
+
+	kona_icc_update_ipa_bcm_vote(
+		&bcms[KONA_IPA_BCM_SN0], &sn0_qnode,
+		inputs.sn0_avg, inputs.sn0_peak,
+		&shadow->sn0_raw_x, &shadow->sn0_raw_y,
+		&shadow->sn0_x, &shadow->sn0_y);
+
+	kona_icc_update_ipa_bcm_vote(
+		&bcms[KONA_IPA_BCM_SN1], &sn1_qnode,
+		inputs.sn1_avg, inputs.sn1_peak,
+		&shadow->sn1_raw_x, &shadow->sn1_raw_y,
+		&shadow->sn1_x, &shadow->sn1_y);
+
+	kona_icc_update_ipa_bcm_vote(
+		&bcms[KONA_IPA_BCM_CN0], &cn0_qnode,
+		inputs.cn0_avg, inputs.cn0_peak,
+		&shadow->cn0_raw_x, &shadow->cn0_raw_y,
+		&shadow->cn0_x, &shadow->cn0_y);
+
+	/*
+	 * IP0 telemetry only for this stage.
+	 *
+	 * Do not add it to a TCS batch until its cmd-db VCD and runtime
+	 * behavior are validated. The real-write ownership gate remains off.
+	 */
+	kona_icc_update_ipa_bcm_vote(
+		&bcms[KONA_IPA_BCM_IP0], &ip0_qnode,
+		inputs.ip0_avg, inputs.ip0_peak,
+		&shadow->ip0_raw_x, &shadow->ip0_raw_y,
+		&shadow->ip0_x, &shadow->ip0_y);
+
+	shadow->bw = inputs;
+	shadow->evaluations++;
+	shadow->valid = true;
+	shadow->last_error = 0;
+
+	dev_info_ratelimited(qp->provider.dev,
+		"kona-ipa-shadow: "
+		"ipa_sh0=%llu/%llu provider_sh0=%llu/%llu merged_sh0=%llu/%llu "
+		"ipa_mc0=%llu/%llu provider_mc0=%llu/%llu merged_mc0=%llu/%llu "
+		"acv=%llu/%llu "
+		"sn0=%llu/%llu sn1=%llu/%llu cn0=%llu/%llu "
+		"ip0=%llu/%llu ip0_xy=%llu/%llu\n",
+		(unsigned long long)inputs.sh0_avg,
+		(unsigned long long)inputs.sh0_peak,
+		(unsigned long long)shadow->provider_sh0_avg,
+		(unsigned long long)shadow->provider_sh0_peak,
+		(unsigned long long)shadow->merged_sh0_avg,
+		(unsigned long long)shadow->merged_sh0_peak,
+		(unsigned long long)inputs.mc0_avg,
+		(unsigned long long)inputs.mc0_peak,
+		(unsigned long long)shadow->provider_mc0_avg,
+		(unsigned long long)shadow->provider_mc0_peak,
+		(unsigned long long)shadow->merged_mc0_avg,
+		(unsigned long long)shadow->merged_mc0_peak,
+		(unsigned long long)inputs.acv_avg,
+		(unsigned long long)inputs.acv_peak,
+		(unsigned long long)inputs.sn0_avg,
+		(unsigned long long)inputs.sn0_peak,
+		(unsigned long long)inputs.sn1_avg,
+		(unsigned long long)inputs.sn1_peak,
+		(unsigned long long)inputs.cn0_avg,
+		(unsigned long long)inputs.cn0_peak,
+		(unsigned long long)inputs.ip0_avg,
+		(unsigned long long)inputs.ip0_peak,
+		(unsigned long long)shadow->ip0_x,
+		(unsigned long long)shadow->ip0_y);
+
+	ret = kona_icc_build_ipa_bcm_group(
+		bcms, vcd3, ARRAY_SIZE(vcd3),
+		cmds, &num_cmds, batch_n, &num_messages);
+	if (ret)
+		goto fail;
+
+	ret = kona_icc_build_ipa_bcm_group(
+		bcms, vcd5, ARRAY_SIZE(vcd5),
+		cmds, &num_cmds, batch_n, &num_messages);
+	if (ret)
+		goto fail;
+
+	ret = kona_icc_build_ipa_bcm_group(
+		bcms, vcd7, ARRAY_SIZE(vcd7),
+		cmds, &num_cmds, batch_n, &num_messages);
+	if (ret)
+		goto fail;
+
+	shadow->builds++;
+
+	/*
+	 * Critical ownership barrier.
+	 *
+	 * Until ipa3 stops using its msm_bus client these commands are only
+	 * constructed and cached. Never create a second physical owner.
+	 */
+	if (!READ_ONCE(kona_ipa_bcm_real_write_enable) || !num_cmds)
+		return 0;
+
+	ret = rpmh_write_batch(qp->rpmh_dev,
+			       RPMH_ACTIVE_ONLY_STATE,
+			       cmds, batch_n);
+	if (ret)
+		goto fail;
+
+	for (i = 0; i < KONA_IPA_BCM_COUNT; i++) {
+		struct kona_bcm_state *bcm = &bcms[i];
+
+		if (!bcm->dirty)
+			continue;
+
+		bcm->committed_x = bcm->requested_x;
+		bcm->committed_y = bcm->requested_y;
+		bcm->committed_data = bcm->requested_data;
+		bcm->committed_generation = bcm->requested_generation;
+		bcm->dirty = false;
+		bcm->last_error = 0;
+		bcm->submission_count++;
+	}
+
+	shadow->submissions++;
+
+	return 0;
+
+fail:
+	shadow->failures++;
+	shadow->last_error = ret;
+
+	return ret;
+}
+
 
 static int kona_icc_commit_cpu_bcms(struct kona_icc_provider *qp,
 				    const struct kona_packed_inputs *inputs,
@@ -8720,6 +9283,11 @@ static int kona_icc_probe(struct platform_device *pdev)
 	qp->cpu_bcms[KONA_CPU_BCM_SH0].name = "SH0";
 	qp->cpu_bcms[KONA_CPU_BCM_MC0].name = "MC0";
 
+	qp->ipa_bcms[KONA_IPA_BCM_SN0].name = "SN0";
+	qp->ipa_bcms[KONA_IPA_BCM_SN1].name = "SN1";
+	qp->ipa_bcms[KONA_IPA_BCM_CN0].name = "CN0";
+	qp->ipa_bcms[KONA_IPA_BCM_IP0].name = "IP0";
+
 	qp->shadow_bcms[KONA_SHADOW_BCM_SH4].name = "SH4";
 	qp->shadow_bcms[KONA_SHADOW_BCM_SH4].mask = KONA_HW_BCM_SH4;
 	qp->shadow_bcms[KONA_SHADOW_BCM_SH4].channels = 2;
@@ -8952,6 +9520,40 @@ static int kona_icc_probe(struct platform_device *pdev)
 	dev_err(&pdev->dev,
 		"kona-rpmh: provider probe complete migration_stage=%u legacy_compat=%u\n",
 		kona_cpu_model_stage(), kona_rpmh_cpu_model);
+
+	/*
+	 * Resolve the physical BCM metadata required by IPA ICC migration.
+	 *
+	 * These objects are persistent provider state so later IPA ownership
+	 * stages can reuse their cmd-db address, unit, width and VCD.
+	 * ACV is solver-owned on Kona and is intentionally not represented
+	 * as a normal X/Y BCM.
+	 */
+	{
+		unsigned int bcm_i;
+
+		for (bcm_i = 0; bcm_i < KONA_IPA_BCM_COUNT; bcm_i++) {
+			struct kona_bcm_state *bcm = &qp->ipa_bcms[bcm_i];
+			int probe_ret;
+
+			probe_ret = kona_icc_cpu_bcm_metadata(qp, bcm);
+			if (probe_ret) {
+				bcm->last_error = probe_ret;
+
+				dev_err(&pdev->dev,
+					"kona-ipa-bcm: %s metadata failed ret=%d\n",
+					bcm->name, probe_ret);
+				continue;
+			}
+
+			bcm->last_error = 0;
+
+			dev_info(&pdev->dev,
+				 "kona-ipa-bcm: %s addr=%#x unit=%u width=%u vcd=%u\n",
+				 bcm->name, bcm->addr, bcm->unit,
+				 bcm->width, bcm->vcd);
+		}
+	}
 	if (kona_cpu_model_stage() >= 1) {
 		for (i = 0; i < KONA_CPU_BCM_COUNT; i++) {
 			ret = kona_icc_cpu_bcm_metadata(qp, &qp->cpu_bcms[i]);
@@ -9004,6 +9606,12 @@ static int kona_icc_probe(struct platform_device *pdev)
 	dev_err(&pdev->dev,
 		"kona-rpmh: Stage-4 packed CPU ownership available but not armed; ICC CPU path retained\n");
 
+	/*
+	 * Publish only after cmd-db metadata and provider state are ready.
+	 * IPA legacy-result tracking may now drive the shadow BCM builder.
+	 */
+	WRITE_ONCE(kona_ipa_provider, qp);
+
         return 0;
 
 err_free_bitmaps:
@@ -9017,6 +9625,9 @@ err_free_bitmaps:
 static int kona_icc_remove(struct platform_device *pdev)
 {
 	struct kona_icc_provider *qp = platform_get_drvdata(pdev);
+
+	if (READ_ONCE(kona_ipa_provider) == qp)
+		WRITE_ONCE(kona_ipa_provider, NULL);
 
 	mutex_lock(&kona_packed_param_lock);
 	if (kona_packed_provider == qp)

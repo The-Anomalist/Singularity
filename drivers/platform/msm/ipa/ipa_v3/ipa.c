@@ -4925,6 +4925,8 @@ void _ipa_enable_clks_v3_0(void)
 	ipa3_uc_notify_clk_state(true);
 }
 
+static int ipa3_update_msm_bus_vote(unsigned int idx);
+
 static int ipa3_vote_icc_path(unsigned int idx)
 {
 	struct msm_bus_paths *usecase;
@@ -4938,18 +4940,38 @@ static int ipa3_vote_icc_path(unsigned int idx)
 		return -EINVAL;
 
 	usecase = &ipa3_ctx->ctrl->msm_bus_data_ptr->usecase[idx];
-	if (usecase->num_paths != ipa3_ctx->ctrl->num_icc_paths)
+
+	/*
+	 * Kona exposes four ICC bandwidth endpoints while Qualcomm's legacy
+	 * IPA table contains five vectors. The fifth vector is IPA_CORE/IP0,
+	 * not a normal fabric ICC endpoint.
+	 */
+	if (ipa3_ctx->ctrl->num_icc_paths != 4 ||
+	    usecase->num_paths < ipa3_ctx->ctrl->num_icc_paths)
 		return -EINVAL;
 
 	for (i = 0; i < ipa3_ctx->ctrl->num_icc_paths; i++) {
 		ret = icc_set_bw(ipa3_ctx->ctrl->icc_paths[i],
 				 min_t(u64, usecase->vectors[i].ab, U32_MAX),
 				 min_t(u64, usecase->vectors[i].ib, U32_MAX));
-		if (ret)
+		if (ret) {
+			IPAERR("ICC vote failed: path=%d ab=%llu ib=%llu ret=%d\n",
+			       i,
+			       usecase->vectors[i].ab,
+			       usecase->vectors[i].ib,
+			       ret);
 			return ret;
+		}
 	}
 
-	return 0;
+	/*
+	 * ICC is IPA's authoritative consumer-facing API.
+	 *
+	 * msm_bus remains only as the compatibility physical backend until
+	 * shared SH0/MC0/ACV ownership is transferred globally. The wrapper
+	 * also feeds the successfully applied row into the Kona IPA BCM model.
+	 */
+	return ipa3_update_msm_bus_vote(idx);
 }
 
 static unsigned int ipa3_get_bus_vote(void)
@@ -4977,6 +4999,18 @@ static unsigned int ipa3_get_bus_vote(void)
 	return idx;
 }
 
+
+static int ipa3_update_msm_bus_vote(unsigned int idx)
+{
+	int ret;
+
+	ret = msm_bus_scale_client_update_request(ipa3_ctx->ipa_bus_hdl, idx);
+	kona_icc_ipa_shadow_note_legacy_result(idx, ret);
+
+	return ret;
+}
+
+
 /**
  * ipa3_enable_clks() - Turn on IPA clocks
  *
@@ -4995,8 +5029,7 @@ void ipa3_enable_clks(void)
 	if (ipa3_ctx->ctrl->use_icc) {
 		if (ipa3_vote_icc_path(ipa3_get_bus_vote()))
 			WARN(1, "icc scaling failed");
-	} else if (msm_bus_scale_client_update_request(ipa3_ctx->ipa_bus_hdl,
-		    ipa3_get_bus_vote())) {
+	} else if (ipa3_update_msm_bus_vote(ipa3_get_bus_vote())) {
 		WARN(1, "bus scaling failed");
 	}
 	ipa3_ctx->ctrl->ipa3_enable_clks();
@@ -5056,8 +5089,12 @@ void ipa3_disable_clks(void)
 
 	kona_icc_ipa_shadow_note_selected(0);
 
-	if (msm_bus_scale_client_update_request(ipa3_ctx->ipa_bus_hdl, 0))
+	if (ipa3_ctx->ctrl->use_icc) {
+		if (ipa3_vote_icc_path(0))
+			WARN(1, "icc scaling failed");
+	} else if (ipa3_update_msm_bus_vote(0)) {
 		WARN(1, "bus scaling failed");
+	}
 }
 
 /**
@@ -5477,8 +5514,7 @@ int ipa3_set_clock_plan_from_pm(int idx)
 		if (ipa3_ctx->ctrl->use_icc) {
 			if (ipa3_vote_icc_path(ipa3_get_bus_vote()))
 				WARN_ON(1);
-		} else if (msm_bus_scale_client_update_request(ipa3_ctx->ipa_bus_hdl,
-				ipa3_get_bus_vote())) {
+		} else if (ipa3_update_msm_bus_vote(ipa3_get_bus_vote())) {
 			WARN_ON(1);
 		}
 	} else {
@@ -5563,8 +5599,7 @@ int ipa3_set_required_perf_profile(enum ipa_voltage_level floor_voltage,
 		if (ipa3_ctx->ctrl->use_icc) {
 			if (ipa3_vote_icc_path(ipa3_get_bus_vote()))
 				WARN_ON(1);
-		} else if (msm_bus_scale_client_update_request(ipa3_ctx->ipa_bus_hdl,
-				ipa3_get_bus_vote())) {
+		} else if (ipa3_update_msm_bus_vote(ipa3_get_bus_vote())) {
 			WARN_ON(1);
 		}
 	} else {
@@ -6905,9 +6940,16 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 		num_icc_paths = of_count_phandle_with_args(ipa_pdev->dev.of_node,
 						      "interconnects",
 						      "#interconnect-cells");
-		if (num_icc_paths > 0 &&
-		    num_icc_paths ==
-		    ipa3_ctx->ctrl->msm_bus_data_ptr->usecase[0].num_paths) {
+
+		/*
+		 * Kona exposes five historical IPA vectors, but IPA_CORE is not
+		 * a bandwidth ICC endpoint. Validate/acquire only the first four
+		 * fabric paths while legacy msm_bus remains authoritative.
+		 */
+		if (num_icc_paths == 5)
+			num_icc_paths = 4;
+
+		if (num_icc_paths == 4) {
 			result = 0;
 			ipa3_ctx->ctrl->icc_paths = kcalloc(num_icc_paths,
 						       sizeof(*ipa3_ctx->ctrl->icc_paths),
@@ -6918,41 +6960,80 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 			}
 
 			for (i = 0; i < num_icc_paths; i++) {
-				result = of_property_read_string_index(ipa_pdev->dev.of_node, "interconnect-names",
-							      i, &icc_name);
-				if (result)
+				result = of_property_read_string_index(ipa_pdev->dev.of_node,
+								      "interconnect-names",
+								      i, &icc_name);
+				if (result) {
+					IPAERR("ICC name lookup failed: path=%d ret=%d\n",
+					       i, result);
 					break;
+				}
+
+				IPAERR("ICC acquiring path=%d name=%s\n", i, icc_name);
+
 				ipa3_ctx->ctrl->icc_paths[i] =
 					devm_of_icc_get(&ipa_pdev->dev, icc_name);
 				if (IS_ERR(ipa3_ctx->ctrl->icc_paths[i])) {
 					result = PTR_ERR(ipa3_ctx->ctrl->icc_paths[i]);
 					ipa3_ctx->ctrl->icc_paths[i] = NULL;
+
+					IPAERR("ICC acquire failed: path=%d name=%s ret=%d\n",
+					       i, icc_name, result);
+
+					/*
+					 * ICC providers may not be ready when IPA
+					 * initially probes. Do not permanently fall
+					 * back to legacy msm_bus in that case.
+					 */
+					if (result == -EPROBE_DEFER)
+						goto fail_bus_reg;
+
 					break;
 				}
+
+				IPAERR("ICC acquired path=%d name=%s\n", i, icc_name);
 			}
 
 			if (!result) {
 				ipa3_ctx->ctrl->num_icc_paths = num_icc_paths;
+
+				/*
+				 * Four Kona IPA fabric paths are now authoritative through
+				 * the ICC consumer API. msm_bus remains registered only as
+				 * the compatibility physical backend for shared BCMs and
+				 * IPA_CORE/IP0 until global shared ownership is migrated.
+				 */
 				ipa3_ctx->ctrl->use_icc = true;
-				if (ipa3_vote_icc_path(0))
-					ipa3_ctx->ctrl->use_icc = false;
-			}
 
-			if (!ipa3_ctx->ctrl->use_icc)
-				IPAERR("ICC setup failed (%d), falling back to msm-bus\n", result);
-		}
-
-		if (!ipa3_ctx->ctrl->use_icc) {
-			/* get BUS handle */
-			ipa3_ctx->ipa_bus_hdl =
-				msm_bus_scale_register_client(ipa3_ctx->ctrl->msm_bus_data_ptr);
-			if (!ipa3_ctx->ipa_bus_hdl) {
-				IPAERR("fail to register with bus mgr!\n");
-				ipa3_ctx->ctrl->msm_bus_data_ptr = NULL;
-				result = -EPROBE_DEFER;
-				goto fail_bus_reg;
+				IPAERR("ICC authoritative for %d IPA bandwidth paths; "
+				       "msm-bus retained as shared-BCM backend\n",
+				       num_icc_paths);
+			} else {
+				IPAERR("ICC validation failed (%d), msm-bus remains owner\n",
+				       result);
 			}
 		}
+
+		/*
+		 * Keep one msm_bus client as IPA's compatibility physical backend.
+		 *
+		 * ICC is the consumer-facing API when all four Kona IPA bandwidth
+		 * paths are present. The legacy client remains responsible for the
+		 * shared SH0/MC0/ACV transaction until those BCMs have a single
+		 * global owner.
+		 */
+		ipa3_ctx->ipa_bus_hdl =
+			msm_bus_scale_register_client(
+				ipa3_ctx->ctrl->msm_bus_data_ptr);
+		if (!ipa3_ctx->ipa_bus_hdl) {
+			IPAERR("fail to register IPA compatibility bus backend!\n");
+			ipa3_ctx->ctrl->msm_bus_data_ptr = NULL;
+			result = -EPROBE_DEFER;
+			goto fail_bus_reg;
+		}
+
+		if (ipa3_ctx->ctrl->use_icc)
+			IPAERR("ICC authoritative; msm-bus retained as shared-BCM backend\n");
 	}
 
 	/* get IPA clocks */
