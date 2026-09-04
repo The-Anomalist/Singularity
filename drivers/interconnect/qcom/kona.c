@@ -104,6 +104,8 @@ enum kona_icc_role {
 #define KONA_HW_BCM_SN12	BIT(8)
 #define KONA_HW_BCM_MM0	BIT(9)
 #define KONA_HW_BCM_MM1	BIT(10)
+#define KONA_HW_BCM_SN0	BIT(11)
+#define KONA_HW_BCM_SN1	BIT(12)
 
 struct kona_icc_hw_desc {
 	u16 channels;
@@ -607,29 +609,30 @@ static const struct kona_npu_owner_desc kona_stage10_npu_clients[] = {
  * setup fails.  IPA PM aggregates USB/WLAN/MHI/modem client throughput into a
  * clock/performance index; the host ipa3 clock lifecycle then submits that
  * index.  Neither the GSI nor IPA uC ABI exposes cmd-db metadata or packed RPMh
- * rows.  SN0/SN1/SN2 and CN0 are topology candidates, not proven private
- * resources, while SH0/MC0/ACV are shared.  Keep every row diagnostic-only
- * until all host and recovery writers can be retired atomically.
+ * rows.  SN0, SN1 and CN0 topology membership is now identified from the
+ * upstream SM8250 qnode/BCM model, while SH0/MC0/ACV remain shared.  Keep
+ * every row diagnostic-only until all host and recovery writers can be
+ * retired atomically.
  */
 static const struct kona_ipa_owner_desc kona_stage11_ipa_clients[] = {
-	{ KONA_ICC_IPA_TO_LLCC, "ipa-llcc", "SN0/SN1/SN2/SH0 (topology-dependent)",
+	{ KONA_ICC_IPA_TO_LLCC, "ipa-llcc", "SN0/SH0 (verified topology; shared downstream)",
 	  "ipa3 msm_bus client", "none proven (uC selects packet processing only)",
 	  "none proven", "ipa_pm -> ipa3 performance index",
 	  "ipa3 clock enable, PM activation, SSR/reprobe", true, false, false,
-	  "private upstream BCM and apps-RSC context are unproven; ICC/msm_bus replay remains" },
-	{ KONA_ICC_IPA_TO_MEM, "ipa-ddr", "SN0/SN1/SN2/SH0/MC0/ACV (shared downstream)",
+	  "SN0/SH0 topology is known, but exclusive apps-RSC ownership and restart-safe handoff are unproven" },
+	{ KONA_ICC_IPA_TO_MEM, "ipa-ddr", "SN0/SH0/MC0/ACV (verified topology; shared downstream)",
 	  "ipa3 msm_bus client", "none proven (modem/uC cannot be excluded as replay triggers)",
 	  "none proven", "ipa_pm -> ipa3 performance index",
 	  "ipa3 clock enable, PM activation, SSR/reprobe", true, false, false,
 	  "DDR BCMs are shared and IPA/modem recovery can recreate host votes" },
-	{ KONA_ICC_IPA_TO_IMEM, "ipa-imem", "SN0/SN1/SN2 (exact BCM unproven)",
+	{ KONA_ICC_IPA_TO_IMEM, "ipa-imem", "SN0/SN1 (verified topology)",
 	  "ipa3 msm_bus client", "none proven", "none proven",
 	  "ipa_pm -> ipa3 performance index", "ipa3 clock enable and reprobe",
-	  false, false, false, "no private cmd-db resource, metadata, or exclusive handoff is proven" },
-	{ KONA_ICC_IPA_CFG, "ipa-cfg", "CN0/CN1 (exact BCM/context unproven)",
+	  false, false, false, "SN0/SN1 membership is known, but exclusive ownership and restart-safe handoff are unproven" },
+	{ KONA_ICC_IPA_CFG, "ipa-cfg", "CN0 (verified endpoint membership; shared config fabric)",
 	  "ipa3 msm_bus client", "none proven", "none proven",
 	  "ipa_pm -> ipa3 performance index", "ipa3 clock enable and reprobe",
-	  true, false, false, "config topology is shared and its apps-RSC ownership is unproven" },
+	  true, false, false, "qhs_ipa belongs to shared CN0; exclusive apps-RSC ownership is unproven" },
 	{ KONA_ICC_IPA_CORE, "ipa-core", "IPA_CORE/CN0 (logical names; cmd-db identity unproven)",
 	  "ipa3 msm_bus client", "none proven", "none proven",
 	  "ipa_pm -> ipa3 performance index", "ipa3 clock enable, uC restart and reprobe",
@@ -876,6 +879,34 @@ static struct kona_icc_hw_desc kona_icc_get_hw_desc(u32 id)
 			      KONA_HW_BCM_SH0 |
 			      KONA_HW_BCM_MC0 |
 			      KONA_HW_BCM_ACV;
+		break;
+
+	/*
+	 * SM8250 IPA originates at qxm_ipa (1 x 8) through A2NOC.
+	 * Keep these descriptors metadata-only while ipa3/msm_bus remains
+	 * the authoritative physical bandwidth owner.
+	 */
+	case KONA_ICC_IPA_TO_LLCC:
+		hw.channels = 1;
+		hw.buswidth = 8;
+		hw.bcm_mask = KONA_HW_BCM_SN0 |
+			      KONA_HW_BCM_SH0;
+		break;
+
+	case KONA_ICC_IPA_TO_MEM:
+		hw.channels = 1;
+		hw.buswidth = 8;
+		hw.bcm_mask = KONA_HW_BCM_SN0 |
+			      KONA_HW_BCM_SH0 |
+			      KONA_HW_BCM_MC0 |
+			      KONA_HW_BCM_ACV;
+		break;
+
+	case KONA_ICC_IPA_TO_IMEM:
+		hw.channels = 1;
+		hw.buswidth = 8;
+		hw.bcm_mask = KONA_HW_BCM_SN0 |
+			      KONA_HW_BCM_SN1;
 		break;
 
 	case KONA_ICC_CAM_CFG:
