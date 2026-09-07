@@ -1210,6 +1210,64 @@ struct kona_ipa_bcm_shadow {
 	bool valid;
 };
 
+
+/*
+ * Adaptive Fabric Management (AFM)
+ *
+ * AFM derives a responsive CPU fabric envelope from aggregate CPU memory
+ * demand rather than applying fixed DDR/LLCC ratios or permanent floors.
+ *
+ * Design goals:
+ *   - immediate upvotes
+ *   - workload-sensitive peak bandwidth shaping
+ *   - short adaptive burst residency
+ *   - conservative sustained AB amplification
+ *   - exact idle collapse after residency expires
+ *   - no userspace policy dependency
+ *
+ * All arithmetic is integer-only and the state is protected by vote_lock.
+ */
+#define KONA_AFM_SCALE			1024U
+#define KONA_AFM_SCORE_MAX		1024U
+#define KONA_AFM_EWMA_SHIFT		3U
+
+#define KONA_AFM_RATIO_MIN_PERMILLE	1250U
+#define KONA_AFM_RATIO_MAX_PERMILLE	2300U
+
+#define KONA_AFM_MIN_AB_KB		384000ULL
+#define KONA_AFM_MIN_IB_KB		768000ULL
+
+#define KONA_AFM_HOLD_MIN_MS		8U
+#define KONA_AFM_HOLD_MAX_MS		56U
+
+#define KONA_AFM_AB_UPLIFT_MAX_PERCENT	15U
+
+struct kona_cpu_afm_state {
+	u64 avg_ewma;
+	u64 peak_ewma;
+
+	u64 last_avg;
+	u64 last_peak;
+
+	u64 held_avg;
+	u64 held_peak;
+
+	u64 proposed_avg;
+	u64 proposed_peak;
+
+	unsigned long hold_until;
+
+	u32 burst_score;
+	u32 last_score;
+	u32 last_ratio_permille;
+	u32 last_hold_ms;
+
+	u64 evaluations;
+	u64 shaped;
+	u64 residency_hits;
+	u64 idle_collapses;
+};
+
 struct kona_icc_provider {
 	struct icc_provider provider;
 	struct device *rpmh_dev;
@@ -1333,6 +1391,9 @@ struct kona_icc_provider {
 	 */
 	u64 modern_legacy_bypass_count;
 	u64 modern_replay_bypass_count;
+
+	/* Adaptive CPU fabric policy state. */
+	struct kona_cpu_afm_state cpu_afm;
 
 	bool boot_floor_vote;
 	bool first_cpu_request_seen;
@@ -4430,6 +4491,81 @@ kona_icc_shadow_bucket_resource_vote(struct kona_icc_provider *qp,
 
 
 /*
+ * These helpers are defined later with the packed CPU model.  The modern
+ * RAW BCM path uses the same physical CPU endpoint aggregation semantics.
+ */
+static bool kona_icc_is_cpu_memory_path(
+	const struct kona_icc_node_desc *desc);
+static bool kona_icc_cpu_to_memory(u32 id);
+static bool kona_icc_cpu_generic(u32 id);
+static void kona_icc_add_cpu_ab(u64 *total, u64 vote);
+static void kona_icc_cpu_afm_evaluate(struct kona_icc_provider *qp,
+				      u64 raw_avg, u64 raw_peak,
+				      u64 *afm_avg, u64 *afm_peak);
+
+static void
+kona_icc_shadow_raw_cpu_endpoint_vote(struct kona_icc_provider *qp,
+				      bool memory,
+				      enum kona_shadow_bucket_id bucket,
+				      u64 *avg, u64 *peak)
+{
+	u64 generic_avg = 0;
+	u64 per_cpu_avg = 0;
+	u64 endpoint_peak = 0;
+	unsigned int i;
+
+	*avg = 0;
+	*peak = 0;
+
+	if (!qp || !qp->req_ab || !qp->req_ib ||
+	    bucket >= KONA_SHADOW_BUCKET_COUNT)
+		return;
+
+	for (i = 0; i < qp->num_nodes; i++) {
+		const struct kona_icc_node_desc *node = &qp->nodes[i];
+		u64 raw_avg, raw_peak;
+		u32 tag;
+
+		if (!kona_icc_is_cpu_memory_path(node) ||
+		    kona_icc_cpu_to_memory(node->id) != memory)
+			continue;
+
+		if (kona_icc_is_policy_suppressed_path(node) ||
+		    kona_icc_is_external_cached_path(node))
+			continue;
+
+		tag = kona_icc_shadow_effective_tag(qp, i);
+		if (!(tag & BIT(bucket)))
+			continue;
+
+		raw_avg = qp->req_ab[i];
+		raw_peak = qp->req_ib[i];
+
+		if (raw_avg == U64_MAX || raw_peak == U64_MAX)
+			continue;
+
+		/*
+		 * Generic CPU-to-{LLCC,MEM} requests and the per-CPU requests are
+		 * overlapping views of the same physical endpoint.  Do not add the
+		 * generic request to the per-CPU aggregate.
+		 *
+		 * Individual CPU AB requests represent independent sustained
+		 * contributors and therefore accumulate.  Peak bandwidth remains
+		 * a max aggregate, matching ICC peak semantics.
+		 */
+		if (kona_icc_cpu_generic(node->id))
+			generic_avg = max(generic_avg, raw_avg);
+		else
+			kona_icc_add_cpu_ab(&per_cpu_avg, raw_avg);
+
+		endpoint_peak = max(endpoint_peak, raw_peak);
+	}
+
+	*avg = max(generic_avg, per_cpu_avg);
+	*peak = endpoint_peak;
+}
+
+/*
  * Stage-5.5 raw-client aggregate.
  *
  * This deliberately consumes req_ab/req_ib instead of eff_ab/eff_ib so
@@ -4786,18 +4922,33 @@ static void kona_icc_refresh_raw_shadow_buckets(struct kona_icc_provider *qp)
 		u64 mem_avg, mem_peak;
 		u64 fabric_avg, fabric_peak;
 
-		llcc_avg = kona_icc_shadow_raw_bucket_resource_vote(
-			qp, "CPU_LLCC_AB", true, bucket);
-		llcc_peak = kona_icc_shadow_raw_bucket_resource_vote(
-			qp, "CPU_LLCC_IB", false, bucket);
-
-		mem_avg = kona_icc_shadow_raw_bucket_resource_vote(
-			qp, "CPU_MEM_AB", true, bucket);
-		mem_peak = kona_icc_shadow_raw_bucket_resource_vote(
-			qp, "CPU_MEM_IB", false, bucket);
+		/*
+		 * Aggregate the physical CPU endpoints correctly before BCM
+		 * encoding. Per-CPU AB is additive, generic aliases overlap, and
+		 * peak demand remains a max.
+		 */
+		kona_icc_shadow_raw_cpu_endpoint_vote(qp, false, bucket,
+						     &llcc_avg, &llcc_peak);
+		kona_icc_shadow_raw_cpu_endpoint_vote(qp, true, bucket,
+						     &mem_avg, &mem_peak);
 
 		fabric_avg = max(llcc_avg, mem_avg);
 		fabric_peak = max(llcc_peak, mem_peak);
+
+		/*
+		 * Stage-1 AFM observation belongs here: after real CPU endpoint
+		 * aggregation and before SH4/SH0/MC0 encoding.  Restrict learning
+		 * to ACTIVE/AMC so WAKE/SLEEP tags cannot pollute workload history.
+		 *
+		 * AFM remains telemetry-only for this stage.
+		 */
+		if (bucket == KONA_SHADOW_BUCKET_AMC) {
+			u64 afm_avg, afm_peak;
+
+			kona_icc_cpu_afm_evaluate(qp,
+						  fabric_avg, fabric_peak,
+						  &afm_avg, &afm_peak);
+		}
 
 		qp->shadow_raw_bcms[KONA_SHADOW_BCM_SH4]
 			.bucket_avg[bucket] = fabric_avg;
@@ -6017,6 +6168,277 @@ static void kona_icc_add_cpu_ab(u64 *total, u64 vote)
 		*total += vote;
 }
 
+
+static u64 kona_afm_ewma(u64 old, u64 sample)
+{
+	if (!old)
+		return sample;
+
+	/*
+	 * 7/8 history + 1/8 new sample.
+	 *
+	 * Avoid old - old/8 + sample/8 because very small samples can
+	 * disappear completely. The equivalent weighted form keeps useful
+	 * precision while remaining cheap in the ICC hot path.
+	 */
+	return div64_u64(old * 7 + sample, 8);
+}
+
+static u32 kona_afm_normalized_delta(u64 delta, u64 reference)
+{
+	if (!delta || !reference)
+		return 0;
+
+	if (delta >= reference)
+		return KONA_AFM_SCORE_MAX;
+
+	return min_t(u64, KONA_AFM_SCORE_MAX,
+		     div64_u64(delta * KONA_AFM_SCALE, reference));
+}
+
+static void kona_icc_cpu_afm_evaluate(struct kona_icc_provider *qp,
+				      u64 raw_avg, u64 raw_peak,
+				      u64 *afm_avg, u64 *afm_peak)
+{
+	struct kona_cpu_afm_state *state = &qp->cpu_afm;
+	u64 demand = max(raw_avg, raw_peak);
+	u64 previous = max(state->last_avg, state->last_peak);
+	u64 history = max(state->avg_ewma, state->peak_ewma);
+	u64 accel = 0;
+	u64 excursion = 0;
+	u64 target_avg;
+	u64 target_peak;
+	u64 ratio_target;
+	u32 accel_score;
+	u32 excursion_score;
+	u32 pressure_score = 0;
+	u32 history_score;
+	u32 score;
+	u32 ratio;
+	u32 hold_ms;
+
+	/*
+	 * A true 0/0 request must eventually collapse completely. During the
+	 * dynamically selected residency window retain the last responsive
+	 * envelope to bridge short gaps between adjacent CPU bursts.
+	 */
+	if (!raw_avg && !raw_peak) {
+		/*
+		 * An unchanged idle snapshot may be produced by an unrelated
+		 * shadow refresh. While residency is active, return the held
+		 * envelope without repeatedly training/decaying AFM state.
+		 *
+		 * Once the deadline expires, allow one transition to complete
+		 * collapse. Subsequent already-collapsed 0/0 snapshots are no-ops.
+		 */
+		if (!state->last_avg && !state->last_peak) {
+			if (time_before(jiffies, state->hold_until) &&
+			    (state->held_avg || state->held_peak)) {
+				*afm_avg = state->held_avg;
+				*afm_peak = state->held_peak;
+				return;
+			}
+
+			if (!state->held_avg && !state->held_peak &&
+			    !state->hold_until) {
+				*afm_avg = 0;
+				*afm_peak = 0;
+				return;
+			}
+		}
+
+		if (time_before(jiffies, state->hold_until) &&
+		    (state->held_avg || state->held_peak)) {
+			*afm_avg = state->held_avg;
+			*afm_peak = state->held_peak;
+			state->residency_hits++;
+
+			/*
+			 * Decay burst history once when entering residency rather than
+			 * once per unrelated shadow refresh.
+			 */
+			state->burst_score -= state->burst_score >> 2;
+		} else {
+			*afm_avg = 0;
+			*afm_peak = 0;
+			state->held_avg = 0;
+			state->held_peak = 0;
+			state->hold_until = 0;
+			state->burst_score -= state->burst_score >> 1;
+			state->idle_collapses++;
+		}
+
+		state->proposed_avg = *afm_avg;
+		state->proposed_peak = *afm_peak;
+		state->last_avg = 0;
+		state->last_peak = 0;
+		state->evaluations++;
+		return;
+	}
+
+	/*
+	 * BCM shadow refreshes can be triggered by unrelated ICC clients.
+	 * Do not repeatedly train AFM on an unchanged CPU request: the cached
+	 * CPU envelope is only a new workload sample when AB or IB changes.
+	 *
+	 * Keep 0/0 handling above this check so a later idle callback can still
+	 * observe residency expiry and allow complete fabric collapse.
+	 */
+	if (raw_avg == state->last_avg &&
+	    raw_peak == state->last_peak) {
+		*afm_avg = state->proposed_avg;
+		*afm_peak = state->proposed_peak;
+		return;
+	}
+
+	state->evaluations++;
+
+	if (demand > previous)
+		accel = demand - previous;
+
+	if (history && demand > history)
+		excursion = demand - history;
+
+	accel_score = kona_afm_normalized_delta(accel, demand);
+	excursion_score = kona_afm_normalized_delta(excursion, demand);
+
+	/*
+	 * Peak deficiency estimates how vulnerable this request is to latency.
+	 * A peak below AB is maximally deficient. Between 1x and 2x AB the
+	 * deficiency falls smoothly to zero.
+	 */
+	if (raw_avg) {
+		if (raw_peak <= raw_avg) {
+			pressure_score = KONA_AFM_SCORE_MAX;
+		} else if (raw_peak < raw_avg * 2) {
+			u64 spread = raw_peak - raw_avg;
+
+			pressure_score =
+				KONA_AFM_SCORE_MAX -
+				min_t(u64, KONA_AFM_SCORE_MAX,
+				      div64_u64(spread * KONA_AFM_SCALE,
+						raw_avg));
+		}
+	}
+
+	/*
+	 * Prior burst history contributes only modestly. This allows adjacent
+	 * interactive bursts to reinforce one another without turning sustained
+	 * throughput into a permanently boosted condition.
+	 */
+	history_score = state->burst_score;
+
+	/*
+	 * Weighted workload classifier:
+	 *
+	 *   positive acceleration     40%
+	 *   excursion above EWMA      30%
+	 *   deficient peak envelope   20%
+	 *   recent burst history      10%
+	 */
+	score = (accel_score * 410U +
+		 excursion_score * 307U +
+		 pressure_score * 205U +
+		 history_score * 102U) >> 10;
+
+	score = min(score, KONA_AFM_SCORE_MAX);
+
+	/*
+	 * Low-pass the burst state separately from bandwidth EWMA. A single
+	 * transition is responsive immediately, while recurring transitions
+	 * progressively strengthen short-term residency.
+	 */
+	state->burst_score =
+		min_t(u32, KONA_AFM_SCORE_MAX,
+		      (state->burst_score * 3U + score) >> 2);
+
+	/*
+	 * Dynamic IB envelope:
+	 *
+	 *   calm             1.25x AB
+	 *   moderate         ~1.5x
+	 *   interactive      ~1.8x
+	 *   strong burst     up to 2.30x
+	 *
+	 * Never reduce a legitimate client peak request.
+	 */
+	ratio = KONA_AFM_RATIO_MIN_PERMILLE +
+		((KONA_AFM_RATIO_MAX_PERMILLE -
+		  KONA_AFM_RATIO_MIN_PERMILLE) * score /
+		 KONA_AFM_SCORE_MAX);
+
+	ratio_target = div64_u64(raw_avg * ratio, 1000);
+	target_peak = max(raw_peak, ratio_target);
+
+	/*
+	 * AB represents sustained traffic and therefore receives only a small,
+	 * score-proportional uplift. IB carries most of the latency response.
+	 */
+	target_avg = raw_avg +
+		div64_u64(raw_avg *
+			  KONA_AFM_AB_UPLIFT_MAX_PERCENT * score,
+			  100ULL * KONA_AFM_SCORE_MAX);
+
+	target_avg = max(target_avg, KONA_AFM_MIN_AB_KB);
+	target_peak = max(target_peak, KONA_AFM_MIN_IB_KB);
+
+	/*
+	 * Residency scales continuously from 8 to 56 ms.
+	 */
+	hold_ms = KONA_AFM_HOLD_MIN_MS +
+		((KONA_AFM_HOLD_MAX_MS - KONA_AFM_HOLD_MIN_MS) *
+		 score / KONA_AFM_SCORE_MAX);
+
+	*afm_avg = target_avg;
+	*afm_peak = target_peak;
+
+	/*
+	 * Upvotes replace held state immediately. Lower proposals never extend
+	 * the previous deadline; they merely become eligible once the current
+	 * residency expires.
+	 */
+	if (!state->held_avg && !state->held_peak) {
+		state->held_avg = target_avg;
+		state->held_peak = target_peak;
+		state->hold_until =
+			jiffies + msecs_to_jiffies(hold_ms);
+	} else if (time_after_eq(jiffies, state->hold_until)) {
+		/*
+		 * The previous residency window has expired. Replace stale held
+		 * state with the current envelope, even when demand has fallen.
+		 */
+		state->held_avg = target_avg;
+		state->held_peak = target_peak;
+		state->hold_until =
+			jiffies + msecs_to_jiffies(hold_ms);
+	} else if (target_avg > state->held_avg ||
+		   target_peak > state->held_peak) {
+		/*
+		 * While residency is active, only a genuine upvote may replace
+		 * the held envelope and start a fresh residency window.
+		 */
+		state->held_avg = max(state->held_avg, target_avg);
+		state->held_peak = max(state->held_peak, target_peak);
+		state->hold_until =
+			jiffies + msecs_to_jiffies(hold_ms);
+	}
+
+	state->avg_ewma = kona_afm_ewma(state->avg_ewma, raw_avg);
+	state->peak_ewma = kona_afm_ewma(state->peak_ewma, raw_peak);
+
+	state->last_avg = raw_avg;
+	state->last_peak = raw_peak;
+
+	state->last_score = score;
+	state->last_ratio_permille = ratio;
+	state->last_hold_ms = hold_ms;
+	state->proposed_avg = target_avg;
+	state->proposed_peak = target_peak;
+
+	if (target_avg != raw_avg || target_peak != raw_peak)
+		state->shaped++;
+}
+
 static void kona_icc_cpu_endpoint_vote(struct kona_icc_provider *qp,
 				       bool memory, u64 *avg, u64 *peak)
 {
@@ -6071,6 +6493,7 @@ static void kona_icc_cpu_endpoint_vote(struct kona_icc_provider *qp,
 	*avg = max(max(generic_avg, generic_eff_avg),
 		   max(per_cpu_avg, per_cpu_eff_avg));
 	*peak = max(raw_peak, policy_peak);
+
 }
 
 static int kona_icc_cpu_bcm_metadata(struct kona_icc_provider *qp,
@@ -8433,6 +8856,28 @@ static int kona_param_get_cpu_bcm_stats(char *buffer,
 		qp->raw_state_payloads[KONA_SHADOW_BUCKET_SLEEP].count,
 		qp->raw_state_payloads[KONA_SHADOW_BUCKET_SLEEP].commands,
 		qp->raw_state_payloads[KONA_SHADOW_BUCKET_SLEEP].valid);
+
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+		"afm eval=%llu shaped=%llu residency=%llu collapse=%llu "
+		"score=%u history=%u ratio=%u hold_ms=%u "
+		"ewma=%llu/%llu last=%llu/%llu "
+		"held=%llu/%llu proposed=%llu/%llu\n",
+		(unsigned long long)qp->cpu_afm.evaluations,
+		(unsigned long long)qp->cpu_afm.shaped,
+		(unsigned long long)qp->cpu_afm.residency_hits,
+		(unsigned long long)qp->cpu_afm.idle_collapses,
+		qp->cpu_afm.last_score,
+		qp->cpu_afm.burst_score,
+		qp->cpu_afm.last_ratio_permille,
+		qp->cpu_afm.last_hold_ms,
+		(unsigned long long)qp->cpu_afm.avg_ewma,
+		(unsigned long long)qp->cpu_afm.peak_ewma,
+		(unsigned long long)qp->cpu_afm.last_avg,
+		(unsigned long long)qp->cpu_afm.last_peak,
+		(unsigned long long)qp->cpu_afm.held_avg,
+		(unsigned long long)qp->cpu_afm.held_peak,
+		(unsigned long long)qp->cpu_afm.proposed_avg,
+		(unsigned long long)qp->cpu_afm.proposed_peak);
 
 	len += scnprintf(buffer + len, PAGE_SIZE - len,
 		"modern_hw active_enable=%u ws_enable=%u "
