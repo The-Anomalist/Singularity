@@ -1245,9 +1245,11 @@ struct kona_ipa_bcm_shadow {
 struct kona_cpu_afm_state {
 	u64 avg_ewma;
 	u64 peak_ewma;
+	u64 activity_ewma;
 
 	u64 last_avg;
 	u64 last_peak;
+	u64 last_activity;
 
 	u64 held_avg;
 	u64 held_peak;
@@ -4501,13 +4503,15 @@ static bool kona_icc_cpu_generic(u32 id);
 static void kona_icc_add_cpu_ab(u64 *total, u64 vote);
 static void kona_icc_cpu_afm_evaluate(struct kona_icc_provider *qp,
 				      u64 raw_avg, u64 raw_peak,
+				      u64 activity,
 				      u64 *afm_avg, u64 *afm_peak);
 
 static void
 kona_icc_shadow_raw_cpu_endpoint_vote(struct kona_icc_provider *qp,
 				      bool memory,
 				      enum kona_shadow_bucket_id bucket,
-				      u64 *avg, u64 *peak)
+				      u64 *avg, u64 *peak,
+				      u64 *activity)
 {
 	u64 generic_avg = 0;
 	u64 per_cpu_avg = 0;
@@ -4516,6 +4520,7 @@ kona_icc_shadow_raw_cpu_endpoint_vote(struct kona_icc_provider *qp,
 
 	*avg = 0;
 	*peak = 0;
+	*activity = 0;
 
 	if (!qp || !qp->req_ab || !qp->req_ib ||
 	    bucket >= KONA_SHADOW_BUCKET_COUNT)
@@ -4563,6 +4568,7 @@ kona_icc_shadow_raw_cpu_endpoint_vote(struct kona_icc_provider *qp,
 
 	*avg = max(generic_avg, per_cpu_avg);
 	*peak = endpoint_peak;
+	*activity = endpoint_peak;
 }
 
 /*
@@ -4918,9 +4924,10 @@ static void kona_icc_refresh_raw_shadow_buckets(struct kona_icc_provider *qp)
 		return;
 
 	for (bucket = 0; bucket < KONA_SHADOW_BUCKET_COUNT; bucket++) {
-		u64 llcc_avg, llcc_peak;
-		u64 mem_avg, mem_peak;
+		u64 llcc_avg, llcc_peak, llcc_activity;
+		u64 mem_avg, mem_peak, mem_activity;
 		u64 fabric_avg, fabric_peak;
+		u64 activity;
 
 		/*
 		 * Aggregate the physical CPU endpoints correctly before BCM
@@ -4928,12 +4935,15 @@ static void kona_icc_refresh_raw_shadow_buckets(struct kona_icc_provider *qp)
 		 * peak demand remains a max.
 		 */
 		kona_icc_shadow_raw_cpu_endpoint_vote(qp, false, bucket,
-						     &llcc_avg, &llcc_peak);
+						     &llcc_avg, &llcc_peak,
+						     &llcc_activity);
 		kona_icc_shadow_raw_cpu_endpoint_vote(qp, true, bucket,
-						     &mem_avg, &mem_peak);
+						     &mem_avg, &mem_peak,
+						     &mem_activity);
 
 		fabric_avg = max(llcc_avg, mem_avg);
 		fabric_peak = max(llcc_peak, mem_peak);
+		activity = max(llcc_activity, mem_activity);
 
 		/*
 		 * Stage-1 AFM observation belongs here: after real CPU endpoint
@@ -4947,6 +4957,7 @@ static void kona_icc_refresh_raw_shadow_buckets(struct kona_icc_provider *qp)
 
 			kona_icc_cpu_afm_evaluate(qp,
 						  fabric_avg, fabric_peak,
+						  activity,
 						  &afm_avg, &afm_peak);
 		}
 
@@ -6198,12 +6209,12 @@ static u32 kona_afm_normalized_delta(u64 delta, u64 reference)
 
 static void kona_icc_cpu_afm_evaluate(struct kona_icc_provider *qp,
 				      u64 raw_avg, u64 raw_peak,
+				      u64 activity,
 				      u64 *afm_avg, u64 *afm_peak)
 {
 	struct kona_cpu_afm_state *state = &qp->cpu_afm;
-	u64 demand = max(raw_avg, raw_peak);
-	u64 previous = max(state->last_avg, state->last_peak);
-	u64 history = max(state->avg_ewma, state->peak_ewma);
+	u64 previous = state->last_activity;
+	u64 history = state->activity_ewma;
 	u64 accel = 0;
 	u64 excursion = 0;
 	u64 target_avg;
@@ -6211,7 +6222,6 @@ static void kona_icc_cpu_afm_evaluate(struct kona_icc_provider *qp,
 	u64 ratio_target;
 	u32 accel_score;
 	u32 excursion_score;
-	u32 pressure_score = 0;
 	u32 history_score;
 	u32 score;
 	u32 ratio;
@@ -6272,6 +6282,7 @@ static void kona_icc_cpu_afm_evaluate(struct kona_icc_provider *qp,
 		state->proposed_peak = *afm_peak;
 		state->last_avg = 0;
 		state->last_peak = 0;
+		state->last_activity = 0;
 		state->evaluations++;
 		return;
 	}
@@ -6285,7 +6296,8 @@ static void kona_icc_cpu_afm_evaluate(struct kona_icc_provider *qp,
 	 * observe residency expiry and allow complete fabric collapse.
 	 */
 	if (raw_avg == state->last_avg &&
-	    raw_peak == state->last_peak) {
+	    raw_peak == state->last_peak &&
+	    activity == state->last_activity) {
 		*afm_avg = state->proposed_avg;
 		*afm_peak = state->proposed_peak;
 		return;
@@ -6293,33 +6305,14 @@ static void kona_icc_cpu_afm_evaluate(struct kona_icc_provider *qp,
 
 	state->evaluations++;
 
-	if (demand > previous)
-		accel = demand - previous;
+	if (activity > previous)
+		accel = activity - previous;
 
-	if (history && demand > history)
-		excursion = demand - history;
+	if (history && activity > history)
+		excursion = activity - history;
 
-	accel_score = kona_afm_normalized_delta(accel, demand);
-	excursion_score = kona_afm_normalized_delta(excursion, demand);
-
-	/*
-	 * Peak deficiency estimates how vulnerable this request is to latency.
-	 * A peak below AB is maximally deficient. Between 1x and 2x AB the
-	 * deficiency falls smoothly to zero.
-	 */
-	if (raw_avg) {
-		if (raw_peak <= raw_avg) {
-			pressure_score = KONA_AFM_SCORE_MAX;
-		} else if (raw_peak < raw_avg * 2) {
-			u64 spread = raw_peak - raw_avg;
-
-			pressure_score =
-				KONA_AFM_SCORE_MAX -
-				min_t(u64, KONA_AFM_SCORE_MAX,
-				      div64_u64(spread * KONA_AFM_SCALE,
-						raw_avg));
-		}
-	}
+	accel_score = kona_afm_normalized_delta(accel, activity);
+	excursion_score = kona_afm_normalized_delta(excursion, activity);
 
 	/*
 	 * Prior burst history contributes only modestly. This allows adjacent
@@ -6331,15 +6324,16 @@ static void kona_icc_cpu_afm_evaluate(struct kona_icc_provider *qp,
 	/*
 	 * Weighted workload classifier:
 	 *
-	 *   positive acceleration     40%
-	 *   excursion above EWMA      30%
-	 *   deficient peak envelope   20%
-	 *   recent burst history      10%
+	 *   endpoint acceleration     50%
+	 *   excursion above EWMA      35%
+	 *   recent burst history      15%
+	 *
+	 * Activity is the physical endpoint peak. Do not derive pressure from
+	 * AB versus IB: AB is additive while peak/IB follows max semantics.
 	 */
-	score = (accel_score * 410U +
-		 excursion_score * 307U +
-		 pressure_score * 205U +
-		 history_score * 102U) >> 10;
+	score = (accel_score * 512U +
+		 excursion_score * 358U +
+		 history_score * 154U) >> 10;
 
 	score = min(score, KONA_AFM_SCORE_MAX);
 
@@ -6425,9 +6419,12 @@ static void kona_icc_cpu_afm_evaluate(struct kona_icc_provider *qp,
 
 	state->avg_ewma = kona_afm_ewma(state->avg_ewma, raw_avg);
 	state->peak_ewma = kona_afm_ewma(state->peak_ewma, raw_peak);
+	state->activity_ewma =
+		kona_afm_ewma(state->activity_ewma, activity);
 
 	state->last_avg = raw_avg;
 	state->last_peak = raw_peak;
+	state->last_activity = activity;
 
 	state->last_score = score;
 	state->last_ratio_permille = ratio;
@@ -8860,7 +8857,8 @@ static int kona_param_get_cpu_bcm_stats(char *buffer,
 	len += scnprintf(buffer + len, PAGE_SIZE - len,
 		"afm eval=%llu shaped=%llu residency=%llu collapse=%llu "
 		"score=%u history=%u ratio=%u hold_ms=%u "
-		"ewma=%llu/%llu last=%llu/%llu "
+		"ewma=%llu/%llu activity_ewma=%llu "
+		"last=%llu/%llu activity=%llu "
 		"held=%llu/%llu proposed=%llu/%llu\n",
 		(unsigned long long)qp->cpu_afm.evaluations,
 		(unsigned long long)qp->cpu_afm.shaped,
@@ -8872,8 +8870,10 @@ static int kona_param_get_cpu_bcm_stats(char *buffer,
 		qp->cpu_afm.last_hold_ms,
 		(unsigned long long)qp->cpu_afm.avg_ewma,
 		(unsigned long long)qp->cpu_afm.peak_ewma,
+		(unsigned long long)qp->cpu_afm.activity_ewma,
 		(unsigned long long)qp->cpu_afm.last_avg,
 		(unsigned long long)qp->cpu_afm.last_peak,
+		(unsigned long long)qp->cpu_afm.last_activity,
 		(unsigned long long)qp->cpu_afm.held_avg,
 		(unsigned long long)qp->cpu_afm.held_peak,
 		(unsigned long long)qp->cpu_afm.proposed_avg,
