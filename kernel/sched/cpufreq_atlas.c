@@ -404,7 +404,7 @@ static unsigned long sugov_map_util(struct sugov_policy *sg_policy,
 	 * resolves zero to policy->min, so every cluster can actually use its own
 	 * lowest OPP rather than inheriting a hard-coded frequency floor.
 	 */
-	if (util <= mult_frac(max, 12, 100))
+	if (util <= mult_frac(max, 18, 100))
 		return 0;
 
 	headroom = 85 * max + 15 * util;
