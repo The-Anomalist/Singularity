@@ -866,7 +866,6 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time)
 {
 	struct sugov_policy *sg_policy = sg_cpu->sg_policy;
 	struct cpufreq_policy *policy = sg_policy->policy;
-	u64 last_freq_update_time = sg_policy->last_freq_update_time;
 	unsigned long util = 0, max = 1;
 	bool latency_sensitive = false;
 	bool ux_burst = false;
@@ -878,16 +877,15 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time)
 		s64 delta_ns;
 
 		/*
-		 * If the CPU utilization was last updated before the previous
-		 * frequency update and the time elapsed between the last update
-		 * of the CPU utilization and the last frequency update is long
-		 * enough, don't take the CPU into account as it probably is
-		 * idle now (and clear iowait_boost for it).
+		 * Ignore utilization from CPUs which have not produced a scheduler
+		 * update for longer than the WALT stale window.  Age the sample
+		 * against the current update time rather than the last committed
+		 * frequency change, otherwise a stale sample can keep a shared
+		 * policy elevated and prevent its own expiration.
 		 */
-		delta_ns = last_freq_update_time - j_sg_cpu->last_update;
+		delta_ns = time - j_sg_cpu->last_update;
 		if (delta_ns > stale_ns) {
-			sugov_iowait_reset(j_sg_cpu, last_freq_update_time,
-					   false);
+			sugov_iowait_reset(j_sg_cpu, time, false);
 			continue;
 		}
 
